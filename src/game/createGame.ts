@@ -1,7 +1,10 @@
 import Phaser from "phaser";
 
 import { BootScene } from "./scenes/BootScene";
-import { ControlLabScene } from "./scenes/ControlLabScene";
+import { HubScene } from "./scenes/HubScene";
+import { MainMenuScene } from "./scenes/MainMenuScene";
+import { MissionScene } from "./scenes/MissionScene";
+import { PauseScene } from "./scenes/PauseScene";
 
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
@@ -13,9 +16,9 @@ export function createGame(parent: string): Phaser.Game {
     width: GAME_WIDTH,
     height: GAME_HEIGHT,
     backgroundColor: "#070b12",
-    scene: [BootScene, ControlLabScene],
+    scene: [BootScene, MainMenuScene, HubScene, MissionScene, PauseScene],
     input: {
-      activePointers: 4,
+      activePointers: 6,
     },
     scale: {
       mode: Phaser.Scale.FIT,
