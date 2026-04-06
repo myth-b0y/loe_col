@@ -23,6 +23,12 @@ type ActionButtonUi = {
   tag: Phaser.GameObjects.Text;
 };
 
+type SmallButtonUi = {
+  container: Phaser.GameObjects.Container;
+  background: Phaser.GameObjects.Rectangle;
+  label: Phaser.GameObjects.Text;
+};
+
 const ROOM = new Phaser.Geom.Rectangle(80, 118, 1120, 520);
 const PLAYER_SPEED = 310;
 const JOYSTICK_RADIUS = 72;
@@ -38,8 +44,11 @@ export class ControlLabScene extends Phaser.Scene {
   private facingMarker!: Phaser.GameObjects.Rectangle;
   private companion!: Phaser.GameObjects.Arc;
   private missionPulse!: Phaser.GameObjects.Text;
+  private infoBackground!: Phaser.GameObjects.Rectangle;
   private infoPanel!: Phaser.GameObjects.Text;
   private hintPanel!: Phaser.GameObjects.Text;
+  private infoCloseButton!: SmallButtonUi;
+  private infoOpenButton!: SmallButtonUi;
   private touchBanner!: Phaser.GameObjects.Text;
   private moveKeys?: MoveKeys;
   private cursorKeys?: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -63,6 +72,7 @@ export class ControlLabScene extends Phaser.Scene {
   private pulseCooldown = 0;
   private dashCooldown = 0;
   private dashFlash = 0;
+  private infoVisible = true;
   private dummies: DummyTarget[] = [];
 
   constructor() {
@@ -80,6 +90,7 @@ export class ControlLabScene extends Phaser.Scene {
     this.createTouchUi();
     this.createDummyTargets();
     this.registerPointerInput();
+    this.setInfoVisible(this.infoVisible);
     this.updateHud();
   }
 
@@ -162,6 +173,12 @@ export class ControlLabScene extends Phaser.Scene {
   }
 
   private createHud(): void {
+    this.infoBackground = this.add
+      .rectangle(ROOM.right - 188, ROOM.y + 192, 332, 228, 0x08111c, 0.9)
+      .setStrokeStyle(2, 0x4772aa, 0.9)
+      .setDepth(9)
+      .setOrigin(0.5);
+
     this.infoPanel = this.add
       .text(ROOM.x + 30, ROOM.y + 102, "", {
         fontFamily: "Arial",
@@ -181,6 +198,13 @@ export class ControlLabScene extends Phaser.Scene {
       })
       .setDepth(10);
 
+    this.infoCloseButton = this.createSmallButton(ROOM.right - 48, ROOM.y + 104, 34, "X");
+    this.infoCloseButton.container.on("pointerdown", () => this.setInfoVisible(false));
+
+    this.infoOpenButton = this.createSmallButton(ROOM.right - 74, ROOM.y + 104, 86, "INFO");
+    this.infoOpenButton.container.on("pointerdown", () => this.setInfoVisible(true));
+    this.infoOpenButton.container.setVisible(false);
+
     this.touchBanner = this.add
       .text(GAME_WIDTH / 2, 36, "", {
         fontFamily: "Arial",
@@ -192,6 +216,33 @@ export class ControlLabScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setDepth(20)
       .setVisible(this.touchEnabled);
+  }
+
+  private createSmallButton(x: number, y: number, width: number, label: string): SmallButtonUi {
+    const background = this.add
+      .rectangle(0, 0, width, 32, 0x20354f, 0.96)
+      .setStrokeStyle(2, 0x8db9ff, 0.8);
+
+    const text = this.add.text(0, 0, label, {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#f4fbff",
+      fontStyle: "bold",
+    });
+    text.setOrigin(0.5);
+
+    const container = this.add.container(x, y, [background, text]).setDepth(11);
+    container.setSize(width, 32);
+    container.setInteractive(
+      new Phaser.Geom.Rectangle(-width / 2, -16, width, 32),
+      Phaser.Geom.Rectangle.Contains,
+    );
+
+    return {
+      container,
+      background,
+      label: text,
+    };
   }
 
   private createKeyboardInput(): void {
@@ -602,8 +653,10 @@ export class ControlLabScene extends Phaser.Scene {
   }
 
   private isPointerOverButton(pointer: Phaser.Input.Pointer): boolean {
-    return this.pulseButton.container.getBounds().contains(pointer.x, pointer.y)
-      || this.dashButton.container.getBounds().contains(pointer.x, pointer.y);
+    return this.containsVisiblePoint(this.pulseButton.container, pointer.x, pointer.y)
+      || this.containsVisiblePoint(this.dashButton.container, pointer.x, pointer.y)
+      || this.containsVisiblePoint(this.infoCloseButton.container, pointer.x, pointer.y)
+      || this.containsVisiblePoint(this.infoOpenButton.container, pointer.x, pointer.y);
   }
 
   private setTouchUiVisible(visible: boolean): void {
@@ -654,6 +707,19 @@ export class ControlLabScene extends Phaser.Scene {
         ? "Touch mode active: left stick moves, right stick aims, blue button = Pulse, purple button = Dash."
         : "",
     );
+  }
+
+  private setInfoVisible(visible: boolean): void {
+    this.infoVisible = visible;
+    this.infoBackground.setVisible(visible);
+    this.infoPanel.setVisible(visible);
+    this.hintPanel.setVisible(visible);
+    this.infoCloseButton.container.setVisible(visible);
+    this.infoOpenButton.container.setVisible(!visible);
+  }
+
+  private containsVisiblePoint(container: Phaser.GameObjects.Container, x: number, y: number): boolean {
+    return container.visible && container.getBounds().contains(x, y);
   }
 
   private setJoystickAnchor(x: number, y: number): void {
