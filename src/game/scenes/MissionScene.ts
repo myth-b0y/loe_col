@@ -101,6 +101,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   init(data: { missionId?: string }): void {
+    this.resetMissionRuntime();
     this.mission = missionRegistry[data.missionId ?? FIRST_MISSION.id] ?? FIRST_MISSION;
   }
 
@@ -139,6 +140,49 @@ export class MissionScene extends Phaser.Scene {
     this.updateBullets(dt);
     this.updateRoomState();
     this.updateHudState();
+  }
+
+  private resetMissionRuntime(): void {
+    this.roomIndex = 0;
+    this.roomCleared = false;
+    this.missionComplete = false;
+
+    this.playerHp = 100;
+    this.playerMaxHp = 100;
+    this.playerInvuln = 0;
+    this.fireCooldown = 0;
+    this.pulseCooldown = 0;
+    this.dashCooldown = 0;
+    this.arcCooldown = 0;
+    this.companionCooldown = 0;
+
+    this.bullets = [];
+    this.enemies = [];
+    this.fireHeld = false;
+
+    this.keyboardVector.set(0, 0);
+    this.moveVector.set(0, 0);
+    this.aimVector.set(1, 0);
+    this.lookPoint.set(ARENA.centerX + 120, ARENA.centerY);
+
+    this.movePointerId = null;
+    this.aimPointerId = null;
+
+    this.progressDots = [];
+    this.bossFill = undefined;
+    this.bossFrame = undefined;
+    this.advanceButton = undefined;
+    this.resultPanel = undefined;
+
+    this.moveBase = undefined;
+    this.moveKnob = undefined;
+    this.aimBase = undefined;
+    this.aimKnob = undefined;
+    this.pulseButton = undefined;
+    this.dashButton = undefined;
+    this.arcButton = undefined;
+    this.pauseButton = undefined;
+    this.moveKeys = undefined;
   }
 
   private drawBackdrop(): void {
