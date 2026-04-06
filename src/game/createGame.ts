@@ -18,7 +18,7 @@ export function createGame(parent: string): Phaser.Game {
       activePointers: 4,
     },
     scale: {
-      mode: Phaser.Scale.RESIZE,
+      mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
       width: GAME_WIDTH,
       height: GAME_HEIGHT,
@@ -32,3 +32,4 @@ export function createGame(parent: string): Phaser.Game {
     },
   });
 }
+
