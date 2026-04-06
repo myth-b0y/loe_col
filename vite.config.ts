@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 
+const base = process.env.DEPLOY_BASE ?? "/";
+
 export default defineConfig({
+  base,
   server: {
     host: true,
     port: 5173,
@@ -10,4 +13,3 @@ export default defineConfig({
     port: 4173,
   },
 });
-
