@@ -2,6 +2,7 @@ import Phaser from "phaser";
 
 import { gameSession } from "../core/session";
 import { createMenuButton } from "../ui/buttons";
+import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
 import { SettingsOverlay } from "../ui/SettingsOverlay";
 
 type PauseSceneData = {
@@ -14,6 +15,7 @@ export class PauseScene extends Phaser.Scene {
   private allowSave = false;
   private statusText?: Phaser.GameObjects.Text;
   private settingsOverlay?: SettingsOverlay;
+  private saveSlotsOverlay?: SaveSlotsOverlay;
 
   constructor() {
     super("pause");
@@ -73,15 +75,7 @@ export class PauseScene extends Phaser.Scene {
       y: 402,
       width: 260,
       label: "Load Save",
-      onClick: () => {
-        const ok = gameSession.loadSave();
-        if (!ok) {
-          this.statusText?.setText("No valid save found.");
-          return;
-        }
-
-        this.leaveToHub();
-      },
+      onClick: () => this.saveSlotsOverlay?.show("load"),
       depth: 12,
       disabled: !gameSession.hasSaveData(),
     });
@@ -118,6 +112,21 @@ export class PauseScene extends Phaser.Scene {
       onClose: () => undefined,
     });
 
+    this.saveSlotsOverlay = new SaveSlotsOverlay({
+      scene: this,
+      onClose: () => undefined,
+      onLoadSlot: (slotIndex) => {
+        const ok = gameSession.loadSave(slotIndex);
+        if (!ok) {
+          this.statusText?.setText("No valid save found.");
+          return;
+        }
+
+        this.leaveToHub();
+      },
+      onNewSlot: () => undefined,
+    });
+
     const keyboard = this.input.keyboard;
     keyboard?.on("keydown-ESC", this.resumeGame, this);
 
@@ -127,6 +136,9 @@ export class PauseScene extends Phaser.Scene {
   }
 
   private resumeGame(): void {
+    if (this.saveSlotsOverlay) {
+      this.saveSlotsOverlay.hide();
+    }
     this.scene.resume(this.returnSceneKey);
     this.scene.stop();
   }

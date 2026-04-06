@@ -1,13 +1,23 @@
 import Phaser from "phaser";
 
-import { FIRST_MISSION, missionRegistry, type MissionDefinition } from "../content/missions";
-import { GAME_WIDTH } from "../createGame";
+import {
+  FIRST_MISSION,
+  missionRegistry,
+  type BossStage,
+  type HallwayStage,
+  type MissionDefinition,
+  type MissionEnemyKind,
+  type MissionHallwayZone,
+  type MissionStage,
+  type RestStage,
+} from "../content/missions";
+import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
 type BulletOwner = "player" | "companion" | "enemy";
-type EnemyKind = "rusher" | "shooter" | "boss";
+type EnemyKind = MissionEnemyKind | "boss";
 
 type Bullet = {
   sprite: Phaser.GameObjects.Arc;
@@ -21,28 +31,75 @@ type Bullet = {
 type Enemy = {
   kind: EnemyKind;
   sprite: Phaser.GameObjects.Arc;
+  aura: Phaser.GameObjects.Arc;
   hp: number;
   maxHp: number;
   radius: number;
   speed: number;
   attackCooldown: number;
   specialCooldown: number;
+  chargeTimer: number;
   damageFlash: number;
   stateTimer: number;
+  roleColor: number;
+  strafeDir: -1 | 1;
+  spawnedAdds: boolean;
 };
 
-const ARENA = new Phaser.Geom.Rectangle(92, 100, 1096, 520);
+type HallwayZoneRuntime = {
+  data: MissionHallwayZone;
+  activated: boolean;
+  marker: Phaser.GameObjects.Rectangle;
+};
+
+type DoorUi = {
+  glow: Phaser.GameObjects.Rectangle;
+  frame: Phaser.GameObjects.Rectangle;
+  label: Phaser.GameObjects.Text;
+  open: boolean;
+  extraction: boolean;
+};
+
+type RestStations = {
+  healPad: Phaser.GameObjects.Rectangle;
+  healText: Phaser.GameObjects.Text;
+  supplyPad: Phaser.GameObjects.Rectangle;
+  supplyText: Phaser.GameObjects.Text;
+};
+
+type AbilityCard = {
+  frame: Phaser.GameObjects.Rectangle;
+  title: Phaser.GameObjects.Text;
+  detail: Phaser.GameObjects.Text;
+};
+
+const BASE_STAGE_BOUNDS = new Phaser.Geom.Rectangle(110, 174, 1500, 338);
+const BASE_REST_BOUNDS = new Phaser.Geom.Rectangle(140, 150, 820, 420);
 const MOVE_SPEED = 315;
 const DASH_DISTANCE = 128;
 const STICK_RADIUS = 72;
 const STICK_DEADZONE = 18;
 
+function cloneRect(rect: Phaser.Geom.Rectangle): Phaser.Geom.Rectangle {
+  return new Phaser.Geom.Rectangle(rect.x, rect.y, rect.width, rect.height);
+}
+
 export class MissionScene extends Phaser.Scene {
   private mission: MissionDefinition = FIRST_MISSION;
   private brightnessLayer?: BrightnessLayer;
-  private roomIndex = 0;
-  private roomCleared = false;
+  private stageIndex = 0;
   private missionComplete = false;
+  private stageCleared = false;
+  private bossTriggered = false;
+  private transitioningStage = false;
+  private currentStage?: MissionStage;
+  private playArea = cloneRect(BASE_STAGE_BOUNDS);
+  private stageObjects: Phaser.GameObjects.GameObject[] = [];
+  private hallwayZones: HallwayZoneRuntime[] = [];
+  private restStations?: RestStations;
+  private exitDoor?: DoorUi;
+  private restHealed = false;
+  private supplyHintShown = false;
 
   private player!: Phaser.GameObjects.Arc;
   private playerFacing!: Phaser.GameObjects.Rectangle;
@@ -73,7 +130,7 @@ export class MissionScene extends Phaser.Scene {
   private keyboardVector = new Phaser.Math.Vector2();
   private moveVector = new Phaser.Math.Vector2();
   private aimVector = new Phaser.Math.Vector2(1, 0);
-  private lookPoint = new Phaser.Math.Vector2(ARENA.centerX + 120, ARENA.centerY);
+  private lookPoint = new Phaser.Math.Vector2(640, 360);
   private movePointerId: number | null = null;
   private aimPointerId: number | null = null;
   private moveBase?: Phaser.GameObjects.Arc;
@@ -88,13 +145,21 @@ export class MissionScene extends Phaser.Scene {
   private aimLine!: Phaser.GameObjects.Graphics;
   private reticle!: Phaser.GameObjects.Arc;
   private hpFill!: Phaser.GameObjects.Rectangle;
-  private bossFill?: Phaser.GameObjects.Rectangle;
-  private bossFrame?: Phaser.GameObjects.Rectangle;
-  private roomText!: Phaser.GameObjects.Text;
+  private bossFill!: Phaser.GameObjects.Rectangle;
+  private bossFrame!: Phaser.GameObjects.Rectangle;
+  private bossTitle!: Phaser.GameObjects.Text;
+  private titleText!: Phaser.GameObjects.Text;
+  private objectiveText!: Phaser.GameObjects.Text;
+  private stageText!: Phaser.GameObjects.Text;
   private messageText!: Phaser.GameObjects.Text;
   private progressDots: Phaser.GameObjects.Arc[] = [];
-  private advanceButton?: MenuButton;
   private resultPanel?: Phaser.GameObjects.Container;
+  private toolbarCards?: {
+    fire: AbilityCard;
+    pulse: AbilityCard;
+    arc: AbilityCard;
+    dash: AbilityCard;
+  };
 
   constructor() {
     super("mission");
@@ -107,7 +172,7 @@ export class MissionScene extends Phaser.Scene {
 
   create(): void {
     this.touchEnabled = this.sys.game.device.input.touch;
-    this.drawBackdrop();
+    this.cameras.main.setBackgroundColor("#050911");
     this.brightnessLayer = createBrightnessLayer(this);
     this.createActors();
     this.createHud();
@@ -115,7 +180,9 @@ export class MissionScene extends Phaser.Scene {
     this.createResultPanel();
     this.bindKeyboard();
     this.bindPointers();
-    this.spawnRoom(0);
+    this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
+    this.cameras.main.setDeadzone(120, 40);
+    this.loadStage(0);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.brightnessLayer?.destroy();
@@ -138,14 +205,24 @@ export class MissionScene extends Phaser.Scene {
     this.updateCompanion(dt);
     this.updateEnemies(dt);
     this.updateBullets(dt);
-    this.updateRoomState();
+    this.updateStageState();
     this.updateHudState();
   }
 
   private resetMissionRuntime(): void {
-    this.roomIndex = 0;
-    this.roomCleared = false;
+    this.stageIndex = 0;
     this.missionComplete = false;
+    this.stageCleared = false;
+    this.bossTriggered = false;
+    this.transitioningStage = false;
+    this.currentStage = undefined;
+    this.playArea = cloneRect(BASE_STAGE_BOUNDS);
+    this.stageObjects = [];
+    this.hallwayZones = [];
+    this.restStations = undefined;
+    this.exitDoor = undefined;
+    this.restHealed = false;
+    this.supplyHintShown = false;
 
     this.playerHp = 100;
     this.playerMaxHp = 100;
@@ -163,17 +240,10 @@ export class MissionScene extends Phaser.Scene {
     this.keyboardVector.set(0, 0);
     this.moveVector.set(0, 0);
     this.aimVector.set(1, 0);
-    this.lookPoint.set(ARENA.centerX + 120, ARENA.centerY);
+    this.lookPoint.set(640, 360);
 
     this.movePointerId = null;
     this.aimPointerId = null;
-
-    this.progressDots = [];
-    this.bossFill = undefined;
-    this.bossFrame = undefined;
-    this.advanceButton = undefined;
-    this.resultPanel = undefined;
-
     this.moveBase = undefined;
     this.moveKnob = undefined;
     this.aimBase = undefined;
@@ -183,32 +253,13 @@ export class MissionScene extends Phaser.Scene {
     this.arcButton = undefined;
     this.pauseButton = undefined;
     this.moveKeys = undefined;
-  }
-
-  private drawBackdrop(): void {
-    this.add.rectangle(640, 360, 1280, 720, 0x070d16).setDepth(-10);
-    this.add.rectangle(ARENA.centerX, ARENA.centerY, ARENA.width, ARENA.height, 0x121f34, 0.96)
-      .setStrokeStyle(4, 0x78abed, 0.82)
-      .setDepth(-6);
-    this.add.rectangle(640, 58, 1120, 54, 0x10182a, 0.96)
-      .setStrokeStyle(2, 0x4c709d, 0.8);
-    this.add.rectangle(640, 662, 1120, 34, 0x10182a, 0.9)
-      .setStrokeStyle(1, 0x304e74, 0.8);
-
-    const stars = this.add.graphics().setDepth(-9);
-    stars.fillStyle(0xc6ddff, 0.9);
-    for (let i = 0; i < 62; i += 1) {
-      stars.fillCircle(
-        Phaser.Math.Between(18, 1262),
-        Phaser.Math.Between(18, 702),
-        Phaser.Math.FloatBetween(1, 2.2),
-      );
-    }
+    this.toolbarCards = undefined;
   }
 
   private createActors(): void {
-    this.player = this.add.circle(ARENA.x + 140, ARENA.centerY, 18, 0xf2f7ff).setDepth(10);
+    this.player = this.add.circle(210, 342, 18, 0xf2f7ff).setDepth(10);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
+
     this.playerFacing = this.add.rectangle(this.player.x + 26, this.player.y, 34, 8, 0x7ee1ff)
       .setOrigin(0, 0.5)
       .setDepth(11);
@@ -222,42 +273,58 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private createHud(): void {
-    this.add.text(112, 43, this.mission.title, {
+    this.pin(this.add.rectangle(640, 42, 1280, 70, 0x10182a, 0.96).setStrokeStyle(2, 0x4c709d, 0.8));
+    this.pin(this.add.rectangle(640, 620, 1280, 62, 0x10182a, 0.92).setStrokeStyle(1, 0x304e74, 0.8));
+
+    this.titleText = this.pin(this.add.text(96, 18, this.mission.title, {
       fontFamily: "Arial",
       fontSize: "24px",
       color: "#f5fbff",
       fontStyle: "bold",
-    });
+    }));
 
-    this.add.text(640, 43, this.mission.objective, {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#d7e8ff",
-    }).setOrigin(0.5);
-
-    this.roomText = this.add.text(640, 84, "", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#9fc6ff",
-    }).setOrigin(0.5);
-
-    this.messageText = this.add.text(640, 646, "", {
+    this.objectiveText = this.pin(this.add.text(640, 18, this.mission.objective, {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#d7e8ff",
-    }).setOrigin(0.5);
+    }).setOrigin(0.5, 0));
 
-    this.add.rectangle(176, 88, 168, 18, 0x08111c, 0.96).setStrokeStyle(2, 0x6ea2e5, 0.8);
-    this.hpFill = this.add.rectangle(92, 88, 160, 10, 0x47c56c, 0.96).setOrigin(0, 0.5);
-    this.add.text(94, 72, "Hull / Vital Light", {
+    this.stageText = this.pin(this.add.text(96, 50, "", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#9fc6ff",
+    }));
+
+    this.messageText = this.pin(this.add.text(640, 92, "", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#d7e8ff",
+      align: "center",
+    }).setOrigin(0.5));
+
+    this.pin(this.add.rectangle(170, 112, 168, 18, 0x08111c, 0.96).setStrokeStyle(2, 0x6ea2e5, 0.8));
+    this.hpFill = this.pin(this.add.rectangle(86, 112, 160, 10, 0x47c56c, 0.96).setOrigin(0, 0.5));
+    this.pin(this.add.text(86, 95, "Vital Light", {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#d7e8ff",
-    });
+    }));
 
-    this.progressDots = this.mission.rooms.map((_room, index) =>
-      this.add.circle(544 + index * 24, 84, 7, 0x29425f, 1).setDepth(5),
+    this.progressDots = this.mission.stages.map((_stage, index) =>
+      this.pin(this.add.circle(774 + index * 24, 56, 7, 0x29425f, 1)),
     );
+
+    this.bossFrame = this.pin(this.add.rectangle(1010, 112, 250, 18, 0x08111c, 0.96)
+      .setStrokeStyle(2, 0xc8a7ff, 0.84)
+      .setVisible(false));
+    this.bossFill = this.pin(this.add.rectangle(886, 112, 242, 10, 0x9f68ff, 0.95)
+      .setOrigin(0, 0.5)
+      .setVisible(false));
+    this.bossTitle = this.pin(this.add.text(886, 94, "Shard Bruiser", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#eadfff",
+    }).setVisible(false));
 
     this.pauseButton = createMenuButton({
       scene: this,
@@ -270,6 +337,16 @@ export class MissionScene extends Phaser.Scene {
       depth: 12,
       accentColor: 0x233956,
     });
+    this.pauseButton.container.setScrollFactor(0);
+
+    if (!this.touchEnabled) {
+      this.toolbarCards = {
+        fire: this.createAbilityCard(344, 652, "Fire", "Mouse Hold"),
+        pulse: this.createAbilityCard(560, 652, "Pulse", "Q"),
+        arc: this.createAbilityCard(776, 652, "Arc Lance", "E"),
+        dash: this.createAbilityCard(992, 652, "Dash", "Shift / RMB"),
+      };
+    }
   }
 
   private createTouchUi(): void {
@@ -277,86 +354,89 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.moveBase = this.add.circle(148, 566, STICK_RADIUS, 0x173054, 0.36).setDepth(14);
+    this.moveBase = this.pin(this.add.circle(148, 566, STICK_RADIUS, 0x173054, 0.36).setDepth(14));
     this.moveBase.setStrokeStyle(3, 0x72a8ff, 0.65);
-    this.moveKnob = this.add.circle(148, 566, 34, 0xdde9ff, 0.72).setDepth(15);
+    this.moveKnob = this.pin(this.add.circle(148, 566, 34, 0xdde9ff, 0.72).setDepth(15));
     this.moveKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.aimBase = this.add.circle(1114, 566, STICK_RADIUS, 0x173054, 0.36).setDepth(14);
+    this.aimBase = this.pin(this.add.circle(1114, 566, STICK_RADIUS, 0x173054, 0.36).setDepth(14));
     this.aimBase.setStrokeStyle(3, 0x72a8ff, 0.65);
-    this.aimKnob = this.add.circle(1114, 566, 34, 0xdde9ff, 0.72).setDepth(15);
+    this.aimKnob = this.pin(this.add.circle(1114, 566, 34, 0xdde9ff, 0.72).setDepth(15));
     this.aimKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.add.text(148, 470, "MOVE", {
+    this.pin(this.add.text(148, 470, "MOVE", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
       fontStyle: "bold",
-    }).setOrigin(0.5).setDepth(15);
+    }).setOrigin(0.5).setDepth(15));
 
-    this.add.text(1114, 470, "AIM / FIRE", {
+    this.pin(this.add.text(1114, 470, "AIM / FIRE", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
       fontStyle: "bold",
-    }).setOrigin(0.5).setDepth(15);
+    }).setOrigin(0.5).setDepth(15));
 
     this.pulseButton = createMenuButton({
       scene: this,
-      x: 916,
+      x: 912,
       y: 566,
-      width: 140,
-      height: 68,
+      width: 134,
+      height: 62,
       label: "Pulse",
       onClick: () => this.castPulse(),
       depth: 15,
       accentColor: 0x166b8c,
     });
+    this.pulseButton.container.setScrollFactor(0);
 
     this.arcButton = createMenuButton({
       scene: this,
       x: 930,
-      y: 480,
-      width: 128,
-      height: 56,
+      y: 486,
+      width: 126,
+      height: 54,
       label: "Arc",
       onClick: () => this.castArcLance(),
       depth: 15,
       accentColor: 0x7a5f1d,
     });
+    this.arcButton.container.setScrollFactor(0);
 
     this.dashButton = createMenuButton({
       scene: this,
       x: 1046,
-      y: 406,
-      width: 124,
-      height: 56,
+      y: 414,
+      width: 122,
+      height: 54,
       label: "Dash",
       onClick: () => this.tryDash(),
       depth: 15,
       accentColor: 0x63408f,
     });
+    this.dashButton.container.setScrollFactor(0);
   }
 
   private createResultPanel(): void {
-    const background = this.add.rectangle(640, 360, 620, 360, 0x08111c, 0.98)
+    const background = this.pin(this.add.rectangle(640, 360, 620, 360, 0x08111c, 0.98)
       .setStrokeStyle(3, 0x79abed, 0.85)
-      .setDepth(40);
+      .setDepth(40));
 
-    const title = this.add.text(410, 214, "Mission Complete", {
+    const title = this.pin(this.add.text(410, 214, "Mission Complete", {
       fontFamily: "Arial",
       fontSize: "30px",
       color: "#f7fbff",
       fontStyle: "bold",
-    }).setDepth(41);
+    }).setDepth(41));
 
-    const body = this.add.text(410, 278, "", {
+    const body = this.pin(this.add.text(410, 278, "", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#d7e8ff",
       lineSpacing: 8,
       wordWrap: { width: 460 },
-    }).setDepth(41);
+    }).setDepth(41));
 
     const returnButton = createMenuButton({
       scene: this,
@@ -371,6 +451,7 @@ export class MissionScene extends Phaser.Scene {
       depth: 41,
       accentColor: 0x1c4f7f,
     });
+    returnButton.container.setScrollFactor(0);
 
     this.resultPanel = this.add.container(0, 0, [
       background,
@@ -379,6 +460,7 @@ export class MissionScene extends Phaser.Scene {
       returnButton.container,
     ]).setDepth(40);
 
+    this.resultPanel.setScrollFactor(0);
     this.resultPanel.setVisible(false);
     this.resultPanel.setDataEnabled();
     this.resultPanel.data?.set("body", body);
@@ -415,7 +497,7 @@ export class MissionScene extends Phaser.Scene {
 
   private bindPointers(): void {
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      if (this.missionComplete) {
+      if (this.missionComplete || this.transitioningStage) {
         return;
       }
 
@@ -485,66 +567,175 @@ export class MissionScene extends Phaser.Scene {
       this.fireHeld = false;
     });
   }
-
-  private spawnRoom(index: number): void {
-    this.roomIndex = index;
-    this.roomCleared = false;
+  private loadStage(index: number): void {
+    this.stageIndex = index;
+    this.currentStage = this.mission.stages[index];
+    this.stageCleared = this.currentStage.type === "rest";
+    this.bossTriggered = false;
+    this.transitioningStage = false;
+    this.restHealed = false;
+    this.supplyHintShown = false;
     this.clearBullets();
     this.clearEnemies();
-    this.advanceButton?.container.setVisible(false);
-    this.messageText.setText(this.mission.rooms[index].flavor);
-    this.roomText.setText(`Room ${index + 1}/${this.mission.rooms.length}: ${this.mission.rooms[index].name}`);
+    this.clearStageObjects();
+    this.restStations = undefined;
+    this.exitDoor = undefined;
+    this.messageText.setText(this.currentStage.flavor);
+
+    const isRest = this.currentStage.type === "rest";
+    const width = this.currentStage.width;
+    this.playArea = cloneRect(isRest ? BASE_REST_BOUNDS : BASE_STAGE_BOUNDS);
+    this.playArea.setPosition(isRest ? 120 : 110, isRest ? 146 : 174);
+    this.playArea.width = width - (isRest ? 240 : 220);
+
+    this.cameras.main.stopFollow();
+    this.cameras.main.setBounds(0, 0, width, GAME_HEIGHT);
+    this.cameras.main.setScroll(0, 0);
+
+    this.buildStageLayout(this.currentStage);
+    this.player.setPosition(this.playArea.x + 90, this.playArea.centerY);
+    this.player.setAlpha(1);
+    this.companion.setPosition(this.player.x - 48, this.player.y + 38);
+    this.lookPoint.set(this.player.x + 180, this.player.y);
 
     this.progressDots.forEach((dot, dotIndex) => {
       dot.setFillStyle(dotIndex < index ? 0x79abed : dotIndex === index ? 0xffd36d : 0x29425f, 1);
     });
+    this.titleText.setText(this.mission.title);
+    this.objectiveText.setText(this.mission.objective);
+    this.stageText.setText(`Stage ${index + 1}/${this.mission.stages.length}: ${this.currentStage.name}`);
 
-    const room = this.mission.rooms[index];
-    if (room.enemies) {
-      room.enemies.forEach((group) => {
-        for (let i = 0; i < group.count; i += 1) {
-          this.spawnEnemy(group.kind);
-        }
-      });
+    if (this.currentStage.type === "hallway") {
+      this.setupHallway(this.currentStage);
+    } else if (this.currentStage.type === "rest") {
+      this.setupRestRoom(this.currentStage);
+    } else {
+      this.setupBossRoom(this.currentStage);
     }
 
-    if (room.boss) {
-      this.spawnEnemy("boss");
-    }
+    this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
   }
 
-  private spawnEnemy(kind: EnemyKind): void {
-    const position = new Phaser.Math.Vector2(
-      Phaser.Math.Between(ARENA.x + 220, ARENA.right - 110),
-      Phaser.Math.Between(ARENA.y + 70, ARENA.bottom - 70),
-    );
+  private buildStageLayout(stage: MissionStage): void {
+    const base = this.add.rectangle(stage.width / 2, GAME_HEIGHT / 2, stage.width, GAME_HEIGHT, 0x070d16).setDepth(-14);
+    this.stageObjects.push(base);
 
-    const config = kind === "rusher"
-      ? { color: 0xdd5f6f, hp: 54, radius: 18, speed: 142 }
-      : kind === "shooter"
-        ? { color: 0xf4b566, hp: 40, radius: 16, speed: 112 }
-        : { color: 0x9f68ff, hp: 290, radius: 32, speed: 88 };
+    const stars = this.add.graphics().setDepth(-13);
+    stars.fillStyle(0xc6ddff, 0.9);
+    for (let i = 0; i < Math.max(20, Math.floor(stage.width / 28)); i += 1) {
+      stars.fillCircle(
+        Phaser.Math.Between(18, stage.width - 18),
+        Phaser.Math.Between(16, GAME_HEIGHT - 16),
+        Phaser.Math.FloatBetween(0.8, 2),
+      );
+    }
+    this.stageObjects.push(stars);
 
-    const sprite = this.add.circle(position.x, position.y, config.radius, config.color).setDepth(9);
-    sprite.setStrokeStyle(4, 0xffecf2, 0.7);
+    const upperWall = this.add.rectangle(stage.width / 2, this.playArea.y - 42, stage.width - 100, 120, 0x0b1523, 0.98)
+      .setDepth(-10);
+    const lowerWall = this.add.rectangle(stage.width / 2, this.playArea.bottom + 42, stage.width - 100, 120, 0x0b1523, 0.98)
+      .setDepth(-10);
+    const floor = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x121f34, 0.98)
+      .setStrokeStyle(4, 0x78abed, 0.82)
+      .setDepth(-8);
+    this.stageObjects.push(upperWall, lowerWall, floor);
 
-    this.enemies.push({
-      kind,
-      sprite,
-      hp: config.hp,
-      maxHp: config.hp,
-      radius: config.radius,
-      speed: config.speed,
-      attackCooldown: Phaser.Math.FloatBetween(0.4, 1.1),
-      specialCooldown: kind === "boss" ? 2.2 : 0,
-      damageFlash: 0,
-      stateTimer: 0,
+    for (let lineX = this.playArea.x + 160; lineX < this.playArea.right - 120; lineX += 240) {
+      const line = this.add.rectangle(lineX, this.playArea.centerY, 14, this.playArea.height - 44, 0x1c304a, 0.6).setDepth(-7);
+      this.stageObjects.push(line);
+    }
+
+    const startDoorX = this.playArea.x + 26;
+    const exitDoorX = this.playArea.right - 26;
+
+    const startGlow = this.add.rectangle(startDoorX, this.playArea.centerY, 76, 148, 0x56c8ff, 0.14).setDepth(-6);
+    const startDoor = this.add.rectangle(startDoorX, this.playArea.centerY, 50, 134, 0x20486a, 0.96)
+      .setStrokeStyle(3, 0x8be4ff, 0.72)
+      .setDepth(-5);
+    this.stageObjects.push(startGlow, startDoor);
+
+    const doorGlow = this.add.rectangle(exitDoorX, this.playArea.centerY, 76, 148, 0xffcb68, 0.08).setDepth(2);
+    const doorFrame = this.add.rectangle(exitDoorX, this.playArea.centerY, 50, 134, 0x473113, 0.94)
+      .setStrokeStyle(3, 0xffcb68, 0.5)
+      .setDepth(3);
+    const doorLabel = this.add.text(exitDoorX - 58, this.playArea.y - 28, "Locked", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#efd8b0",
+      fontStyle: "bold",
+    }).setDepth(4);
+    this.stageObjects.push(doorGlow, doorFrame, doorLabel);
+
+    this.exitDoor = {
+      glow: doorGlow,
+      frame: doorFrame,
+      label: doorLabel,
+      open: false,
+      extraction: stage.type === "boss",
+    };
+
+    this.setExitDoorOpen(stage.type === "rest", stage.type === "rest" ? "Ready" : "Locked");
+  }
+
+  private setupHallway(stage: HallwayStage): void {
+    this.hallwayZones = stage.zones.map((zone) => {
+      const marker = this.add.rectangle(zone.triggerX, this.playArea.centerY, 10, this.playArea.height - 36, 0x6fa8ef, 0.16)
+        .setDepth(-6);
+      this.stageObjects.push(marker);
+      return { data: zone, activated: false, marker };
     });
   }
 
+  private setupRestRoom(_stage: RestStage): void {
+    const healPad = this.add.rectangle(this.playArea.centerX - 160, this.playArea.centerY, 134, 134, 0x173c2c, 0.94)
+      .setStrokeStyle(3, 0x7ff3b1, 0.86)
+      .setDepth(2);
+    const healText = this.add.text(healPad.x, healPad.y - 10, "Med Bay", {
+      fontFamily: "Arial",
+      fontSize: "22px",
+      color: "#f4fff7",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(3);
+    const healHint = this.add.text(healPad.x, healPad.y + 22, "Step in to heal", {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#c5f3d6",
+    }).setOrigin(0.5).setDepth(3);
+
+    const supplyPad = this.add.rectangle(this.playArea.centerX + 160, this.playArea.centerY, 134, 134, 0x3b2d18, 0.94)
+      .setStrokeStyle(3, 0xffd36d, 0.86)
+      .setDepth(2);
+    const supplyText = this.add.text(supplyPad.x, supplyPad.y - 10, "Supply Locker", {
+      fontFamily: "Arial",
+      fontSize: "22px",
+      color: "#fff8e9",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(3);
+    const supplyHint = this.add.text(supplyPad.x, supplyPad.y + 22, "Ammo system later", {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#f4dfab",
+    }).setOrigin(0.5).setDepth(3);
+
+    this.stageObjects.push(healPad, healText, healHint, supplyPad, supplyText, supplyHint);
+    this.restStations = {
+      healPad,
+      healText,
+      supplyPad,
+      supplyText,
+    };
+    this.messageText.setText("Rest room secured. Heal up, check supplies, then move through the next door.");
+  }
+
+  private setupBossRoom(stage: BossStage): void {
+    const triggerMarker = this.add.rectangle(stage.triggerX, this.playArea.centerY, 12, this.playArea.height - 36, 0xc8a7ff, 0.2)
+      .setDepth(-6);
+    this.stageObjects.push(triggerMarker);
+    this.messageText.setText("Advance into the relay heart. The brute should wake once you cross the core threshold.");
+  }
   private updateKeyboardVector(): void {
     this.keyboardVector.set(0, 0);
-    if (!this.moveKeys || this.missionComplete) {
+    if (!this.moveKeys || this.missionComplete || this.transitioningStage) {
       return;
     }
 
@@ -567,16 +758,14 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateMovement(dt: number): void {
-    if (this.missionComplete) {
+    if (this.missionComplete || this.transitioningStage) {
       return;
     }
 
     const movement = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
-    this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * MOVE_SPEED * dt, ARENA.x + 20, ARENA.right - 20);
-    this.player.y = Phaser.Math.Clamp(this.player.y + movement.y * MOVE_SPEED * dt, ARENA.y + 20, ARENA.bottom - 20);
-
-    const alpha = this.playerInvuln > 0 ? 0.6 : 1;
-    this.player.setAlpha(alpha);
+    this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * MOVE_SPEED * dt, this.playArea.x + 20, this.playArea.right - 20);
+    this.player.y = Phaser.Math.Clamp(this.player.y + movement.y * MOVE_SPEED * dt, this.playArea.y + 20, this.playArea.bottom - 20);
+    this.player.setAlpha(this.playerInvuln > 0 ? 0.6 : 1);
   }
 
   private updateFacing(): void {
@@ -604,7 +793,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private handleFiring(): void {
-    if (this.missionComplete || this.roomCleared || this.fireCooldown > 0) {
+    if (this.missionComplete || this.transitioningStage || this.currentStage?.type === "rest" || this.fireCooldown > 0) {
       return;
     }
 
@@ -625,86 +814,113 @@ export class MissionScene extends Phaser.Scene {
     this.companion.x = Phaser.Math.Linear(this.companion.x, desiredX, smoothing);
     this.companion.y = Phaser.Math.Linear(this.companion.y, desiredY, smoothing);
 
-    const target = this.getNearestEnemy(this.companion.x, this.companion.y, 280);
-    if (!target || this.companionCooldown > 0 || this.roomCleared) {
+    const target = this.getNearestEnemy(this.companion.x, this.companion.y, 340);
+    if (!target || this.companionCooldown > 0 || this.currentStage?.type === "rest") {
       return;
     }
 
-    this.companionCooldown = 0.65;
+    this.companionCooldown = 0.62;
     const direction = new Phaser.Math.Vector2(target.sprite.x - this.companion.x, target.sprite.y - this.companion.y).normalize();
     this.spawnBullet(this.companion.x, this.companion.y, direction, 440, 10, 5, "companion", 0xffd779);
   }
 
   private updateEnemies(dt: number): void {
-    this.enemies = this.enemies.filter((enemy) => enemy.hp > 0);
+    const stageIntensity = 1 + this.stageIndex * 0.08;
 
     this.enemies.forEach((enemy) => {
       enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
       enemy.specialCooldown = Math.max(0, enemy.specialCooldown - dt);
+      enemy.chargeTimer = Math.max(0, enemy.chargeTimer - dt);
       enemy.damageFlash = Math.max(0, enemy.damageFlash - dt * 6);
+      enemy.stateTimer += dt;
 
-      enemy.sprite.setFillStyle(
-        enemy.kind === "rusher" ? 0xdd5f6f : enemy.kind === "shooter" ? 0xf4b566 : 0x9f68ff,
-        enemy.damageFlash > 0 ? 0.45 : 1,
-      );
+      enemy.aura.setPosition(enemy.sprite.x, enemy.sprite.y);
+      enemy.aura.setScale(enemy.damageFlash > 0 ? 1.22 : 1, enemy.damageFlash > 0 ? 1.22 : 1);
+      enemy.aura.setAlpha(enemy.damageFlash > 0 ? 0.4 : 0.26);
+      enemy.sprite.setFillStyle(0x050608, enemy.damageFlash > 0 && gameSession.settings.graphics.hitFlash ? 0.5 : 1);
 
       const toPlayer = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - enemy.sprite.y);
       const distance = toPlayer.length();
       const direction = distance > 0 ? toPlayer.normalize() : new Phaser.Math.Vector2(1, 0);
+      const perpendicular = new Phaser.Math.Vector2(-direction.y, direction.x);
 
       if (enemy.kind === "rusher") {
-        enemy.sprite.x += direction.x * enemy.speed * dt;
-        enemy.sprite.y += direction.y * enemy.speed * dt;
-
-        if (distance < enemy.radius + 24 && enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 1;
-          this.damagePlayer(11);
+        if (enemy.specialCooldown <= 0 && distance > 120 && distance < 360) {
+          enemy.specialCooldown = 2.6;
+          enemy.chargeTimer = 0.45;
         }
-        return;
-      }
 
-      if (enemy.kind === "shooter") {
-        const desiredRange = 220;
-        const moveDir = distance > desiredRange ? direction : distance < 150 ? direction.clone().scale(-1) : new Phaser.Math.Vector2(0, 0);
-        enemy.sprite.x += moveDir.x * enemy.speed * dt;
-        enemy.sprite.y += moveDir.y * enemy.speed * dt;
+        const weave = perpendicular.scale(Math.sin(enemy.stateTimer * 5.6) * 0.35);
+        const move = direction.clone().scale(enemy.chargeTimer > 0 ? 1.9 : 1).add(weave).normalize();
+        enemy.sprite.x += move.x * enemy.speed * dt;
+        enemy.sprite.y += move.y * enemy.speed * dt;
+
+        if (distance < enemy.radius + 26 && enemy.attackCooldown <= 0) {
+          enemy.attackCooldown = 0.9;
+          this.damagePlayer(11 + Math.floor(this.stageIndex * 1.5));
+        }
+      } else if (enemy.kind === "shooter") {
+        const desiredRange = 270;
+        if (enemy.stateTimer > 1.4) {
+          enemy.stateTimer = 0;
+          enemy.strafeDir = enemy.strafeDir === 1 ? -1 : 1;
+        }
+
+        const rangeMove = distance > desiredRange + 40
+          ? direction
+          : distance < desiredRange - 70
+            ? direction.clone().scale(-1)
+            : new Phaser.Math.Vector2(0, 0);
+        const strafe = perpendicular.scale(enemy.strafeDir * 0.9);
+        const move = rangeMove.add(strafe).normalize();
+
+        if (move.lengthSq() > 0) {
+          enemy.sprite.x += move.x * enemy.speed * dt;
+          enemy.sprite.y += move.y * enemy.speed * dt;
+        }
 
         if (enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 1.4;
-          this.spawnBullet(enemy.sprite.x, enemy.sprite.y, direction, 260, 9, 6, "enemy", 0xff7f9c);
+          enemy.attackCooldown = 1.2;
+          this.spawnBullet(enemy.sprite.x, enemy.sprite.y, direction, 280 + stageIntensity * 10, 9 + this.stageIndex, 6, "enemy", enemy.roleColor);
         }
-        return;
-      }
+      } else {
+        if (!enemy.spawnedAdds && enemy.hp < enemy.maxHp * 0.52) {
+          enemy.spawnedAdds = true;
+          this.spawnEnemy("rusher", enemy.sprite.x - 120, enemy.sprite.y - 40);
+          this.spawnEnemy("rusher", enemy.sprite.x - 120, enemy.sprite.y + 40);
+          this.spawnEnemy("shooter", enemy.sprite.x + 90, enemy.sprite.y);
+          this.messageText.setText("The brute tears open fresh shadow spawn as it weakens.");
+        }
 
-      enemy.stateTimer += dt;
-      enemy.sprite.x += direction.x * enemy.speed * dt;
-      enemy.sprite.y += direction.y * enemy.speed * dt;
+        if (enemy.specialCooldown <= 0) {
+          enemy.specialCooldown = enemy.hp < enemy.maxHp * 0.5 ? 1.8 : 2.6;
+          const burstCount = enemy.hp < enemy.maxHp * 0.5 ? 10 : 8;
+          for (let burst = 0; burst < burstCount; burst += 1) {
+            const angle = (Math.PI * 2 * burst) / burstCount;
+            const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
+            this.spawnBullet(enemy.sprite.x, enemy.sprite.y, vector, 230, 9, 7, "enemy", 0xc8a7ff);
+          }
+        }
 
-      if (distance < enemy.radius + 28 && enemy.attackCooldown <= 0) {
-        enemy.attackCooldown = 1;
-        this.damagePlayer(16);
-      }
+        if (enemy.attackCooldown <= 0) {
+          enemy.attackCooldown = 1.6;
+          enemy.chargeTimer = 0.42;
+        }
 
-      if (enemy.specialCooldown <= 0) {
-        enemy.specialCooldown = enemy.hp < enemy.maxHp * 0.5 ? 1.8 : 2.6;
-        const burstCount = enemy.hp < enemy.maxHp * 0.5 ? 10 : 8;
-        for (let burst = 0; burst < burstCount; burst += 1) {
-          const angle = (Math.PI * 2 * burst) / burstCount;
-          const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
-          this.spawnBullet(enemy.sprite.x, enemy.sprite.y, vector, 210, 8, 7, "enemy", 0xc8a7ff);
+        const move = direction.clone().scale(enemy.chargeTimer > 0 ? 1.75 : 0.92).add(perpendicular.scale(Math.sin(enemy.stateTimer * 2.8) * 0.25)).normalize();
+        enemy.sprite.x += move.x * enemy.speed * dt;
+        enemy.sprite.y += move.y * enemy.speed * dt;
+
+        if (distance < enemy.radius + 30 && enemy.attackCooldown > 0.9) {
+          this.damagePlayer(17 + this.stageIndex * 2);
+          enemy.attackCooldown = 0.75;
         }
       }
+
+      enemy.sprite.x = Phaser.Math.Clamp(enemy.sprite.x, this.playArea.x + enemy.radius, this.playArea.right - enemy.radius);
+      enemy.sprite.y = Phaser.Math.Clamp(enemy.sprite.y, this.playArea.y + enemy.radius, this.playArea.bottom - enemy.radius);
+      enemy.aura.setPosition(enemy.sprite.x, enemy.sprite.y);
     });
-
-    if (this.bossFrame && this.bossFill) {
-      const boss = this.enemies.find((enemy) => enemy.kind === "boss");
-      const visible = Boolean(boss);
-      this.bossFrame.setVisible(visible);
-      this.bossFill.setVisible(visible);
-      if (boss) {
-        this.bossFill.width = 320 * (boss.hp / boss.maxHp);
-      }
-    }
   }
 
   private updateBullets(dt: number): void {
@@ -714,7 +930,7 @@ export class MissionScene extends Phaser.Scene {
       bullet.sprite.x += bullet.velocity.x * dt;
       bullet.sprite.y += bullet.velocity.y * dt;
 
-      if (!ARENA.contains(bullet.sprite.x, bullet.sprite.y) || bullet.life <= 0) {
+      if (!this.playArea.contains(bullet.sprite.x, bullet.sprite.y) || bullet.life <= 0) {
         bullet.sprite.destroy();
         this.bullets.splice(index, 1);
         continue;
@@ -730,8 +946,8 @@ export class MissionScene extends Phaser.Scene {
       }
 
       let hit = false;
-      this.enemies.forEach((enemy) => {
-        if (hit || enemy.hp <= 0) {
+      this.enemies.slice().forEach((enemy) => {
+        if (hit) {
           return;
         }
 
@@ -740,13 +956,8 @@ export class MissionScene extends Phaser.Scene {
           return;
         }
 
-        enemy.hp -= bullet.damage;
-        enemy.damageFlash = 0.25;
+        this.damageEnemy(enemy, bullet.damage);
         hit = true;
-
-        if (enemy.hp <= 0) {
-          enemy.sprite.destroy();
-        }
       });
 
       if (hit) {
@@ -756,50 +967,122 @@ export class MissionScene extends Phaser.Scene {
     }
   }
 
-  private updateRoomState(): void {
-    if (this.missionComplete) {
+  private updateStageState(): void {
+    if (!this.currentStage || this.missionComplete || this.transitioningStage) {
       return;
     }
 
-    const enemiesAlive = this.enemies.some((enemy) => enemy.hp > 0);
-    if (enemiesAlive || this.roomCleared) {
+    if (this.currentStage.type === "hallway") {
+      this.updateHallwayState();
+    } else if (this.currentStage.type === "rest") {
+      this.updateRestState();
+    } else {
+      this.updateBossState();
+    }
+
+    this.handleExitDoor();
+  }
+
+  private updateHallwayState(): void {
+    const nextZone = this.hallwayZones.find((zone) => !zone.activated);
+    if (nextZone && this.player.x >= nextZone.data.triggerX) {
+      this.activateHallwayZone(nextZone);
+    }
+
+    if (!this.stageCleared && this.hallwayZones.every((zone) => zone.activated) && this.enemies.length === 0) {
+      this.stageCleared = true;
+      this.setExitDoorOpen(true, "Door Open");
+      this.messageText.setText("Hallway secure. Push through the next door.");
+      this.progressDots[this.stageIndex].setFillStyle(0x79abed, 1);
+    }
+  }
+
+  private updateRestState(): void {
+    if (!this.restStations) {
       return;
     }
 
-    this.roomCleared = true;
-    this.progressDots[this.roomIndex].setFillStyle(0x79abed, 1);
+    if (!this.restHealed && this.restStations.healPad.getBounds().contains(this.player.x, this.player.y)) {
+      this.restHealed = true;
+      this.playerHp = this.playerMaxHp;
+      this.messageText.setText("Vital Light restored. Push on when ready.");
+      this.restStations.healText.setText("Med Bay\nRecharged");
+    }
 
-    if (!this.advanceButton) {
-      this.advanceButton = createMenuButton({
-        scene: this,
-        x: 640,
-        y: 606,
-        width: 190,
-        height: 44,
-        label: "Advance",
-        onClick: () => undefined,
-        depth: 16,
-        accentColor: 0x1a4a78,
+    if (!this.supplyHintShown && this.restStations.supplyPad.getBounds().contains(this.player.x, this.player.y)) {
+      this.supplyHintShown = true;
+      this.messageText.setText("Ammo economy is queued for a later milestone. The locker is here as a future hook.");
+      this.restStations.supplyText.setText("Supply Locker\nAmmo later");
+    }
+  }
+
+  private updateBossState(): void {
+    const stage = this.currentStage as BossStage;
+    if (!this.bossTriggered && this.player.x >= stage.triggerX) {
+      this.bossTriggered = true;
+      this.messageText.setText("The brute wakes. Break it and extract.");
+      this.spawnEnemy("boss", this.playArea.right - 220, this.playArea.centerY);
+      stage.adds?.forEach((group) => {
+        for (let i = 0; i < group.count; i += 1) {
+          this.spawnEnemy(group.kind, this.playArea.right - 380 + i * 34, this.playArea.centerY + Phaser.Math.Between(-90, 90));
+        }
       });
-      this.advanceButton.container.setVisible(false);
     }
 
-    if (this.roomIndex < this.mission.rooms.length - 1) {
-      this.messageText.setText("Room secure. Advance when ready.");
-      this.advanceButton.setLabel("Advance");
-      this.advanceButton.setEnabled(true);
-      this.advanceButton.setOnClick(() => this.spawnRoom(this.roomIndex + 1));
-      this.advanceButton.container.setVisible(true);
+    if (this.bossTriggered && !this.stageCleared && this.enemies.length === 0) {
+      this.stageCleared = true;
+      this.setExitDoorOpen(true, "Extract");
+      this.messageText.setText("Relay heart broken. Move through the extraction door.");
+      this.progressDots[this.stageIndex].setFillStyle(0x79abed, 1);
+    }
+  }
+
+  private activateHallwayZone(zone: HallwayZoneRuntime): void {
+    zone.activated = true;
+    zone.marker.setFillStyle(0x6fa8ef, 0.04);
+    this.messageText.setText(zone.data.flavor);
+    zone.data.enemies.forEach((group) => {
+      for (let i = 0; i < group.count; i += 1) {
+        this.spawnEnemy(group.kind, zone.data.triggerX + Phaser.Math.Between(140, 360), this.playArea.centerY + Phaser.Math.Between(-110, 110));
+      }
+    });
+  }
+
+  private handleExitDoor(): void {
+    if (!this.exitDoor?.open) {
+      return;
+    }
+
+    const doorBounds = this.exitDoor.frame.getBounds();
+    if (!doorBounds.contains(this.player.x, this.player.y)) {
+      return;
+    }
+
+    if (this.stageIndex < this.mission.stages.length - 1) {
+      this.transitionToStage(this.stageIndex + 1);
       return;
     }
 
     this.finishMission();
   }
 
+  private transitionToStage(nextStageIndex: number): void {
+    if (this.transitioningStage) {
+      return;
+    }
+
+    this.transitioningStage = true;
+    this.cameras.main.fadeOut(180, 8, 12, 18);
+    this.time.delayedCall(180, () => {
+      this.cameras.main.fadeIn(180, 8, 12, 18);
+      this.loadStage(nextStageIndex);
+    });
+  }
+
   private finishMission(): void {
     this.missionComplete = true;
-    this.messageText.setText("Relay secure. Mission complete.");
-    this.advanceButton?.container.setVisible(false);
+    this.messageText.setText("Relay secure. Extraction confirmed.");
+    this.setExitDoorOpen(false, "Complete");
 
     const body = this.resultPanel?.data?.get("body") as Phaser.GameObjects.Text | undefined;
     body?.setText([
@@ -809,11 +1092,52 @@ export class MissionScene extends Phaser.Scene {
       `Credits: +${this.mission.reward.credits}`,
       `Recovered Item: ${this.mission.reward.item}`,
       "",
-      "Return to the command deck to save, regroup, and queue the next build chunk.",
+      "Return to the command deck to save, regroup, and queue the next contract.",
     ]);
     this.resultPanel?.setVisible(true);
   }
 
+  private spawnEnemy(kind: EnemyKind, preferredX?: number, preferredY?: number): void {
+    const stageIntensity = 1 + this.stageIndex * 0.09;
+    const config = kind === "rusher"
+      ? { color: 0xff6b7d, hp: 60, radius: 18, speed: 150 }
+      : kind === "shooter"
+        ? { color: 0xffc86d, hp: 46, radius: 16, speed: 118 }
+        : { color: 0xba84ff, hp: 360, radius: 34, speed: 92 };
+
+    const spawnX = Phaser.Math.Clamp(
+      preferredX ?? Phaser.Math.Between(this.playArea.x + 240, this.playArea.right - 120),
+      this.playArea.x + config.radius,
+      this.playArea.right - config.radius,
+    );
+    const spawnY = Phaser.Math.Clamp(
+      preferredY ?? Phaser.Math.Between(this.playArea.y + 70, this.playArea.bottom - 70),
+      this.playArea.y + config.radius,
+      this.playArea.bottom - config.radius,
+    );
+
+    const aura = this.add.circle(spawnX, spawnY, config.radius + 8, config.color, 0.26).setDepth(8);
+    const sprite = this.add.circle(spawnX, spawnY, config.radius, 0x050608).setDepth(9);
+    sprite.setStrokeStyle(4, config.color, 0.92);
+
+    this.enemies.push({
+      kind,
+      sprite,
+      aura,
+      hp: Math.round(config.hp * stageIntensity),
+      maxHp: Math.round(config.hp * stageIntensity),
+      radius: config.radius,
+      speed: config.speed * Math.min(stageIntensity, 1.35),
+      attackCooldown: Phaser.Math.FloatBetween(0.45, 1.05),
+      specialCooldown: kind === "boss" ? 1.9 : 1.4,
+      chargeTimer: 0,
+      damageFlash: 0,
+      stateTimer: 0,
+      roleColor: config.color,
+      strafeDir: Phaser.Math.Between(0, 1) === 0 ? -1 : 1,
+      spawnedAdds: false,
+    });
+  }
   private spawnBullet(
     x: number,
     y: number,
@@ -828,7 +1152,7 @@ export class MissionScene extends Phaser.Scene {
     this.bullets.push({
       sprite: bullet,
       velocity: direction.clone().normalize().scale(speed),
-      life: 1.4,
+      life: 1.5,
       damage,
       radius,
       owner,
@@ -836,7 +1160,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private castPulse(): void {
-    if (this.pulseCooldown > 0 || this.missionComplete) {
+    if (this.pulseCooldown > 0 || this.missionComplete || this.currentStage?.type === "rest") {
       return;
     }
 
@@ -854,23 +1178,22 @@ export class MissionScene extends Phaser.Scene {
       onComplete: () => ring.destroy(),
     });
 
-    this.enemies.forEach((enemy) => {
+    this.enemies.slice().forEach((enemy) => {
       const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, enemy.sprite.x, enemy.sprite.y);
       if (distance <= 170) {
-        enemy.hp -= 28;
-        enemy.damageFlash = 0.3;
+        this.damageEnemy(enemy, 28);
       }
     });
   }
 
   private castArcLance(): void {
-    if (this.arcCooldown > 0 || this.missionComplete) {
+    if (this.arcCooldown > 0 || this.missionComplete || this.currentStage?.type === "rest") {
       return;
     }
 
     this.arcCooldown = 4.5;
     const direction = new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y).normalize();
-    const beam = this.add.rectangle(this.player.x, this.player.y, 220, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
+    const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
     beam.setRotation(direction.angle());
     this.tweens.add({
       targets: beam,
@@ -879,19 +1202,18 @@ export class MissionScene extends Phaser.Scene {
       onComplete: () => beam.destroy(),
     });
 
-    this.enemies.forEach((enemy) => {
+    this.enemies.slice().forEach((enemy) => {
       const toEnemy = new Phaser.Math.Vector2(enemy.sprite.x - this.player.x, enemy.sprite.y - this.player.y);
       const distanceAlong = toEnemy.dot(direction);
       const lateral = Math.abs(toEnemy.cross(direction));
-      if (distanceAlong >= 0 && distanceAlong <= 230 && lateral <= 34) {
-        enemy.hp -= 40;
-        enemy.damageFlash = 0.35;
+      if (distanceAlong >= 0 && distanceAlong <= 250 && lateral <= 38) {
+        this.damageEnemy(enemy, 40);
       }
     });
   }
 
   private tryDash(): void {
-    if (this.dashCooldown > 0 || this.missionComplete) {
+    if (this.dashCooldown > 0 || this.missionComplete || this.transitioningStage) {
       return;
     }
 
@@ -910,8 +1232,8 @@ export class MissionScene extends Phaser.Scene {
       direction.normalize();
     }
 
-    this.player.x = Phaser.Math.Clamp(this.player.x + direction.x * DASH_DISTANCE, ARENA.x + 18, ARENA.right - 18);
-    this.player.y = Phaser.Math.Clamp(this.player.y + direction.y * DASH_DISTANCE, ARENA.y + 18, ARENA.bottom - 18);
+    this.player.x = Phaser.Math.Clamp(this.player.x + direction.x * DASH_DISTANCE, this.playArea.x + 18, this.playArea.right - 18);
+    this.player.y = Phaser.Math.Clamp(this.player.y + direction.y * DASH_DISTANCE, this.playArea.y + 18, this.playArea.bottom - 18);
     this.playerInvuln = 0.22;
   }
 
@@ -930,36 +1252,54 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.scene.start("hub");
+    this.scene.start("mission", { missionId: this.mission.id });
+  }
+
+  private damageEnemy(enemy: Enemy, amount: number): void {
+    if (!this.enemies.includes(enemy)) {
+      return;
+    }
+
+    enemy.hp -= amount;
+    enemy.damageFlash = 0.28;
+    if (enemy.hp > 0) {
+      return;
+    }
+
+    enemy.sprite.destroy();
+    enemy.aura.destroy();
+    this.enemies = this.enemies.filter((entry) => entry !== enemy);
   }
 
   private updateHudState(): void {
     this.hpFill.width = 160 * (this.playerHp / this.playerMaxHp);
 
     const boss = this.enemies.find((enemy) => enemy.kind === "boss");
-    if (boss && !this.bossFrame && !this.bossFill) {
-      this.bossFrame = this.add.rectangle(956, 88, 328, 18, 0x08111c, 0.96)
-        .setStrokeStyle(2, 0xc8a7ff, 0.84)
-        .setOrigin(0.5);
-      this.bossFill = this.add.rectangle(792, 88, 320, 10, 0x9f68ff, 0.95)
-        .setOrigin(0, 0.5);
-      this.add.text(794, 72, "Shard Bruiser", {
-        fontFamily: "Arial",
-        fontSize: "14px",
-        color: "#eadfff",
-      });
+    const bossVisible = Boolean(boss);
+    this.bossFrame.setVisible(bossVisible);
+    this.bossFill.setVisible(bossVisible);
+    this.bossTitle.setVisible(bossVisible);
+    if (boss) {
+      this.bossFill.width = 242 * (boss.hp / boss.maxHp);
     }
 
-    const pulseText = this.pulseCooldown <= 0 ? "Pulse ready" : `Pulse ${this.pulseCooldown.toFixed(1)}s`;
-    const arcText = this.arcCooldown <= 0 ? "Arc ready" : `Arc ${this.arcCooldown.toFixed(1)}s`;
-    const dashText = this.dashCooldown <= 0 ? "Dash ready" : `Dash ${this.dashCooldown.toFixed(1)}s`;
-    if (!this.roomCleared) {
-      this.messageText.setText(`${pulseText} • ${arcText} • ${dashText}`);
+    if (this.toolbarCards) {
+      this.toolbarCards.fire.detail.setText("Mouse Hold");
+      this.toolbarCards.pulse.detail.setText(this.pulseCooldown <= 0 ? "Q | Ready" : `Q | ${this.pulseCooldown.toFixed(1)}s`);
+      this.toolbarCards.arc.detail.setText(this.arcCooldown <= 0 ? "E | Ready" : `E | ${this.arcCooldown.toFixed(1)}s`);
+      this.toolbarCards.dash.detail.setText(this.dashCooldown <= 0 ? "Shift / RMB | Ready" : `Shift | ${this.dashCooldown.toFixed(1)}s`);
+      this.setAbilityCardColor(this.toolbarCards.pulse, this.pulseCooldown <= 0 ? 0x144d6a : 0x17314f);
+      this.setAbilityCardColor(this.toolbarCards.arc, this.arcCooldown <= 0 ? 0x5a4617 : 0x17314f);
+      this.setAbilityCardColor(this.toolbarCards.dash, this.dashCooldown <= 0 ? 0x4a3370 : 0x17314f);
     }
 
     this.pulseButton?.setLabel(this.pulseCooldown <= 0 ? "Pulse" : `Pulse ${this.pulseCooldown.toFixed(0)}`);
     this.arcButton?.setLabel(this.arcCooldown <= 0 ? "Arc" : `Arc ${this.arcCooldown.toFixed(0)}`);
     this.dashButton?.setLabel(this.dashCooldown <= 0 ? "Dash" : `Dash ${this.dashCooldown.toFixed(0)}`);
+  }
+
+  private setAbilityCardColor(card: AbilityCard, color: number): void {
+    card.frame.setFillStyle(color, 0.94);
   }
 
   private openPauseMenu(): void {
@@ -975,8 +1315,7 @@ export class MissionScene extends Phaser.Scene {
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
       || this.pulseButton?.container.getBounds().contains(pointer.x, pointer.y)
       || this.arcButton?.container.getBounds().contains(pointer.x, pointer.y)
-      || this.dashButton?.container.getBounds().contains(pointer.x, pointer.y)
-      || (this.advanceButton?.container.visible && this.advanceButton.container.getBounds().contains(pointer.x, pointer.y)),
+      || this.dashButton?.container.getBounds().contains(pointer.x, pointer.y),
     );
   }
 
@@ -1069,11 +1408,49 @@ export class MissionScene extends Phaser.Scene {
       if (distance > range || distance >= nearestDistance) {
         return;
       }
+
       nearest = enemy;
       nearestDistance = distance;
     });
 
     return nearest;
+  }
+
+  private setExitDoorOpen(open: boolean, label: string): void {
+    if (!this.exitDoor) {
+      return;
+    }
+
+    this.exitDoor.open = open;
+    this.exitDoor.label.setText(label);
+    if (open) {
+      this.exitDoor.frame.setFillStyle(this.exitDoor.extraction ? 0x205c80 : 0x1b5a84, 0.98);
+      this.exitDoor.frame.setStrokeStyle(3, this.exitDoor.extraction ? 0x9fe9ff : 0x8ed2ff, 0.96);
+      this.exitDoor.glow.setFillStyle(this.exitDoor.extraction ? 0x7de2ff : 0x56c8ff, 0.28);
+      return;
+    }
+
+    this.exitDoor.frame.setFillStyle(0x473113, 0.94);
+    this.exitDoor.frame.setStrokeStyle(3, 0xffcb68, 0.52);
+    this.exitDoor.glow.setFillStyle(0xffcb68, 0.08);
+  }
+
+  private createAbilityCard(x: number, y: number, titleText: string, detailText: string): AbilityCard {
+    const frame = this.pin(this.add.rectangle(x, y, 186, 48, 0x17314f, 0.94)
+      .setStrokeStyle(2, 0x6ea2e5, 0.78));
+    const title = this.pin(this.add.text(x - 76, y - 17, titleText, {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#f5fbff",
+      fontStyle: "bold",
+    }));
+    const detail = this.pin(this.add.text(x - 76, y + 3, detailText, {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#cfe0f7",
+    }));
+
+    return { frame, title, detail };
   }
 
   private clearBullets(): void {
@@ -1082,7 +1459,21 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private clearEnemies(): void {
-    this.enemies.forEach((enemy) => enemy.sprite.destroy());
+    this.enemies.forEach((enemy) => {
+      enemy.sprite.destroy();
+      enemy.aura.destroy();
+    });
     this.enemies = [];
+  }
+
+  private clearStageObjects(): void {
+    this.stageObjects.forEach((object) => object.destroy());
+    this.stageObjects = [];
+    this.hallwayZones = [];
+  }
+  private pin<T extends Phaser.GameObjects.GameObject>(object: T): T {
+    const scrollable = object as T & { setScrollFactor?: (x: number, y?: number) => T };
+    scrollable.setScrollFactor?.(0);
+    return object;
   }
 }

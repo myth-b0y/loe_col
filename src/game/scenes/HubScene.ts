@@ -12,9 +12,11 @@ type Station = {
   id: StationId;
   zone: Phaser.GameObjects.Rectangle;
   label: Phaser.GameObjects.Text;
+  hint: Phaser.GameObjects.Text;
+  interactionRadius: number;
 };
 
-const HUB_ROOM = new Phaser.Geom.Rectangle(80, 108, 1120, 544);
+const HUB_ROOM = new Phaser.Geom.Rectangle(68, 110, 1144, 520);
 const HUB_SPEED = 250;
 const STICK_RADIUS = 72;
 const STICK_DEADZONE = 18;
@@ -32,6 +34,11 @@ export class HubScene extends Phaser.Scene {
   private promptText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private rewardText?: Phaser.GameObjects.Text;
+  private missionText?: Phaser.GameObjects.Text;
+  private airlockDoor?: Phaser.GameObjects.Rectangle;
+  private airlockGlow?: Phaser.GameObjects.Rectangle;
+  private airlockLabel?: Phaser.GameObjects.Text;
+  private deploying = false;
   private touchEnabled = false;
   private moveKeys?: {
     up: Phaser.Input.Keyboard.Key;
@@ -61,6 +68,7 @@ export class HubScene extends Phaser.Scene {
     this.bindKeyboard();
     this.bindPointerInput();
     this.presentPendingReward();
+    this.refreshMissionState();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.brightnessLayer?.destroy();
@@ -73,54 +81,69 @@ export class HubScene extends Phaser.Scene {
     this.updateMovement(dt);
     this.updateBuddy(dt);
     this.updateNearestStation();
+    this.updatePrompt();
+    this.handleAirlockDeploy();
   }
 
   private drawBackdrop(): void {
-    this.add.rectangle(640, 360, 1280, 720, 0x08101a).setDepth(-10);
-    this.add.rectangle(HUB_ROOM.centerX, HUB_ROOM.centerY, HUB_ROOM.width, HUB_ROOM.height, 0x122034, 0.95)
-      .setStrokeStyle(4, 0x719fd8, 0.82)
-      .setDepth(-6);
+    this.add.rectangle(640, 360, 1280, 720, 0x070d16).setDepth(-14);
 
-    this.add.rectangle(640, 74, 1120, 56, 0x10192a, 0.95)
-      .setStrokeStyle(2, 0x4a6f9b, 0.8);
+    const stars = this.add.graphics().setDepth(-13);
+    stars.fillStyle(0xc8ddff, 0.92);
+    for (let i = 0; i < 60; i += 1) {
+      stars.fillCircle(
+        Phaser.Math.Between(14, 1266),
+        Phaser.Math.Between(14, 706),
+        Phaser.Math.FloatBetween(1, 2.2),
+      );
+    }
 
-    this.add.text(106, 58, "Lumen Carrier - Command Deck", {
+    this.add.rectangle(640, 64, 1144, 60, 0x10192a, 0.96)
+      .setStrokeStyle(2, 0x4a6f9b, 0.82);
+
+    this.add.rectangle(HUB_ROOM.centerX, HUB_ROOM.centerY, HUB_ROOM.width, HUB_ROOM.height, 0x111e31, 0.98)
+      .setStrokeStyle(4, 0x6f9fd7, 0.82)
+      .setDepth(-8);
+
+    this.add.rectangle(HUB_ROOM.centerX, 202, HUB_ROOM.width - 80, 10, 0x1f3552, 0.82).setDepth(-7);
+    this.add.rectangle(HUB_ROOM.centerX, 362, HUB_ROOM.width - 120, 6, 0x223a58, 0.74).setDepth(-7);
+    this.add.rectangle(HUB_ROOM.centerX, 520, HUB_ROOM.width - 80, 10, 0x1f3552, 0.82).setDepth(-7);
+
+    this.add.rectangle(186, 368, 84, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
+    this.add.rectangle(1094, 368, 130, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
+
+    this.airlockGlow = this.add.rectangle(1120, HUB_ROOM.centerY, 84, 166, 0x4abfff, 0.1).setDepth(4);
+    this.airlockDoor = this.add.rectangle(1120, HUB_ROOM.centerY, 60, 148, 0x173b5d, 0.92)
+      .setStrokeStyle(3, 0x7ec4ff, 0.62)
+      .setDepth(5);
+    this.airlockLabel = this.add.text(1070, 192, "Deploy Door", {
       fontFamily: "Arial",
-      fontSize: "26px",
+      fontSize: "18px",
+      color: "#c8ddff",
+      fontStyle: "bold",
+    }).setDepth(6);
+
+    this.add.text(108, 46, "Lumen Carrier - Command Deck", {
+      fontFamily: "Arial",
+      fontSize: "25px",
       color: "#f5fbff",
       fontStyle: "bold",
     });
-
-    this.add.text(108, 618, "Prototype hub: move, inspect stations, launch the first mission slice.", {
-      fontFamily: "Arial",
-      fontSize: "16px",
-      color: "#8eb2da",
-    });
-
-    const stars = this.add.graphics().setDepth(-9);
-    stars.fillStyle(0xc6ddff, 0.9);
-    for (let i = 0; i < 52; i += 1) {
-      stars.fillCircle(
-        Phaser.Math.Between(18, 1262),
-        Phaser.Math.Between(18, 702),
-        Phaser.Math.FloatBetween(1, 2.3),
-      );
-    }
   }
 
   private createActors(): void {
-    this.player = this.add.circle(HUB_ROOM.x + 180, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
+    this.player = this.add.circle(186, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
 
-    this.buddy = this.add.circle(this.player.x - 42, this.player.y + 48, 12, 0xf0cd79).setDepth(7);
+    this.buddy = this.add.circle(this.player.x - 42, this.player.y + 44, 12, 0xf0cd79).setDepth(7);
     this.buddy.setStrokeStyle(3, 0xffedb3, 1);
   }
 
   private createStations(): void {
     this.stations = [
-      this.createStation("mission", 320, 260, 250, 140, "Mission Terminal"),
-      this.createStation("loadout", 650, 420, 250, 140, "Loadout Console"),
-      this.createStation("save", 980, 260, 250, 140, "Save Beacon"),
+      this.createStation("mission", 348, 250, 190, 126, "Mission Terminal", "Accept contracts"),
+      this.createStation("loadout", 642, 450, 220, 126, "Loadout Console", "Review current kit"),
+      this.createStation("save", 920, 250, 190, 126, "Save Beacon", "Write active slot"),
     ];
   }
 
@@ -131,66 +154,93 @@ export class HubScene extends Phaser.Scene {
     width: number,
     height: number,
     label: string,
+    hintText: string,
   ): Station {
-    const zone = this.add.rectangle(x, y, width, height, 0x1a3352, 0.72)
-      .setStrokeStyle(3, 0x9ac8ff, 0.82)
+    const accent = id === "mission" ? 0x59c9ff : id === "loadout" ? 0xffd36d : 0x8cffaf;
+    const zone = this.add.rectangle(x, y, width, height, 0x17314f, 0.84)
+      .setStrokeStyle(3, accent, 0.72)
       .setDepth(5)
       .setInteractive();
 
-    zone.on("pointerdown", () => this.openStation(id));
-
-    const text = this.add.text(x, y, label, {
+    const title = this.add.text(x, y - 14, label, {
       fontFamily: "Arial",
-      fontSize: "24px",
-      color: "#f2f8ff",
+      fontSize: "23px",
+      color: "#f3f8ff",
       fontStyle: "bold",
       align: "center",
     }).setOrigin(0.5).setDepth(6);
 
-    this.add.circle(x, y - 38, 18, id === "mission" ? 0x4dc7ff : id === "loadout" ? 0xffd164 : 0x87ffa4, 0.68)
-      .setDepth(6);
+    const hint = this.add.text(x, y + 24, hintText, {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#bed4f1",
+      align: "center",
+    }).setOrigin(0.5).setDepth(6);
 
-    return { id, zone, label: text };
+    this.add.circle(x, y - 42, 16, accent, 0.68).setDepth(6);
+
+    const station: Station = {
+      id,
+      zone,
+      label: title,
+      hint,
+      interactionRadius: 112,
+    };
+
+    zone.on("pointerdown", () => this.tryInteractStation(station));
+    return station;
   }
 
   private createHud(): void {
-    this.add.text(878, 58, `Level ${gameSession.saveData.profile.level}`, {
+    this.add.text(820, 46, `Lv ${gameSession.saveData.profile.level}`, {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#e7f1ff",
     });
 
-    this.add.text(986, 58, `${gameSession.saveData.profile.credits} credits`, {
+    this.add.text(900, 46, `${gameSession.saveData.profile.credits} credits`, {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#e7f1ff",
     });
 
-    this.promptText = this.add.text(640, 662, "", {
+    this.add.text(1038, 46, `Slot ${gameSession.getActiveSlotIndex() + 1}`, {
       fontFamily: "Arial",
       fontSize: "18px",
-      color: "#e8f1ff",
-    }).setOrigin(0.5);
+      color: "#9fc6ff",
+    });
 
-    this.statusText = this.add.text(640, 92, "", {
+    this.missionText = this.add.text(640, 92, "", {
       fontFamily: "Arial",
-      fontSize: "16px",
+      fontSize: "18px",
       color: "#9fc6ff",
     }).setOrigin(0.5);
 
-    this.rewardText = this.add.text(640, 128, "", {
+    this.statusText = this.add.text(640, 120, "", {
       fontFamily: "Arial",
-      fontSize: "17px",
+      fontSize: "15px",
+      color: "#cfe0f7",
+    }).setOrigin(0.5);
+
+    this.rewardText = this.add.text(640, 150, "", {
+      fontFamily: "Arial",
+      fontSize: "16px",
       color: "#d8edff",
       backgroundColor: "#14314dcc",
       padding: { x: 12, y: 6 },
     }).setOrigin(0.5).setVisible(false);
 
+    this.promptText = this.add.text(640, 664, "", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#e8f1ff",
+    }).setOrigin(0.5);
+
     createMenuButton({
       scene: this,
-      x: 1128,
-      y: 56,
-      width: 116,
+      x: 1130,
+      y: 54,
+      width: 114,
       height: 40,
       label: "Pause",
       onClick: () => this.openPauseMenu(),
@@ -202,36 +252,37 @@ export class HubScene extends Phaser.Scene {
   }
 
   private createPanel(): void {
-    const background = this.add.rectangle(640, 360, 620, 380, 0x08111c, 0.98)
+    const background = this.add.rectangle(900, 426, 520, 346, 0x08111c, 0.98)
       .setStrokeStyle(3, 0x79abed, 0.85)
       .setDepth(20);
 
-    const title = this.add.text(368, 202, "", {
+    const title = this.add.text(672, 282, "", {
       fontFamily: "Arial",
-      fontSize: "28px",
+      fontSize: "26px",
       color: "#f5fbff",
       fontStyle: "bold",
     }).setDepth(21);
 
-    this.panelBody = this.add.text(368, 252, "", {
+    this.panelBody = this.add.text(672, 330, "", {
       fontFamily: "Arial",
-      fontSize: "18px",
+      fontSize: "17px",
       color: "#d7e8ff",
       lineSpacing: 8,
-      wordWrap: { width: 540 },
+      wordWrap: { width: 430 },
     }).setDepth(21);
 
-    this.panelFooter = this.add.text(368, 484, "", {
+    this.panelFooter = this.add.text(672, 534, "", {
       fontFamily: "Arial",
-      fontSize: "16px",
+      fontSize: "15px",
       color: "#9fc6ff",
+      wordWrap: { width: 430 },
     }).setDepth(21);
 
     const close = createMenuButton({
       scene: this,
-      x: 886,
-      y: 214,
-      width: 88,
+      x: 1102,
+      y: 286,
+      width: 92,
       height: 38,
       label: "Close",
       onClick: () => this.closePanel(),
@@ -241,8 +292,8 @@ export class HubScene extends Phaser.Scene {
 
     this.panelAction = createMenuButton({
       scene: this,
-      x: 640,
-      y: 522,
+      x: 900,
+      y: 570,
       width: 220,
       label: "Confirm",
       onClick: () => undefined,
@@ -316,7 +367,7 @@ export class HubScene extends Phaser.Scene {
         return;
       }
 
-      if (pointer.x > GAME_WIDTH * 0.5) {
+      if (pointer.x > GAME_WIDTH * 0.45) {
         return;
       }
 
@@ -394,7 +445,9 @@ export class HubScene extends Phaser.Scene {
 
     this.stations.forEach((station) => {
       const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, station.zone.x, station.zone.y);
-      station.zone.setFillStyle(0x1a3352, distance < 110 ? 0.88 : 0.72);
+      const closeEnough = distance <= station.interactionRadius;
+      station.zone.setFillStyle(closeEnough ? 0x21486f : 0x17314f, closeEnough ? 0.96 : 0.84);
+      station.hint.setColor(closeEnough ? "#f5fbff" : "#bed4f1");
 
       if (distance < nearestDistance) {
         nearest = station;
@@ -402,24 +455,50 @@ export class HubScene extends Phaser.Scene {
       }
     });
 
-    this.nearestStation = nearestDistance < 110 ? nearest : null;
+    const resolvedNearest = nearest as Station | null;
+    if (resolvedNearest === null) {
+      this.nearestStation = null;
+      return;
+    }
 
+    this.nearestStation = nearestDistance <= resolvedNearest.interactionRadius ? resolvedNearest : null;
+  }
+
+  private updatePrompt(): void {
     if (!this.promptText) {
       return;
     }
 
-    if (!this.nearestStation || this.panel?.visible) {
+    if (this.panel?.visible) {
       this.promptText.setText("");
       return;
     }
 
-    const station = this.nearestStation as Station;
+    if (this.nearestStation) {
+      this.promptText.setText(this.touchEnabled
+        ? `Tap ${this.nearestStation.label.text} while standing nearby.`
+        : `Press E near ${this.nearestStation.label.text}.`);
+      return;
+    }
 
-    this.promptText.setText(
-      this.touchEnabled
-        ? `Tap ${station.label.text} or the station itself.`
-        : `Press E near ${station.label.text} or click it.`,
-    );
+    if (this.isNearAirlock()) {
+      this.promptText.setText(gameSession.acceptedMissionId
+        ? "Walk into the deploy door to enter the mission zone."
+        : "Accept a mission at the terminal before deploying.");
+      return;
+    }
+
+    this.promptText.setText("");
+  }
+
+  private tryInteractStation(station: Station): void {
+    const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, station.zone.x, station.zone.y);
+    if (distance > station.interactionRadius) {
+      this.statusText?.setText("Move closer before using that console.");
+      return;
+    }
+
+    this.openStation(station.id);
   }
 
   private openStation(id: StationId): void {
@@ -428,17 +507,10 @@ export class HubScene extends Phaser.Scene {
     }
 
     const title = this.panel.data?.get("title") as Phaser.GameObjects.Text | undefined;
-    title?.setText(
-      id === "mission"
-        ? "Mission Terminal"
-        : id === "loadout"
-          ? "Loadout Console"
-          : "Save Beacon",
-    );
-
     this.panel.setVisible(true);
 
     if (id === "mission") {
+      title?.setText("Mission Terminal");
       this.panelBody.setText([
         `${FIRST_MISSION.title} - ${FIRST_MISSION.location}`,
         "",
@@ -446,50 +518,67 @@ export class HubScene extends Phaser.Scene {
         "",
         ...FIRST_MISSION.briefing,
       ]);
-      this.panelFooter.setText(`Objective: ${FIRST_MISSION.objective}`);
-      this.panelAction.setLabel("Launch Mission");
-      this.panelAction.setEnabled(true);
+      this.panelFooter.setText("Mission terminal accepts the contract. The deploy door is the temporary stand-in for future space travel.");
+      this.panelAction.setLabel(gameSession.acceptedMissionId === FIRST_MISSION.id ? "Mission Accepted" : "Accept Mission");
+      this.panelAction.setEnabled(gameSession.acceptedMissionId !== FIRST_MISSION.id);
       this.panelAction.setOnClick(() => {
-        gameSession.startMission(FIRST_MISSION.id);
-        this.scene.start("mission", { missionId: FIRST_MISSION.id });
+        gameSession.acceptMission(FIRST_MISSION.id);
+        this.statusText?.setText("Waypoint accepted. Deploy door unlocked.");
+        this.refreshMissionState();
+        this.closePanel();
       });
       return;
     }
 
     if (id === "loadout") {
+      title?.setText("Loadout Console");
       this.panelBody.setText([
         `Weapon: ${gameSession.saveData.loadout.weapon}`,
         `Ability: ${gameSession.saveData.loadout.ability}`,
         `Support: ${gameSession.saveData.loadout.support}`,
         `Companion: ${gameSession.saveData.loadout.companion}`,
         "",
-        "This console is data-driven on purpose so we can expand builds",
-        "and companion kits without rewriting the hub flow later.",
+        "This console stays data-driven so adding new weapons, builds, and companions later will not break the hub flow.",
       ]);
-      this.panelFooter.setText("Current slice uses a ranged opener, pulse burst, dash, and arc-lance support shot.");
+      this.panelFooter.setText("Current prototype kit: basic fire, Pulse, Arc Lance, Dash, and one ranged support companion.");
       this.panelAction.setLabel("Close");
       this.panelAction.setEnabled(true);
       this.panelAction.setOnClick(() => this.closePanel());
       return;
     }
 
+    title?.setText("Save Beacon");
     this.panelBody.setText([
-      "Seal current command-deck progress to save memory.",
+      `Active slot: Slot ${gameSession.getActiveSlotIndex() + 1}`,
       "",
-      "Mission saves stay disabled for now so the combat slice remains",
-      "clean and predictable while we build the first real loop.",
+      "Save the current command-deck state, progression, loadout, and options.",
+      "",
+      "Mission saves remain disabled for now to keep the combat slice predictable while we build the foundation.",
     ]);
-    this.panelFooter.setText("Saves include level, XP, credits, options, and unlocked progress.");
+    this.panelFooter.setText("Use the main menu or pause menu load screen to choose which file to continue.");
     this.panelAction.setLabel("Save Game");
     this.panelAction.setEnabled(true);
     this.panelAction.setOnClick(() => {
       const ok = gameSession.saveToDisk();
-      this.statusText?.setText(ok ? "Save complete." : "Save failed.");
+      this.statusText?.setText(ok ? `Saved to Slot ${gameSession.getActiveSlotIndex() + 1}.` : "Save failed.");
+      this.refreshMissionState();
     });
   }
 
   private closePanel(): void {
     this.panel?.setVisible(false);
+  }
+
+  private refreshMissionState(): void {
+    const missionAccepted = gameSession.acceptedMissionId === FIRST_MISSION.id;
+    this.missionText?.setText(missionAccepted
+      ? `Accepted contract: ${FIRST_MISSION.title} | Deploy door primed`
+      : "No contract accepted. Use the mission terminal to set a waypoint.");
+
+    this.airlockDoor?.setFillStyle(missionAccepted ? 0x1d5c8d : 0x173b5d, missionAccepted ? 0.98 : 0.82);
+    this.airlockDoor?.setStrokeStyle(3, missionAccepted ? 0x8be4ff : 0x7ec4ff, missionAccepted ? 0.96 : 0.62);
+    this.airlockGlow?.setFillStyle(0x4abfff, missionAccepted ? 0.28 : 0.08);
+    this.airlockLabel?.setColor(missionAccepted ? "#f4fbff" : "#c8ddff");
   }
 
   private presentPendingReward(): void {
@@ -498,12 +587,40 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    this.rewardText.setText(`Mission reward received: +${reward.xp} XP, +${reward.credits} credits, ${reward.item}`);
+    this.rewardText.setText(`Mission reward: +${reward.xp} XP, +${reward.credits} credits, ${reward.item}`);
     this.rewardText.setVisible(true);
 
-    this.time.delayedCall(4600, () => {
+    this.time.delayedCall(5200, () => {
       this.rewardText?.setVisible(false);
     });
+  }
+
+  private handleAirlockDeploy(): void {
+    if (!gameSession.acceptedMissionId || this.panel?.visible || !this.airlockDoor || this.deploying) {
+      return;
+    }
+
+    const bounds = this.airlockDoor.getBounds();
+    if (!bounds.contains(this.player.x, this.player.y)) {
+      return;
+    }
+
+    this.deploying = true;
+    this.statusText?.setText("Deploying through temporary airlock shortcut.");
+    this.cameras.main.fadeOut(220, 8, 12, 18);
+    this.time.delayedCall(220, () => {
+      const missionId = gameSession.acceptedMissionId ?? FIRST_MISSION.id;
+      gameSession.startMission(missionId);
+      this.scene.start("mission", { missionId });
+    });
+  }
+
+  private isNearAirlock(): boolean {
+    if (!this.airlockDoor) {
+      return false;
+    }
+
+    return Phaser.Math.Distance.Between(this.player.x, this.player.y, this.airlockDoor.x, this.airlockDoor.y) < 108;
   }
 
   private openPauseMenu(): void {

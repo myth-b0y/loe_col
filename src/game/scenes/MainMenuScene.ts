@@ -2,12 +2,14 @@ import Phaser from "phaser";
 
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
+import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
 import { SettingsOverlay } from "../ui/SettingsOverlay";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
 export class MainMenuScene extends Phaser.Scene {
   private brightnessLayer?: BrightnessLayer;
   private settingsOverlay?: SettingsOverlay;
+  private saveSlotsOverlay?: SaveSlotsOverlay;
   private loadButton?: MenuButton;
   private creditsPanel?: Phaser.GameObjects.Container;
   private creditsCloseButton?: MenuButton;
@@ -53,10 +55,7 @@ export class MainMenuScene extends Phaser.Scene {
         y: 372,
         width: 250,
         label: "New Game",
-        onClick: () => {
-          gameSession.startNewGame();
-          this.scene.start("hub");
-        },
+        onClick: () => this.saveSlotsOverlay?.show("new"),
       }),
       createMenuButton({
         scene: this,
@@ -64,13 +63,7 @@ export class MainMenuScene extends Phaser.Scene {
         y: 432,
         width: 250,
         label: "Load Game",
-        onClick: () => {
-          if (!gameSession.loadSave()) {
-            return;
-          }
-
-          this.scene.start("hub");
-        },
+        onClick: () => this.saveSlotsOverlay?.show("load"),
       }),
       createMenuButton({
         scene: this,
@@ -108,6 +101,23 @@ export class MainMenuScene extends Phaser.Scene {
     this.settingsOverlay = new SettingsOverlay({
       scene: this,
       onClose: () => undefined,
+    });
+
+    this.saveSlotsOverlay = new SaveSlotsOverlay({
+      scene: this,
+      onClose: () => undefined,
+      onLoadSlot: (slotIndex) => {
+        if (!gameSession.loadSave(slotIndex)) {
+          return;
+        }
+
+        this.scene.start("hub");
+      },
+      onNewSlot: (slotIndex) => {
+        gameSession.startNewGame(slotIndex);
+        gameSession.saveToDisk(slotIndex);
+        this.scene.start("hub");
+      },
     });
 
     this.creditsPanel = this.createCreditsPanel();
@@ -202,26 +212,22 @@ export class MainMenuScene extends Phaser.Scene {
     }
 
     const startNewGame = (): void => {
-      gameSession.startNewGame();
-      this.scene.start("hub");
+      this.saveSlotsOverlay?.show("new");
     };
 
     keyboard.on("keydown-ENTER", startNewGame);
     keyboard.on("keydown-SPACE", startNewGame);
     keyboard.on("keydown-N", startNewGame);
-    keyboard.on("keydown-L", () => {
-      if (!gameSession.loadSave()) {
-        return;
-      }
-
-      this.scene.start("hub");
-    });
+    keyboard.on("keydown-L", () => this.saveSlotsOverlay?.show("load"));
     keyboard.on("keydown-O", () => this.settingsOverlay?.show("graphics"));
     keyboard.on("keydown-C", () => this.showCredits(true));
     keyboard.on("keydown-ESC", () => {
       if (this.creditsPanel?.visible) {
         this.showCredits(false);
+        return;
       }
+
+      this.saveSlotsOverlay?.hide();
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
