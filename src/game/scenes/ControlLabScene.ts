@@ -18,6 +18,10 @@ type DummyTarget = {
 const ROOM = new Phaser.Geom.Rectangle(80, 118, 1120, 520);
 const PLAYER_SPEED = 310;
 const JOYSTICK_RADIUS = 72;
+const JOYSTICK_DEADZONE = 18;
+const DEFAULT_JOYSTICK_X = 150;
+const DEFAULT_JOYSTICK_Y = 566;
+const AIM_RETICLE_DISTANCE = 132;
 
 export class ControlLabScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Arc;
@@ -33,11 +37,14 @@ export class ControlLabScene extends Phaser.Scene {
   private keyboardVector = new Phaser.Math.Vector2();
   private touchVector = new Phaser.Math.Vector2();
   private movePointerId: number | null = null;
+  private aimPointerId: number | null = null;
   private touchEnabled = false;
   private joystickBase!: Phaser.GameObjects.Arc;
   private joystickKnob!: Phaser.GameObjects.Arc;
   private pulseButton!: Phaser.GameObjects.Container;
   private dashButton!: Phaser.GameObjects.Container;
+  private aimLine!: Phaser.GameObjects.Graphics;
+  private aimReticle!: Phaser.GameObjects.Arc;
   private pulseCooldown = 0;
   private dashCooldown = 0;
   private dashFlash = 0;
@@ -192,14 +199,18 @@ export class ControlLabScene extends Phaser.Scene {
   }
 
   private createTouchUi(): void {
-    this.joystickBase = this.add.circle(150, 566, JOYSTICK_RADIUS, 0x173054, 0.44).setDepth(12);
+    this.joystickBase = this.add.circle(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y, JOYSTICK_RADIUS, 0x173054, 0.36).setDepth(12);
     this.joystickBase.setStrokeStyle(3, 0x72a8ff, 0.65);
 
-    this.joystickKnob = this.add.circle(150, 566, 34, 0xdde9ff, 0.72).setDepth(13);
+    this.joystickKnob = this.add.circle(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y, 34, 0xdde9ff, 0.72).setDepth(13);
     this.joystickKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.pulseButton = this.createActionButton(1090, 562, 58, 0x1a5e7c, "Pulse");
-    this.dashButton = this.createActionButton(1186, 470, 48, 0x5e3d84, "Dash");
+    this.pulseButton = this.createActionButton(1098, 566, 68, 0x1a5e7c, "Pulse");
+    this.dashButton = this.createActionButton(1188, 454, 54, 0x5e3d84, "Dash");
+
+    this.aimLine = this.add.graphics().setDepth(11);
+    this.aimReticle = this.add.circle(this.lookPoint.x, this.lookPoint.y, 16, 0x7ee1ff, 0.16).setDepth(12);
+    this.aimReticle.setStrokeStyle(3, 0xbef2ff, 0.85);
 
     this.pulseButton.on("pointerdown", () => this.tryPulse());
     this.dashButton.on("pointerdown", () => this.tryDash());
@@ -260,6 +271,7 @@ export class ControlLabScene extends Phaser.Scene {
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       if (this.touchEnabled && pointer.x < GAME_WIDTH * 0.5 && this.movePointerId === null) {
         this.movePointerId = pointer.id;
+        this.setJoystickAnchor(pointer.x, pointer.y);
         this.updateTouchVector(pointer);
         return;
       }
@@ -268,11 +280,20 @@ export class ControlLabScene extends Phaser.Scene {
         return;
       }
 
+      if (this.touchEnabled) {
+        this.aimPointerId = pointer.id;
+        this.updateAimFromPointer(pointer);
+        return;
+      }
+
       this.lookPoint.set(pointer.worldX, pointer.worldY);
 
-      if (this.touchEnabled) {
-        this.tryPulse();
+      if (pointer.rightButtonDown()) {
+        this.tryDash();
+        return;
       }
+
+      this.tryPulse();
     });
 
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
@@ -281,7 +302,12 @@ export class ControlLabScene extends Phaser.Scene {
         return;
       }
 
-      if (!this.touchEnabled || pointer.isDown) {
+      if (pointer.id === this.aimPointerId && pointer.isDown) {
+        this.updateAimFromPointer(pointer);
+        return;
+      }
+
+      if (!this.touchEnabled) {
         this.lookPoint.set(pointer.worldX, pointer.worldY);
       }
     });
@@ -290,7 +316,11 @@ export class ControlLabScene extends Phaser.Scene {
       if (pointer.id === this.movePointerId) {
         this.movePointerId = null;
         this.touchVector.set(0, 0);
-        this.joystickKnob.setPosition(this.joystickBase.x, this.joystickBase.y);
+        this.resetJoystick();
+      }
+
+      if (pointer.id === this.aimPointerId) {
+        this.aimPointerId = null;
       }
     });
   }
@@ -325,13 +355,29 @@ export class ControlLabScene extends Phaser.Scene {
     const dx = pointer.x - this.joystickBase.x;
     const dy = pointer.y - this.joystickBase.y;
     const vector = new Phaser.Math.Vector2(dx, dy);
+    const distance = vector.length();
 
-    if (vector.length() > JOYSTICK_RADIUS) {
+    if (distance > JOYSTICK_RADIUS) {
       vector.normalize().scale(JOYSTICK_RADIUS);
     }
 
     this.joystickKnob.setPosition(this.joystickBase.x + vector.x, this.joystickBase.y + vector.y);
-    this.touchVector.set(vector.x / JOYSTICK_RADIUS, vector.y / JOYSTICK_RADIUS);
+
+    if (distance <= JOYSTICK_DEADZONE) {
+      this.touchVector.set(0, 0);
+      return;
+    }
+
+    const normalizedStrength = Phaser.Math.Clamp(
+      (Math.min(distance, JOYSTICK_RADIUS) - JOYSTICK_DEADZONE) / (JOYSTICK_RADIUS - JOYSTICK_DEADZONE),
+      0,
+      1,
+    );
+
+    this.touchVector
+      .set(vector.x, vector.y)
+      .normalize()
+      .scale(normalizedStrength);
   }
 
   private updateMovement(dt: number): void {
@@ -354,6 +400,18 @@ export class ControlLabScene extends Phaser.Scene {
 
     this.facingMarker.setPosition(this.player.x + direction.x * 26, this.player.y + direction.y * 26);
     this.facingMarker.setRotation(angle);
+
+    const reticleX = this.player.x + direction.x * AIM_RETICLE_DISTANCE;
+    const reticleY = this.player.y + direction.y * AIM_RETICLE_DISTANCE;
+
+    this.aimReticle.setPosition(reticleX, reticleY);
+
+    this.aimLine.clear();
+    this.aimLine.lineStyle(3, 0x7ee1ff, 0.32);
+    this.aimLine.beginPath();
+    this.aimLine.moveTo(this.player.x, this.player.y);
+    this.aimLine.lineTo(reticleX, reticleY);
+    this.aimLine.strokePath();
   }
 
   private updateCompanion(dt: number): void {
@@ -459,6 +517,8 @@ export class ControlLabScene extends Phaser.Scene {
     this.joystickKnob.setVisible(visible);
     this.pulseButton.setVisible(visible);
     this.dashButton.setVisible(visible);
+    this.aimReticle.setVisible(visible);
+    this.aimLine.setVisible(visible);
   }
 
   private updateHud(): void {
@@ -474,7 +534,7 @@ export class ControlLabScene extends Phaser.Scene {
       "",
       "Core test actions",
       "Move: WASD / left thumb joystick",
-      "Pulse: left click or tap / Space",
+      "Pulse: left click / Space / Pulse button",
       "Dash: right click / Shift / Dash button",
     ]);
 
@@ -492,8 +552,27 @@ export class ControlLabScene extends Phaser.Scene {
 
     this.touchBanner.setText(
       this.touchEnabled
-        ? "Touch mode active: left thumb moves, right side aims and taps Pulse."
+        ? "Touch mode active: left thumb moves, right thumb aims, buttons cast Pulse and Dash."
         : "",
     );
+  }
+
+  private setJoystickAnchor(x: number, y: number): void {
+    const anchorX = Phaser.Math.Clamp(x, 110, GAME_WIDTH * 0.42);
+    const anchorY = Phaser.Math.Clamp(y, 380, 628);
+
+    this.joystickBase.setPosition(anchorX, anchorY);
+    this.joystickBase.setFillStyle(0x173054, 0.52);
+    this.joystickKnob.setPosition(anchorX, anchorY);
+  }
+
+  private resetJoystick(): void {
+    this.joystickBase.setPosition(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y);
+    this.joystickBase.setFillStyle(0x173054, 0.36);
+    this.joystickKnob.setPosition(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y);
+  }
+
+  private updateAimFromPointer(pointer: Phaser.Input.Pointer): void {
+    this.lookPoint.set(pointer.worldX, pointer.worldY);
   }
 }
