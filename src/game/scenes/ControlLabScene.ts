@@ -15,12 +15,22 @@ type DummyTarget = {
   label: Phaser.GameObjects.Text;
 };
 
+type ActionButtonUi = {
+  container: Phaser.GameObjects.Container;
+  ring: Phaser.GameObjects.Arc;
+  label: Phaser.GameObjects.Text;
+  status: Phaser.GameObjects.Text;
+  tag: Phaser.GameObjects.Text;
+};
+
 const ROOM = new Phaser.Geom.Rectangle(80, 118, 1120, 520);
 const PLAYER_SPEED = 310;
 const JOYSTICK_RADIUS = 72;
 const JOYSTICK_DEADZONE = 18;
 const DEFAULT_JOYSTICK_X = 150;
 const DEFAULT_JOYSTICK_Y = 566;
+const DEFAULT_AIM_X = 1118;
+const DEFAULT_AIM_Y = 566;
 const AIM_RETICLE_DISTANCE = 132;
 
 export class ControlLabScene extends Phaser.Scene {
@@ -36,15 +46,20 @@ export class ControlLabScene extends Phaser.Scene {
   private lookPoint = new Phaser.Math.Vector2(GAME_WIDTH * 0.7, GAME_HEIGHT * 0.5);
   private keyboardVector = new Phaser.Math.Vector2();
   private touchVector = new Phaser.Math.Vector2();
+  private aimVector = new Phaser.Math.Vector2(1, 0);
   private movePointerId: number | null = null;
   private aimPointerId: number | null = null;
   private touchEnabled = false;
   private joystickBase!: Phaser.GameObjects.Arc;
   private joystickKnob!: Phaser.GameObjects.Arc;
-  private pulseButton!: Phaser.GameObjects.Container;
-  private dashButton!: Phaser.GameObjects.Container;
+  private aimStickBase!: Phaser.GameObjects.Arc;
+  private aimStickKnob!: Phaser.GameObjects.Arc;
+  private pulseButton!: ActionButtonUi;
+  private dashButton!: ActionButtonUi;
   private aimLine!: Phaser.GameObjects.Graphics;
   private aimReticle!: Phaser.GameObjects.Arc;
+  private moveLabel!: Phaser.GameObjects.Text;
+  private aimLabel!: Phaser.GameObjects.Text;
   private pulseCooldown = 0;
   private dashCooldown = 0;
   private dashFlash = 0;
@@ -79,6 +94,7 @@ export class ControlLabScene extends Phaser.Scene {
     this.updateMovement(dt);
     this.updateFacing();
     this.updateCompanion(dt);
+    this.updateTouchUiState();
     this.updateHud();
   }
 
@@ -199,21 +215,57 @@ export class ControlLabScene extends Phaser.Scene {
   }
 
   private createTouchUi(): void {
+    this.add
+      .rectangle(176, 548, 238, 186, 0x0f1b30, 0.42)
+      .setStrokeStyle(2, 0x355884, 0.7)
+      .setDepth(11);
+
+    this.add
+      .rectangle(1072, 530, 326, 238, 0x0f1b30, 0.42)
+      .setStrokeStyle(2, 0x355884, 0.7)
+      .setDepth(11);
+
     this.joystickBase = this.add.circle(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y, JOYSTICK_RADIUS, 0x173054, 0.36).setDepth(12);
     this.joystickBase.setStrokeStyle(3, 0x72a8ff, 0.65);
 
     this.joystickKnob = this.add.circle(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y, 34, 0xdde9ff, 0.72).setDepth(13);
     this.joystickKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.pulseButton = this.createActionButton(1098, 566, 68, 0x1a5e7c, "Pulse");
-    this.dashButton = this.createActionButton(1188, 454, 54, 0x5e3d84, "Dash");
+    this.aimStickBase = this.add.circle(DEFAULT_AIM_X, DEFAULT_AIM_Y, JOYSTICK_RADIUS, 0x173054, 0.36).setDepth(12);
+    this.aimStickBase.setStrokeStyle(3, 0x72a8ff, 0.65);
+
+    this.aimStickKnob = this.add.circle(DEFAULT_AIM_X, DEFAULT_AIM_Y, 34, 0xdde9ff, 0.72).setDepth(13);
+    this.aimStickKnob.setStrokeStyle(2, 0xffffff, 0.9);
+
+    this.moveLabel = this.add
+      .text(DEFAULT_JOYSTICK_X, 474, "MOVE", {
+        fontFamily: "Arial",
+        fontSize: "20px",
+        color: "#9fc6ff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setDepth(13);
+
+    this.aimLabel = this.add
+      .text(DEFAULT_AIM_X, 474, "AIM", {
+        fontFamily: "Arial",
+        fontSize: "20px",
+        color: "#9fc6ff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setDepth(13);
+
+    this.pulseButton = this.createActionButton(928, 568, 74, 0x166b8c, "PULSE", "Tap");
+    this.dashButton = this.createActionButton(960, 422, 56, 0x63408f, "DASH", "Jump");
 
     this.aimLine = this.add.graphics().setDepth(11);
     this.aimReticle = this.add.circle(this.lookPoint.x, this.lookPoint.y, 16, 0x7ee1ff, 0.16).setDepth(12);
     this.aimReticle.setStrokeStyle(3, 0xbef2ff, 0.85);
 
-    this.pulseButton.on("pointerdown", () => this.tryPulse());
-    this.dashButton.on("pointerdown", () => this.tryDash());
+    this.pulseButton.container.on("pointerdown", () => this.tryPulse());
+    this.dashButton.container.on("pointerdown", () => this.tryDash());
 
     this.setTouchUiVisible(this.touchEnabled);
   }
@@ -224,23 +276,49 @@ export class ControlLabScene extends Phaser.Scene {
     radius: number,
     fillColor: number,
     label: string,
-  ): Phaser.GameObjects.Container {
-    const ring = this.add.circle(0, 0, radius, fillColor, 0.65).setStrokeStyle(3, 0xe7f1ff, 0.9);
-    const text = this.add.text(0, 0, label, {
+    tag: string,
+  ): ActionButtonUi {
+    const ring = this.add.circle(0, 0, radius, fillColor, 0.78).setStrokeStyle(4, 0xe7f1ff, 0.95);
+    const core = this.add.circle(0, 0, radius - 14, 0x07121d, 0.26).setStrokeStyle(2, 0xffffff, 0.18);
+    const text = this.add.text(0, -8, label, {
       fontFamily: "Arial",
-      fontSize: radius > 50 ? "20px" : "18px",
+      fontSize: radius > 60 ? "20px" : "18px",
       color: "#ffffff",
       fontStyle: "bold",
     });
     text.setOrigin(0.5);
 
-    const button = this.add.container(x, y, [ring, text]).setDepth(14);
+    const status = this.add.text(0, 18, tag, {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#d8ebff",
+      fontStyle: "bold",
+    });
+    status.setOrigin(0.5);
+
+    const chip = this.add
+      .text(0, radius + 22, label, {
+        fontFamily: "Arial",
+        fontSize: "16px",
+        color: "#b6d5ff",
+        backgroundColor: "#11233bcc",
+        padding: { x: 10, y: 5 },
+      })
+      .setOrigin(0.5);
+
+    const button = this.add.container(x, y, [ring, core, text, status, chip]).setDepth(14);
     const hitArea = new Phaser.Geom.Circle(0, 0, radius);
 
     button.setSize(radius * 2, radius * 2);
     button.setInteractive(hitArea, Phaser.Geom.Circle.Contains);
 
-    return button;
+    return {
+      container: button,
+      ring,
+      label: text,
+      status,
+      tag: chip,
+    };
   }
 
   private createDummyTargets(): void {
@@ -280,8 +358,9 @@ export class ControlLabScene extends Phaser.Scene {
         return;
       }
 
-      if (this.touchEnabled) {
+      if (this.touchEnabled && this.aimPointerId === null) {
         this.aimPointerId = pointer.id;
+        this.setAimAnchor(pointer.x, pointer.y);
         this.updateAimFromPointer(pointer);
         return;
       }
@@ -321,6 +400,7 @@ export class ControlLabScene extends Phaser.Scene {
 
       if (pointer.id === this.aimPointerId) {
         this.aimPointerId = null;
+        this.resetAimStick();
       }
     });
   }
@@ -394,8 +474,9 @@ export class ControlLabScene extends Phaser.Scene {
   }
 
   private updateFacing(): void {
-    const aim = new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y);
-    const direction = aim.lengthSq() > 1 ? aim.normalize() : new Phaser.Math.Vector2(1, 0);
+    const direction = this.touchEnabled
+      ? this.aimVector.clone().normalize()
+      : new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y).normalize();
     const angle = direction.angle();
 
     this.facingMarker.setPosition(this.player.x + direction.x * 26, this.player.y + direction.y * 26);
@@ -412,6 +493,18 @@ export class ControlLabScene extends Phaser.Scene {
     this.aimLine.moveTo(this.player.x, this.player.y);
     this.aimLine.lineTo(reticleX, reticleY);
     this.aimLine.strokePath();
+  }
+
+  private updateTouchUiState(): void {
+    if (!this.touchEnabled) {
+      return;
+    }
+
+    this.moveLabel.setPosition(this.joystickBase.x, this.joystickBase.y - 92);
+    this.aimLabel.setPosition(this.aimStickBase.x, this.aimStickBase.y - 92);
+
+    this.updateActionButtonState(this.pulseButton, this.pulseCooldown, "Tap", 0x166b8c);
+    this.updateActionButtonState(this.dashButton, this.dashCooldown, "Jump", 0x63408f);
   }
 
   private updateCompanion(dt: number): void {
@@ -509,14 +602,19 @@ export class ControlLabScene extends Phaser.Scene {
   }
 
   private isPointerOverButton(pointer: Phaser.Input.Pointer): boolean {
-    return this.pulseButton.getBounds().contains(pointer.x, pointer.y) || this.dashButton.getBounds().contains(pointer.x, pointer.y);
+    return this.pulseButton.container.getBounds().contains(pointer.x, pointer.y)
+      || this.dashButton.container.getBounds().contains(pointer.x, pointer.y);
   }
 
   private setTouchUiVisible(visible: boolean): void {
     this.joystickBase.setVisible(visible);
     this.joystickKnob.setVisible(visible);
-    this.pulseButton.setVisible(visible);
-    this.dashButton.setVisible(visible);
+    this.aimStickBase.setVisible(visible);
+    this.aimStickKnob.setVisible(visible);
+    this.moveLabel.setVisible(visible);
+    this.aimLabel.setVisible(visible);
+    this.pulseButton.container.setVisible(visible);
+    this.dashButton.container.setVisible(visible);
     this.aimReticle.setVisible(visible);
     this.aimLine.setVisible(visible);
   }
@@ -533,9 +631,10 @@ export class ControlLabScene extends Phaser.Scene {
       `Input mode: ${activeInput}`,
       "",
       "Core test actions",
-      "Move: WASD / left thumb joystick",
-      "Pulse: left click / Space / Pulse button",
-      "Dash: right click / Shift / Dash button",
+      "Move: WASD / left thumb stick",
+      "Aim: mouse / right thumb stick",
+      "Pulse: left click / Space / big blue PULSE button",
+      "Dash: right click / Shift / purple DASH button",
     ]);
 
     this.hintPanel.setText([
@@ -552,7 +651,7 @@ export class ControlLabScene extends Phaser.Scene {
 
     this.touchBanner.setText(
       this.touchEnabled
-        ? "Touch mode active: left thumb moves, right thumb aims, buttons cast Pulse and Dash."
+        ? "Touch mode active: left stick moves, right stick aims, blue button = Pulse, purple button = Dash."
         : "",
     );
   }
@@ -572,7 +671,57 @@ export class ControlLabScene extends Phaser.Scene {
     this.joystickKnob.setPosition(DEFAULT_JOYSTICK_X, DEFAULT_JOYSTICK_Y);
   }
 
+  private setAimAnchor(x: number, y: number): void {
+    const anchorX = Phaser.Math.Clamp(x, GAME_WIDTH * 0.58, 1188);
+    const anchorY = Phaser.Math.Clamp(y, 352, 628);
+
+    this.aimStickBase.setPosition(anchorX, anchorY);
+    this.aimStickBase.setFillStyle(0x173054, 0.52);
+    this.aimStickKnob.setPosition(anchorX, anchorY);
+  }
+
+  private resetAimStick(): void {
+    this.aimStickBase.setPosition(DEFAULT_AIM_X, DEFAULT_AIM_Y);
+    this.aimStickBase.setFillStyle(0x173054, 0.36);
+    this.aimStickKnob.setPosition(DEFAULT_AIM_X, DEFAULT_AIM_Y);
+  }
+
   private updateAimFromPointer(pointer: Phaser.Input.Pointer): void {
-    this.lookPoint.set(pointer.worldX, pointer.worldY);
+    const dx = pointer.x - this.aimStickBase.x;
+    const dy = pointer.y - this.aimStickBase.y;
+    const vector = new Phaser.Math.Vector2(dx, dy);
+    const distance = vector.length();
+
+    if (distance > JOYSTICK_RADIUS) {
+      vector.normalize().scale(JOYSTICK_RADIUS);
+    }
+
+    this.aimStickKnob.setPosition(this.aimStickBase.x + vector.x, this.aimStickBase.y + vector.y);
+
+    if (distance <= JOYSTICK_DEADZONE) {
+      return;
+    }
+
+    this.aimVector.set(vector.x, vector.y).normalize();
+    this.lookPoint.set(
+      this.player.x + this.aimVector.x * AIM_RETICLE_DISTANCE,
+      this.player.y + this.aimVector.y * AIM_RETICLE_DISTANCE,
+    );
+  }
+
+  private updateActionButtonState(
+    button: ActionButtonUi,
+    cooldown: number,
+    readyText: string,
+    readyColor: number,
+  ): void {
+    const isReady = cooldown <= 0;
+
+    button.container.setScale(isReady ? 1 : 0.96);
+    button.ring.setFillStyle(readyColor, isReady ? 0.8 : 0.42);
+    button.label.setAlpha(isReady ? 1 : 0.72);
+    button.tag.setAlpha(isReady ? 1 : 0.75);
+    button.status.setText(isReady ? readyText : `${cooldown.toFixed(1)}s`);
+    button.status.setColor(isReady ? "#d8ebff" : "#ffd8a8");
   }
 }
