@@ -10,6 +10,7 @@ export class MainMenuScene extends Phaser.Scene {
   private settingsOverlay?: SettingsOverlay;
   private loadButton?: MenuButton;
   private creditsPanel?: Phaser.GameObjects.Container;
+  private creditsCloseButton?: MenuButton;
 
   constructor() {
     super("main-menu");
@@ -85,7 +86,7 @@ export class MainMenuScene extends Phaser.Scene {
         y: 552,
         width: 250,
         label: "Credits",
-        onClick: () => this.creditsPanel?.setVisible(true),
+        onClick: () => this.showCredits(true),
       }),
     ];
 
@@ -110,6 +111,7 @@ export class MainMenuScene extends Phaser.Scene {
     });
 
     this.creditsPanel = this.createCreditsPanel();
+    this.bindKeyboard();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.brightnessLayer?.destroy();
@@ -175,10 +177,11 @@ export class MainMenuScene extends Phaser.Scene {
       y: 510,
       width: 180,
       label: "Back",
-      onClick: () => panel.setVisible(false),
+      onClick: () => this.showCredits(false),
       depth: 71,
       accentColor: 0x203a57,
     });
+    this.creditsCloseButton = close;
 
     const panel = this.add.container(0, 0, [
       background,
@@ -188,6 +191,52 @@ export class MainMenuScene extends Phaser.Scene {
     ]).setDepth(70);
 
     panel.setVisible(false);
+    close.setInputEnabled(false);
     return panel;
+  }
+
+  private bindKeyboard(): void {
+    const keyboard = this.input.keyboard;
+    if (!keyboard) {
+      return;
+    }
+
+    const startNewGame = (): void => {
+      gameSession.startNewGame();
+      this.scene.start("hub");
+    };
+
+    keyboard.on("keydown-ENTER", startNewGame);
+    keyboard.on("keydown-SPACE", startNewGame);
+    keyboard.on("keydown-N", startNewGame);
+    keyboard.on("keydown-L", () => {
+      if (!gameSession.loadSave()) {
+        return;
+      }
+
+      this.scene.start("hub");
+    });
+    keyboard.on("keydown-O", () => this.settingsOverlay?.show("graphics"));
+    keyboard.on("keydown-C", () => this.showCredits(true));
+    keyboard.on("keydown-ESC", () => {
+      if (this.creditsPanel?.visible) {
+        this.showCredits(false);
+      }
+    });
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      keyboard.removeAllListeners("keydown-ENTER");
+      keyboard.removeAllListeners("keydown-SPACE");
+      keyboard.removeAllListeners("keydown-N");
+      keyboard.removeAllListeners("keydown-L");
+      keyboard.removeAllListeners("keydown-O");
+      keyboard.removeAllListeners("keydown-C");
+      keyboard.removeAllListeners("keydown-ESC");
+    });
+  }
+
+  private showCredits(visible: boolean): void {
+    this.creditsPanel?.setVisible(visible);
+    this.creditsCloseButton?.setInputEnabled(visible);
   }
 }

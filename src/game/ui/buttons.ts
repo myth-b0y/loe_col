@@ -4,6 +4,7 @@ export type MenuButton = {
   container: Phaser.GameObjects.Container;
   label: Phaser.GameObjects.Text;
   setEnabled: (enabled: boolean) => void;
+  setInputEnabled: (enabled: boolean) => void;
   setLabel: (label: string) => void;
   setOnClick: (onClick: () => void) => void;
 };
@@ -36,6 +37,7 @@ export function createMenuButton({
   const background = scene.add
     .rectangle(0, 0, width, height, accentColor, disabled ? 0.32 : 0.88)
     .setStrokeStyle(2, 0xaed0ff, disabled ? 0.35 : 0.75);
+  background.setInteractive({ useHandCursor: true });
 
   const text = scene.add.text(0, 0, label, {
     fontFamily: "Arial",
@@ -47,22 +49,22 @@ export function createMenuButton({
 
   const button = scene.add.container(x, y, [background, text]).setDepth(depth);
   button.setSize(width, height);
-  button.setInteractive(
-    new Phaser.Geom.Rectangle(-width / 2, -height / 2, width, height),
-    Phaser.Geom.Rectangle.Contains,
-  );
 
   let enabled = !disabled;
+  let inputEnabled = true;
 
   const refresh = (): void => {
     background.setAlpha(enabled ? 0.88 : 0.32);
     background.setStrokeStyle(2, 0xaed0ff, enabled ? 0.75 : 0.35);
     text.setColor(enabled ? "#f5fbff" : "#a7b8cf");
+    if (background.input) {
+      background.input.enabled = enabled && inputEnabled;
+    }
   };
 
   refresh();
 
-  button.on("pointerover", () => {
+  background.on("pointerover", () => {
     if (!enabled) {
       return;
     }
@@ -71,14 +73,14 @@ export function createMenuButton({
     background.setFillStyle(0x215a96, 0.96);
   });
 
-  button.on("pointerout", () => {
+  background.on("pointerout", () => {
     background.setScale(1, 1);
     background.setFillStyle(accentColor, enabled ? 0.88 : 0.32);
   });
 
   let clickHandler = onClick;
 
-  button.on("pointerdown", () => {
+  background.on("pointerdown", () => {
     if (!enabled) {
       return;
     }
@@ -92,6 +94,10 @@ export function createMenuButton({
     setEnabled(nextEnabled: boolean) {
       enabled = nextEnabled;
       background.setFillStyle(accentColor, enabled ? 0.88 : 0.32);
+      refresh();
+    },
+    setInputEnabled(nextEnabled: boolean) {
+      inputEnabled = nextEnabled;
       refresh();
     },
     setLabel(nextLabel: string) {

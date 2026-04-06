@@ -35,6 +35,7 @@ export class SettingsOverlay {
   private readonly info: Phaser.GameObjects.Text;
   private readonly tabButtons: Record<SettingsTab, MenuButton>;
   private readonly rows: RowUi[];
+  private readonly closeButton: MenuButton;
   private currentTab: SettingsTab = "graphics";
 
   constructor({ scene, title = "Options", onClose }: SettingsOverlayOptions) {
@@ -65,7 +66,7 @@ export class SettingsOverlay {
       wordWrap: { width: 700 },
     }).setDepth(82);
 
-    const closeButton = createMenuButton({
+    this.closeButton = createMenuButton({
       scene,
       x: 948,
       y: 156,
@@ -134,7 +135,7 @@ export class SettingsOverlay {
       this.panel,
       this.title,
       this.info,
-      closeButton.container,
+      this.closeButton.container,
       this.tabButtons.graphics.container,
       this.tabButtons.audio.container,
       this.tabButtons.controls.container,
@@ -142,21 +143,36 @@ export class SettingsOverlay {
     ]).setDepth(80);
 
     this.root.setVisible(false);
+    this.setInputEnabled(false);
   }
 
   show(initialTab: SettingsTab = this.currentTab): void {
     this.root.setVisible(true);
+    this.setInputEnabled(true);
     this.setTab(initialTab);
   }
 
   hide(): void {
     this.root.setVisible(false);
+    this.setInputEnabled(false);
     this.onClose();
   }
 
   private setTab(tab: SettingsTab): void {
     this.currentTab = tab;
     this.refresh();
+  }
+
+  private setInputEnabled(enabled: boolean): void {
+    if (this.backdrop.input) {
+      this.backdrop.input.enabled = enabled;
+    }
+
+    this.closeButton.setInputEnabled(enabled);
+    this.tabButtons.graphics.setInputEnabled(enabled);
+    this.tabButtons.audio.setInputEnabled(enabled);
+    this.tabButtons.controls.setInputEnabled(enabled);
+    this.rows.forEach((row) => row.valueButton.setInputEnabled(enabled));
   }
 
   private refresh(): void {
