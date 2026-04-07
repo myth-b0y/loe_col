@@ -273,8 +273,8 @@ export class SettingsOverlay {
       this.setRow(4, "Attack", controls.attack, () => undefined, false);
 
       this.info.setText([
-        "Auto switches HUD presentation between desktop and touch based on the last clear input you used.",
-        "You can also lock the game to desktop or touch if you want a fixed control layout while testing.",
+        "Touch now uses one floating stick for movement and facing, plus dedicated attack and ability buttons.",
+        "Auto still switches HUD presentation between desktop and touch, or you can lock the layout while testing.",
       ]);
       return;
     }

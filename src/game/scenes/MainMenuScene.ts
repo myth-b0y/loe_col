@@ -251,6 +251,7 @@ export class MainMenuScene extends Phaser.Scene {
     return {
       version: `${GAME_CODE} ${GAME_VERSION}`,
       milestone: GAME_MILESTONE,
+      run: gameSession.getRunConfig(),
       hasSaves: gameSession.hasSaveData(),
       creditsVisible: this.creditsPanel?.visible ?? false,
     };

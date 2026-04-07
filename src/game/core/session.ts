@@ -1,5 +1,14 @@
 import Phaser from "phaser";
 
+import {
+  DEFAULT_RUN_CONFIG,
+  GAME_MODE_RULES,
+  type GameModeRules,
+  type PlayerCount,
+  type RunConfig,
+  type SessionType,
+} from "./gameModes";
+
 export type GraphicsQuality = "High" | "Balanced" | "Performance";
 export type InputModePreference = "Auto" | "Desktop" | "Touch";
 export type ResolvedInputMode = "desktop" | "touch";
@@ -55,9 +64,9 @@ export type GameSettings = {
     sfx: 100 | 80 | 60 | 40 | 20 | 0;
   };
   controls: {
-    move: "WASD / Left Stick";
-    aim: "Mouse / Aim Stick";
-    attack: "LMB Hold / Aim Stick Auto";
+    move: "WASD / Touch Stick";
+    aim: "Mouse / Stick Facing";
+    attack: "LMB Hold / Attack Button";
     pause: "Esc / Pause Button";
     inputMode: InputModePreference;
     autoAim: boolean;
@@ -121,9 +130,9 @@ const DEFAULT_SETTINGS: GameSettings = {
     sfx: 100,
   },
   controls: {
-    move: "WASD / Left Stick",
-    aim: "Mouse / Aim Stick",
-    attack: "LMB Hold / Aim Stick Auto",
+    move: "WASD / Touch Stick",
+    aim: "Mouse / Stick Facing",
+    attack: "LMB Hold / Attack Button",
     pause: "Esc / Pause Button",
     inputMode: "Auto",
     autoAim: true,
@@ -200,6 +209,7 @@ function sortByMostRecent(slots: Array<SaveData | null>): number | null {
 export class GameSession extends Phaser.Events.EventEmitter {
   settings: GameSettings = clone(DEFAULT_SETTINGS);
   saveData: SaveData = clone(DEFAULT_SAVE);
+  runConfig: RunConfig = clone(DEFAULT_RUN_CONFIG);
   activeMissionId: string | null = null;
   acceptedMissionId: string | null = null;
   pendingReward: RewardData | null = null;
@@ -219,9 +229,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
       return;
     }
 
+    this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.activeSlotIndex = 0;
     this.saveData = clone(DEFAULT_SAVE);
     this.emit("save-changed", this.saveData);
+    this.emit("run-config-changed", this.getRunConfig());
     this.emit("slots-changed", this.getSaveSlots());
   }
 
@@ -236,6 +248,32 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getActiveSlotIndex(): number {
     return this.activeSlotIndex;
+  }
+
+  getRunConfig(): RunConfig {
+    return clone(this.runConfig);
+  }
+
+  getModeRules(mode = this.runConfig.mode): GameModeRules {
+    return GAME_MODE_RULES[mode];
+  }
+
+  configureRun(nextConfig: Partial<RunConfig>): void {
+    const mode = nextConfig.mode ?? this.runConfig.mode;
+    const modeRules = GAME_MODE_RULES[mode];
+    const sessionType = nextConfig.sessionType ?? this.runConfig.sessionType;
+    const requestedPlayerCount = nextConfig.playerCount ?? this.runConfig.playerCount;
+    const clampedPlayerCount = Phaser.Math.Clamp(requestedPlayerCount, 1, modeRules.maxPlayers) as PlayerCount;
+    const resolvedPlayerCount = mode === "story" ? 1 : clampedPlayerCount;
+    const resolvedSessionType: SessionType = resolvedPlayerCount === 1 ? "solo" : sessionType;
+
+    this.runConfig = {
+      mode,
+      sessionType: resolvedSessionType,
+      playerCount: resolvedPlayerCount,
+    };
+
+    this.emit("run-config-changed", this.getRunConfig());
   }
 
   configureDeviceContext(hasTouchInput: boolean, prefersCoarsePointer: boolean): void {
@@ -299,11 +337,13 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   startNewGame(slotIndex = this.firstEmptySlotOrActive()): void {
     this.activeSlotIndex = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
+    this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.saveData = clone(DEFAULT_SAVE);
     this.activeMissionId = null;
     this.acceptedMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
+    this.emit("run-config-changed", this.getRunConfig());
     this.emit("slots-changed", this.getSaveSlots());
   }
 
@@ -343,11 +383,13 @@ export class GameSession extends Phaser.Events.EventEmitter {
     }
 
     this.saveData = mergeSaveData(slot);
+    this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.activeSlotIndex = safeSlot;
     this.activeMissionId = null;
     this.acceptedMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
+    this.emit("run-config-changed", this.getRunConfig());
     this.emit("slots-changed", this.getSaveSlots());
     return true;
   }

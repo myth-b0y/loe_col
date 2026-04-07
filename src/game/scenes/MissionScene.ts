@@ -133,11 +133,10 @@ export class MissionScene extends Phaser.Scene {
   private aimVector = new Phaser.Math.Vector2(1, 0);
   private lookPoint = new Phaser.Math.Vector2(640, 360);
   private movePointerId: number | null = null;
-  private aimPointerId: number | null = null;
+  private attackPointerId: number | null = null;
   private moveBase?: Phaser.GameObjects.Arc;
   private moveKnob?: Phaser.GameObjects.Arc;
-  private aimBase?: Phaser.GameObjects.Arc;
-  private aimKnob?: Phaser.GameObjects.Arc;
+  private attackButton?: MenuButton;
   private pulseButton?: MenuButton;
   private dashButton?: MenuButton;
   private arcButton?: MenuButton;
@@ -254,11 +253,10 @@ export class MissionScene extends Phaser.Scene {
     this.lookPoint.set(640, 360);
 
     this.movePointerId = null;
-    this.aimPointerId = null;
+    this.attackPointerId = null;
     this.moveBase = undefined;
     this.moveKnob = undefined;
-    this.aimBase = undefined;
-    this.aimKnob = undefined;
+    this.attackButton = undefined;
     this.pulseButton = undefined;
     this.dashButton = undefined;
     this.arcButton = undefined;
@@ -280,6 +278,7 @@ export class MissionScene extends Phaser.Scene {
 
     this.companion = this.add.circle(this.player.x - 48, this.player.y + 38, 12, 0xf3cc7a).setDepth(9);
     this.companion.setStrokeStyle(3, 0xfff1ba, 1);
+    this.companion.setVisible(gameSession.getModeRules().companionsEnabled);
 
     this.aimLine = this.add.graphics().setDepth(8);
     this.reticle = this.add.circle(this.lookPoint.x, this.lookPoint.y, 14, 0x7ee1ff, 0.14).setDepth(8);
@@ -373,29 +372,39 @@ export class MissionScene extends Phaser.Scene {
     this.moveKnob = this.pin(this.add.circle(148, 566, 34, 0xdde9ff, 0.72).setDepth(15));
     this.moveKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.aimBase = this.pin(this.add.circle(1114, 566, STICK_RADIUS, 0x173054, 0.36).setDepth(14));
-    this.aimBase.setStrokeStyle(3, 0x72a8ff, 0.65);
-    this.aimKnob = this.pin(this.add.circle(1114, 566, 34, 0xdde9ff, 0.72).setDepth(15));
-    this.aimKnob.setStrokeStyle(2, 0xffffff, 0.9);
-
-    const moveLabel = this.pin(this.add.text(148, 470, "MOVE", {
+    const moveLabel = this.pin(this.add.text(148, 470, "MOVE / FACE", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(15));
 
-    const aimLabel = this.pin(this.add.text(1114, 470, "AIM / FIRE", {
+    const attackLabel = this.pin(this.add.text(1114, 470, "ATTACK", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(15));
+
+    this.attackButton = createMenuButton({
+      scene: this,
+      x: 1114,
+      y: 566,
+      width: 150,
+      height: 68,
+      label: "Attack",
+      onClick: () => undefined,
+      onPress: (pointer) => this.beginTouchAttack(pointer),
+      onRelease: (pointer) => this.endTouchAttack(pointer),
+      depth: 15,
+      accentColor: 0x1f5a87,
+    });
+    this.attackButton.container.setScrollFactor(0);
 
     this.pulseButton = createMenuButton({
       scene: this,
-      x: 912,
-      y: 566,
+      x: 922,
+      y: 572,
       width: 134,
       height: 62,
       label: "Pulse",
@@ -407,8 +416,8 @@ export class MissionScene extends Phaser.Scene {
 
     this.arcButton = createMenuButton({
       scene: this,
-      x: 930,
-      y: 486,
+      x: 942,
+      y: 494,
       width: 126,
       height: 54,
       label: "Arc",
@@ -420,8 +429,8 @@ export class MissionScene extends Phaser.Scene {
 
     this.dashButton = createMenuButton({
       scene: this,
-      x: 1046,
-      y: 414,
+      x: 1060,
+      y: 420,
       width: 122,
       height: 54,
       label: "Dash",
@@ -434,10 +443,9 @@ export class MissionScene extends Phaser.Scene {
     this.touchUiObjects.push(
       this.moveBase,
       this.moveKnob,
-      this.aimBase,
-      this.aimKnob,
       moveLabel,
-      aimLabel,
+      attackLabel,
+      this.attackButton.container,
       this.pulseButton.container,
       this.arcButton.container,
       this.dashButton.container,
@@ -501,17 +509,10 @@ export class MissionScene extends Phaser.Scene {
           return;
         }
 
-        if (pointer.x < GAME_WIDTH * 0.5 && this.movePointerId === null && this.moveBase && this.moveKnob) {
+        if (this.movePointerId === null && this.moveBase && this.moveKnob) {
           this.movePointerId = pointer.id;
           this.anchorMoveStick(pointer.x, pointer.y);
           this.updateMoveStick(pointer);
-          return;
-        }
-
-        if (pointer.x >= GAME_WIDTH * 0.5 && this.aimPointerId === null && this.aimBase && this.aimKnob) {
-          this.aimPointerId = pointer.id;
-          this.anchorAimStick(pointer.x, pointer.y);
-          this.updateAimStick(pointer);
         }
 
         return;
@@ -543,11 +544,6 @@ export class MissionScene extends Phaser.Scene {
           return;
         }
 
-        if (pointer.id === this.aimPointerId && pointer.isDown) {
-          this.updateAimStick(pointer);
-          return;
-        }
-
         return;
       }
     });
@@ -560,9 +556,8 @@ export class MissionScene extends Phaser.Scene {
           this.resetMoveStick();
         }
 
-        if (pointer.id === this.aimPointerId) {
-          this.aimPointerId = null;
-          this.resetAimStick();
+        if (pointer.id === this.attackPointerId) {
+          this.endTouchAttack(pointer);
         }
         return;
       }
@@ -600,6 +595,7 @@ export class MissionScene extends Phaser.Scene {
     this.player.setPosition(this.playArea.x + 90, this.playArea.centerY);
     this.player.setAlpha(1);
     this.companion.setPosition(this.player.x - 48, this.player.y + 38);
+    this.companion.setVisible(gameSession.getModeRules().companionsEnabled);
     this.lookPoint.set(this.player.x + 180, this.player.y);
 
     this.progressDots.forEach((dot, dotIndex) => {
@@ -810,9 +806,8 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const touchAutoFire = this.touchMode && this.aimPointerId !== null && this.aimVector.lengthSq() > 0.2;
     const lockAutoFire = gameSession.settings.controls.autoAim && this.autoAimTarget !== null;
-    if (!this.fireHeld && !touchAutoFire && !lockAutoFire) {
+    if (!this.fireHeld && !lockAutoFire) {
       return;
     }
 
@@ -822,11 +817,17 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateCompanion(dt: number): void {
+    if (!gameSession.getModeRules().companionsEnabled) {
+      this.companion.setVisible(false);
+      return;
+    }
+
     const desiredX = this.player.x - 44;
     const desiredY = this.player.y + 34;
     const smoothing = 1 - Math.exp(-dt * 6);
     this.companion.x = Phaser.Math.Linear(this.companion.x, desiredX, smoothing);
     this.companion.y = Phaser.Math.Linear(this.companion.y, desiredY, smoothing);
+    this.companion.setVisible(true);
 
     const target = this.getNearestEnemy(this.companion.x, this.companion.y, 340);
     if (!target || this.companionCooldown > 0 || this.currentStage?.type === "rest") {
@@ -1350,6 +1351,7 @@ export class MissionScene extends Phaser.Scene {
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
     return Boolean(
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || (this.attackButton?.container.visible && this.attackButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.pulseButton?.container.visible && this.pulseButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.arcButton?.container.visible && this.arcButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.dashButton?.container.visible && this.dashButton.container.getBounds().contains(pointer.x, pointer.y)),
@@ -1370,7 +1372,10 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.moveBase.setPosition(Phaser.Math.Clamp(x, 110, GAME_WIDTH * 0.42), Phaser.Math.Clamp(y, 380, 628));
+    this.moveBase.setPosition(
+      Phaser.Math.Clamp(x, 110, GAME_WIDTH - 110),
+      Phaser.Math.Clamp(y, 380, 628),
+    );
     this.moveBase.setFillStyle(0x173054, 0.52);
     this.moveKnob.setPosition(this.moveBase.x, this.moveBase.y);
   }
@@ -1397,6 +1402,7 @@ export class MissionScene extends Phaser.Scene {
       1,
     );
     this.moveVector.set(vector.x, vector.y).normalize().scale(strength);
+    this.aimVector.set(vector.x, vector.y).normalize();
   }
 
   private resetMoveStick(): void {
@@ -1408,41 +1414,18 @@ export class MissionScene extends Phaser.Scene {
     this.moveKnob.setPosition(148, 566);
   }
 
-  private anchorAimStick(x: number, y: number): void {
-    if (!this.aimBase || !this.aimKnob) {
-      return;
-    }
-
-    this.aimBase.setPosition(Phaser.Math.Clamp(x, GAME_WIDTH * 0.58, 1188), Phaser.Math.Clamp(y, 350, 628));
-    this.aimBase.setFillStyle(0x173054, 0.52);
-    this.aimKnob.setPosition(this.aimBase.x, this.aimBase.y);
+  private beginTouchAttack(pointer: Phaser.Input.Pointer): void {
+    this.attackPointerId = pointer.id;
+    this.fireHeld = true;
   }
 
-  private updateAimStick(pointer: Phaser.Input.Pointer): void {
-    if (!this.aimBase || !this.aimKnob) {
+  private endTouchAttack(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id !== this.attackPointerId) {
       return;
     }
 
-    const vector = new Phaser.Math.Vector2(pointer.x - this.aimBase.x, pointer.y - this.aimBase.y);
-    const distance = vector.length();
-    if (distance > STICK_RADIUS) {
-      vector.normalize().scale(STICK_RADIUS);
-    }
-    this.aimKnob.setPosition(this.aimBase.x + vector.x, this.aimBase.y + vector.y);
-    if (distance <= STICK_DEADZONE) {
-      return;
-    }
-
-    this.aimVector.set(vector.x, vector.y).normalize();
-  }
-
-  private resetAimStick(): void {
-    if (!this.aimBase || !this.aimKnob) {
-      return;
-    }
-
-    this.aimBase.setPosition(1114, 566).setFillStyle(0x173054, 0.36);
-    this.aimKnob.setPosition(1114, 566);
+    this.attackPointerId = null;
+    this.fireHeld = false;
   }
 
   private getNearestEnemy(x: number, y: number, range: number): Enemy | null {
@@ -1502,11 +1485,10 @@ export class MissionScene extends Phaser.Scene {
 
   private releaseMissionControls(): void {
     this.movePointerId = null;
-    this.aimPointerId = null;
+    this.attackPointerId = null;
     this.fireHeld = false;
     this.moveVector.set(0, 0);
     this.resetMoveStick();
-    this.resetAimStick();
   }
 
   private getAutoAimTarget(direction: Phaser.Math.Vector2): Enemy | null {
@@ -1615,13 +1597,14 @@ export class MissionScene extends Phaser.Scene {
     this.pulseButton?.setInputEnabled(this.touchMode);
     this.arcButton?.setInputEnabled(this.touchMode);
     this.dashButton?.setInputEnabled(this.touchMode);
+    this.attackButton?.setInputEnabled(this.touchMode);
 
     if (!this.touchMode) {
       this.movePointerId = null;
-      this.aimPointerId = null;
+      this.attackPointerId = null;
       this.moveVector.set(0, 0);
+      this.fireHeld = false;
       this.resetMoveStick();
-      this.resetAimStick();
     }
   }
 
@@ -1641,11 +1624,13 @@ export class MissionScene extends Phaser.Scene {
 
   getDebugSnapshot(): Record<string, unknown> {
     return {
+      run: gameSession.getRunConfig(),
       touchMode: this.touchMode,
       stageIndex: this.stageIndex,
       stageName: this.currentStage?.name ?? null,
       missionComplete: this.missionComplete,
       autoAimTarget: this.autoAimTarget?.kind ?? null,
+      touchAttackHeld: this.attackPointerId !== null,
       playerHp: this.playerHp,
       player: {
         x: Math.round(this.player.x),

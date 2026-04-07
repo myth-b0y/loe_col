@@ -17,6 +17,8 @@ type ButtonOptions = {
   height?: number;
   label: string;
   onClick: () => void;
+  onPress?: (pointer: Phaser.Input.Pointer) => void;
+  onRelease?: (pointer: Phaser.Input.Pointer) => void;
   depth?: number;
   accentColor?: number;
   disabled?: boolean;
@@ -30,6 +32,8 @@ export function createMenuButton({
   height = 48,
   label,
   onClick,
+  onPress,
+  onRelease,
   depth = 10,
   accentColor = 0x194777,
   disabled = false,
@@ -79,13 +83,32 @@ export function createMenuButton({
   });
 
   let clickHandler = onClick;
+  let pressHandler = onPress;
+  let releaseHandler = onRelease;
 
-  background.on("pointerdown", () => {
+  background.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
     if (!enabled) {
       return;
     }
 
+    pressHandler?.(pointer);
     clickHandler();
+  });
+
+  background.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+    if (!enabled) {
+      return;
+    }
+
+    releaseHandler?.(pointer);
+  });
+
+  background.on("pointerupoutside", (pointer: Phaser.Input.Pointer) => {
+    if (!enabled) {
+      return;
+    }
+
+    releaseHandler?.(pointer);
   });
 
   return {

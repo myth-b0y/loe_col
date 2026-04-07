@@ -761,6 +761,7 @@ export class HubScene extends Phaser.Scene {
 
   getDebugSnapshot(): Record<string, unknown> {
     return {
+      run: gameSession.getRunConfig(),
       touchMode: this.touchMode,
       player: {
         x: Math.round(this.player.x),
