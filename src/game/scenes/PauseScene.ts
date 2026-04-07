@@ -24,9 +24,10 @@ export class PauseScene extends Phaser.Scene {
   create(data: PauseSceneData): void {
     this.returnSceneKey = data.returnSceneKey;
     this.allowSave = data.allowSave;
+    const isMissionPause = this.returnSceneKey === "mission";
 
     this.add.rectangle(640, 360, 1280, 720, 0x02060b, 0.7);
-    this.add.rectangle(640, 360, 520, 468, 0x091321, 0.98).setStrokeStyle(3, 0x79abed, 0.82);
+    this.add.rectangle(640, 360, 520, isMissionPause ? 540 : 468, 0x091321, 0.98).setStrokeStyle(3, 0x79abed, 0.82);
 
     this.add.text(470, 162, "Paused", {
       fontFamily: "Arial",
@@ -90,10 +91,23 @@ export class PauseScene extends Phaser.Scene {
       depth: 12,
     });
 
+    if (isMissionPause) {
+      createMenuButton({
+        scene: this,
+        x: 640,
+        y: 518,
+        width: 260,
+        label: "Return To Ship",
+        onClick: () => this.abandonMission(),
+        depth: 12,
+        accentColor: 0x5a4521,
+      });
+    }
+
     createMenuButton({
       scene: this,
       x: 640,
-      y: 518,
+      y: isMissionPause ? 576 : 518,
       width: 260,
       label: "Quit To Main Menu",
       onClick: () => this.leaveToMenu(),
@@ -101,7 +115,7 @@ export class PauseScene extends Phaser.Scene {
       accentColor: 0x4f2630,
     });
 
-    this.statusText = this.add.text(640, 586, "", {
+    this.statusText = this.add.text(640, isMissionPause ? 614 : 586, "", {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#d1e4ff",
@@ -153,5 +167,14 @@ export class PauseScene extends Phaser.Scene {
     this.scene.stop(this.returnSceneKey);
     this.scene.stop();
     this.scene.start("hub");
+  }
+
+  private abandonMission(): void {
+    const missionId = gameSession.activeMissionId;
+    gameSession.leaveMission({
+      missionId,
+      requeue: Boolean(missionId),
+    });
+    this.leaveToHub();
   }
 }
