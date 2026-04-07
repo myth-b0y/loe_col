@@ -1,6 +1,16 @@
 import Phaser from "phaser";
 
 import {
+  DEFAULT_SQUAD_ASSIGNMENTS,
+  canCompanionOccupySlot,
+  getCompanionDefinition,
+  getFormationSlot,
+  type CompanionDefinition,
+  type CompanionId,
+  type FormationSlotId,
+  type SquadAssignment,
+} from "../content/companions";
+import {
   DEFAULT_RUN_CONFIG,
   GAME_MODE_RULES,
   type GameModeRules,
@@ -87,7 +97,7 @@ export type RewardData = {
 };
 
 export type SaveData = {
-  version: 2;
+  version: 3;
   meta: {
     lastSavedAt: string | null;
   };
@@ -102,6 +112,7 @@ export type SaveData = {
     ability: string;
     support: string;
     companion: string;
+    squad: SquadAssignment[];
   };
   progression: {
     completedMissionIds: string[];
@@ -150,7 +161,7 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const DEFAULT_SAVE: SaveData = {
-  version: 2,
+  version: 3,
   meta: {
     lastSavedAt: null,
   },
@@ -164,7 +175,8 @@ const DEFAULT_SAVE: SaveData = {
     weapon: "Lumen Carbine",
     ability: "Pulse Burst",
     support: "Arc Lance",
-    companion: "Sera - Ranger Support",
+    companion: "Rook / Sera",
+    squad: clone([...DEFAULT_SQUAD_ASSIGNMENTS]),
   },
   progression: {
     completedMissionIds: [],
@@ -181,10 +193,10 @@ function createEmptySlots(): Array<SaveData | null> {
 }
 
 function mergeSaveData(parsed: Partial<SaveData>): SaveData {
-  return {
+  const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 2,
+    version: 3 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
     loadout: { ...clone(DEFAULT_SAVE.loadout), ...parsed.loadout },
@@ -193,6 +205,44 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...parsed.progression,
     },
   };
+
+  const normalizedSquad = normalizeSquadAssignments(merged.loadout.squad ?? DEFAULT_SAVE.loadout.squad);
+  merged.loadout.squad = normalizedSquad;
+  merged.loadout.companion = summarizeSquadAssignments(normalizedSquad);
+  return merged;
+}
+
+function summarizeSquadAssignments(assignments: SquadAssignment[]): string {
+  if (assignments.length === 0) {
+    return "No companions assigned";
+  }
+
+  return assignments
+    .map((assignment) => getCompanionDefinition(assignment.companionId)?.name ?? assignment.companionId)
+    .join(" / ");
+}
+
+function normalizeSquadAssignments(assignments: SquadAssignment[]): SquadAssignment[] {
+  const normalized: SquadAssignment[] = [];
+  const seenCompanions = new Set<CompanionId>();
+  const seenSlots = new Set<FormationSlotId>();
+
+  assignments.forEach((assignment) => {
+    const companion = getCompanionDefinition(assignment.companionId);
+    const slot = getFormationSlot(assignment.slotId);
+    if (!companion || !slot || seenCompanions.has(companion.id) || seenSlots.has(slot.id) || !canCompanionOccupySlot(companion, slot)) {
+      return;
+    }
+
+    seenCompanions.add(companion.id);
+    seenSlots.add(slot.id);
+    normalized.push({
+      companionId: companion.id,
+      slotId: slot.id,
+    });
+  });
+
+  return normalized.slice(0, 3);
 }
 
 function sortByMostRecent(slots: Array<SaveData | null>): number | null {
@@ -336,6 +386,34 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getDifficultyProfile(): DifficultyProfile {
     return DIFFICULTY_PROFILES[this.settings.gameplay.difficulty];
+  }
+
+  getSquadAssignments(): SquadAssignment[] {
+    return clone(this.saveData.loadout.squad);
+  }
+
+  getSelectedCompanions(): Array<{ companion: CompanionDefinition; slotId: FormationSlotId }> {
+    return this.getSquadAssignments()
+      .map((assignment) => {
+        const companion = getCompanionDefinition(assignment.companionId);
+        if (!companion) {
+          return null;
+        }
+
+        return {
+          companion,
+          slotId: assignment.slotId,
+        };
+      })
+      .filter((entry): entry is { companion: CompanionDefinition; slotId: FormationSlotId } => entry !== null);
+  }
+
+  setSquadAssignments(assignments: SquadAssignment[]): boolean {
+    const normalized = normalizeSquadAssignments(assignments);
+    this.saveData.loadout.squad = normalized;
+    this.saveData.loadout.companion = summarizeSquadAssignments(normalized);
+    this.emit("save-changed", this.saveData);
+    return true;
   }
 
   getPreferredNewGameSlot(): number {

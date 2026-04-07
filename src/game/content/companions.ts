@@ -1,9 +1,28 @@
 export type CompanionAttackStyle = "ranged" | "shield";
 export type CompanionId = "sera" | "rook";
+export type CompanionRole = "dps" | "tank" | "healer";
+export type FormationZone = "front" | "back" | "side";
+export type FormationSlotId = "front-left" | "front-right" | "back-left" | "back-right" | "left" | "right";
+
+export type FormationSlotDefinition = {
+  id: FormationSlotId;
+  label: string;
+  zone: FormationZone;
+  boardX: number;
+  boardY: number;
+  missionForward: number;
+  missionLateral: number;
+};
+
+export type SquadAssignment = {
+  companionId: CompanionId;
+  slotId: FormationSlotId;
+};
 
 export type CompanionDefinition = {
   id: CompanionId;
   name: string;
+  role: CompanionRole;
   roleLabel: string;
   attackStyle: CompanionAttackStyle;
   coreColor: number;
@@ -27,6 +46,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
   {
     id: "sera",
     name: "Sera",
+    role: "dps",
     roleLabel: "Covering Fire",
     attackStyle: "ranged",
     coreColor: 0xf3cc7a,
@@ -48,6 +68,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
   {
     id: "rook",
     name: "Rook",
+    role: "tank",
     roleLabel: "Shield Vanguard",
     attackStyle: "shield",
     coreColor: 0x79d98e,
@@ -67,3 +88,85 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     },
   },
 ] as const;
+
+export const FORMATION_SLOTS: readonly FormationSlotDefinition[] = [
+  {
+    id: "front-left",
+    label: "Front Left",
+    zone: "front",
+    boardX: -92,
+    boardY: -94,
+    missionForward: 64,
+    missionLateral: -30,
+  },
+  {
+    id: "front-right",
+    label: "Front Right",
+    zone: "front",
+    boardX: 92,
+    boardY: -94,
+    missionForward: 64,
+    missionLateral: 30,
+  },
+  {
+    id: "back-left",
+    label: "Back Left",
+    zone: "back",
+    boardX: -92,
+    boardY: 94,
+    missionForward: -62,
+    missionLateral: -28,
+  },
+  {
+    id: "back-right",
+    label: "Back Right",
+    zone: "back",
+    boardX: 92,
+    boardY: 94,
+    missionForward: -62,
+    missionLateral: 28,
+  },
+  {
+    id: "left",
+    label: "Left Wing",
+    zone: "side",
+    boardX: -142,
+    boardY: 0,
+    missionForward: 0,
+    missionLateral: -72,
+  },
+  {
+    id: "right",
+    label: "Right Wing",
+    zone: "side",
+    boardX: 142,
+    boardY: 0,
+    missionForward: 0,
+    missionLateral: 72,
+  },
+] as const;
+
+export const DEFAULT_SQUAD_ASSIGNMENTS: readonly SquadAssignment[] = [
+  { companionId: "rook", slotId: "front-left" },
+  { companionId: "sera", slotId: "right" },
+] as const;
+
+export function getCompanionDefinition(companionId: CompanionId): CompanionDefinition | undefined {
+  return STORY_COMPANIONS.find((companion) => companion.id === companionId);
+}
+
+export function getFormationSlot(slotId: FormationSlotId): FormationSlotDefinition | undefined {
+  return FORMATION_SLOTS.find((slot) => slot.id === slotId);
+}
+
+export function canCompanionOccupySlot(companion: CompanionDefinition, slot: FormationSlotDefinition): boolean {
+  if (companion.role === "tank") {
+    return slot.zone === "front";
+  }
+
+  if (companion.role === "healer") {
+    return slot.zone === "back";
+  }
+
+  return true;
+}
