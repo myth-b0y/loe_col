@@ -43,10 +43,12 @@ export function createMenuButton({
     .rectangle(0, 0, width, height, accentColor, disabled ? 0.32 : 0.88)
     .setStrokeStyle(2, 0xaed0ff, disabled ? 0.35 : 0.75);
   background.setInteractive({ useHandCursor: true });
+  background.setScrollFactor(0);
 
   const cooldownOverlay = scene.add.rectangle(0, -height / 2 + 3, width - 6, height - 6, 0x03070d, 0.42)
     .setOrigin(0.5, 0)
     .setVisible(false);
+  cooldownOverlay.setScrollFactor(0);
 
   const text = scene.add.text(0, 0, label, {
     fontFamily: "Arial",
@@ -55,6 +57,7 @@ export function createMenuButton({
     fontStyle: "bold",
   });
   text.setOrigin(0.5);
+  text.setScrollFactor(0);
 
   const button = scene.add.container(x, y, [background, cooldownOverlay, text]).setDepth(depth);
   button.setSize(width, height);

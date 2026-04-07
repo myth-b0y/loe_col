@@ -362,7 +362,7 @@ export class MissionScene extends Phaser.Scene {
     this.toolbarCards = {
       fire: this.createAbilityCard(296, 652, "Primary Fire", "LMB Hold | Ready"),
       pulse: this.createAbilityCard(516, 652, "Pulse Burst", "Q | Ready"),
-      arc: this.createAbilityCard(736, 652, "Arc Lance", "R | Ready"),
+      arc: this.createAbilityCard(736, 652, "Arc Lance", "E | Ready"),
       dash: this.createAbilityCard(956, 652, "Dash Step", "Shift / RMB | Ready"),
     };
   }
@@ -469,7 +469,7 @@ export class MissionScene extends Phaser.Scene {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
       pulse: Phaser.Input.Keyboard.KeyCodes.Q,
-      arc: Phaser.Input.Keyboard.KeyCodes.R,
+      arc: Phaser.Input.Keyboard.KeyCodes.E,
       dash: Phaser.Input.Keyboard.KeyCodes.SHIFT,
     }) as typeof this.moveKeys;
 
@@ -477,7 +477,7 @@ export class MissionScene extends Phaser.Scene {
       this.reportDesktopInput();
       this.castPulse();
     });
-    keyboard.on("keydown-R", () => {
+    keyboard.on("keydown-E", () => {
       this.reportDesktopInput();
       this.castArcLance();
     });
@@ -492,7 +492,7 @@ export class MissionScene extends Phaser.Scene {
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-Q");
-      keyboard.removeAllListeners("keydown-R");
+      keyboard.removeAllListeners("keydown-E");
       keyboard.removeAllListeners("keydown-SHIFT");
       keyboard.removeAllListeners("keydown-ESC");
     });
@@ -1342,7 +1342,7 @@ export class MissionScene extends Phaser.Scene {
             : "LMB Hold | Manual",
       );
       this.toolbarCards.pulse.detail.setText(this.getCooldownDetail("Q", this.pulseCooldown, combatLocked));
-      this.toolbarCards.arc.detail.setText(this.getCooldownDetail("R", this.arcCooldown, combatLocked));
+      this.toolbarCards.arc.detail.setText(this.getCooldownDetail("E", this.arcCooldown, combatLocked));
       this.toolbarCards.dash.detail.setText(this.getCooldownDetail("Shift / RMB", this.dashCooldown, combatLocked));
       this.setAbilityCardColor(this.toolbarCards.pulse, this.pulseCooldown <= 0 ? 0x144d6a : 0x17314f);
       this.setAbilityCardColor(this.toolbarCards.arc, this.arcCooldown <= 0 ? 0x5a4617 : 0x17314f);

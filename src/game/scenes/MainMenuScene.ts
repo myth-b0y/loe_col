@@ -30,7 +30,7 @@ export class MainMenuScene extends Phaser.Scene {
       fontStyle: "bold",
     });
 
-    this.add.text(160, 144, "Champions of Light", {
+    this.add.text(160, 144, "Circle of Light", {
       fontFamily: "Arial",
       fontSize: "58px",
       color: "#f6fbff",
