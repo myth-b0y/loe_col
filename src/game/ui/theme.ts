@@ -62,13 +62,11 @@ export function drawCosmicBackdrop(scene: Phaser.Scene, { count = 110, seed = 7 
   nebula.fillGradientStyle(0x09131f, 0x050a13, 0x0d1730, 0x060b15, 0.95, 0.95, 0.72, 0.95);
   nebula.fillRect(0, 0, 1280, 720);
 
-  const mist = scene.add.graphics().setDepth(-18);
-  mist.fillStyle(0x24507e, 0.07);
-  mist.fillCircle(968, 208, 220);
-  mist.fillStyle(0x79c9ff, 0.04);
-  mist.fillCircle(816, 524, 184);
-  mist.fillStyle(0xc59cff, 0.04);
-  mist.fillCircle(422, 212, 142);
+  const horizon = scene.add.graphics().setDepth(-18);
+  horizon.fillStyle(0x17304f, 0.08);
+  horizon.fillRect(0, 0, 1280, 180);
+  horizon.fillStyle(0x11253e, 0.06);
+  horizon.fillRect(0, 540, 1280, 180);
 
   const stars = scene.add.graphics().setDepth(-17);
   const random = new Phaser.Math.RandomDataGenerator([`${seed}`]);
