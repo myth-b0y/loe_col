@@ -52,10 +52,18 @@ type HubCompanionActor = {
 type DeployRosterCard = {
   companionId: CompanionId;
   companion: CompanionDefinition;
+  baseY: number;
   container: Phaser.GameObjects.Container;
   frame: Phaser.GameObjects.Rectangle;
+  beam: Phaser.GameObjects.Graphics;
+  beamCore: Phaser.GameObjects.Graphics;
+  portraitGlow: Phaser.GameObjects.Arc;
+  portraitHead: Phaser.GameObjects.Arc;
+  portraitBody: Phaser.GameObjects.Rectangle;
+  pedestal: Phaser.GameObjects.Ellipse;
   title: Phaser.GameObjects.Text;
   detail: Phaser.GameObjects.Text;
+  slotText: Phaser.GameObjects.Text;
 };
 
 type FormationSlotUi = {
@@ -92,6 +100,7 @@ export class HubScene extends Phaser.Scene {
   private deployRosterCards: DeployRosterCard[] = [];
   private deploySlotUis: FormationSlotUi[] = [];
   private selectedDeployCompanionId: CompanionId | null = null;
+  private hoveredDeployCompanionId: CompanionId | null = null;
   private promptText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private rewardText?: Phaser.GameObjects.Text;
@@ -458,120 +467,234 @@ export class HubScene extends Phaser.Scene {
   }
 
   private createDeployOverlay(): void {
-    const backdrop = this.add.rectangle(640, 360, 1280, 720, 0x02060b, 0.82)
+    const backdrop = this.add.rectangle(640, 360, 1280, 720, 0x01040b, 0.94)
       .setDepth(40)
       .setVisible(false)
       .setInteractive();
-    const panel = this.add.rectangle(640, 360, 1100, 600, 0x091321, 0.985)
+    backdrop.on("pointerdown", () => this.closeDeployOverlay());
+
+    const shadow = this.add.rectangle(640, 360, 1144, 638, 0x000000, 0.36)
+      .setDepth(41);
+    const panel = this.add.rectangle(640, 360, 1124, 618, 0x040913, 1)
       .setDepth(41)
-      .setStrokeStyle(3, 0x79abed, 0.84);
-    const title = this.add.text(160, 84, "Deployment Prep", {
+      .setStrokeStyle(3, 0x6f9fd7, 0.84);
+    const panelInset = this.add.rectangle(640, 360, 1086, 580, 0x08111b, 0.985)
+      .setDepth(41)
+      .setStrokeStyle(1, 0x223852, 0.72);
+    const headerBand = this.add.rectangle(640, 126, 1026, 106, 0x0b1624, 0.98)
+      .setDepth(41)
+      .setStrokeStyle(2, 0x294665, 0.78);
+    const rosterBand = this.add.rectangle(640, 298, 1026, 252, 0x09111a, 0.985)
+      .setDepth(41)
+      .setStrokeStyle(2, 0x223852, 0.78);
+    const footerBand = this.add.rectangle(640, 618, 1026, 66, 0x08111a, 0.98)
+      .setDepth(41)
+      .setStrokeStyle(1, 0x223852, 0.74);
+    const title = this.add.text(146, 86, "Deployment Prep", {
       fontFamily: "Arial",
-      fontSize: "34px",
+      fontSize: "32px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setDepth(42);
-    this.deploySubtitle = this.add.text(160, 126, "Pick up to 3 companions, then assign them to formation slots around the player.", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#b7d1f3",
-    }).setDepth(42);
-    this.deployMissionText = this.add.text(160, 158, "", {
+    this.deploySubtitle = this.add.text(146, 124, "Pick up to 3 companions, then lock in where they stand around you before launch.", {
       fontFamily: "Arial",
       fontSize: "17px",
-      color: "#9fc6ff",
+      color: "#bdd4f3",
+      wordWrap: { width: 620 },
     }).setDepth(42);
-
-    const rosterFrame = this.add.rectangle(640, 224, 960, 118, 0x102035, 0.94)
-      .setDepth(41)
-      .setStrokeStyle(2, 0x35577f, 0.74);
-    const formationFrame = this.add.rectangle(640, 414, 720, 264, 0x0f1d31, 0.94)
-      .setDepth(41)
-      .setStrokeStyle(2, 0x35577f, 0.74);
-    const formationTitle = this.add.text(414, 300, "Formation Board", {
+    this.deployMissionText = this.add.text(146, 164, "", {
       fontFamily: "Arial",
-      fontSize: "22px",
+      fontSize: "16px",
+      color: "#8fc9ff",
+    }).setDepth(42);
+    const rosterTitle = this.add.text(640, 186, "Mission Roster", {
+      fontFamily: "Arial",
+      fontSize: "20px",
       color: "#f5fbff",
       fontStyle: "bold",
-    }).setDepth(42);
-    const formationHint = this.add.text(414, 330, "Tanks front, healers back, DPS anywhere. Click a roster card, then a slot.", {
-      fontFamily: "Arial",
-      fontSize: "15px",
-      color: "#bed4f1",
-    }).setDepth(42);
+    }).setOrigin(0.5).setDepth(42);
+
+    const rosterCount = STORY_COMPANIONS.length;
+    const rosterGap = rosterCount >= 6 ? 12 : rosterCount >= 4 ? 18 : 28;
+    const rosterWidth = 900;
+    const cardWidth = Phaser.Math.Clamp(
+      Math.floor((rosterWidth - rosterGap * Math.max(0, rosterCount - 1)) / Math.max(1, rosterCount)),
+      126,
+      188,
+    );
+    const cardHeight = 210;
+    const rowWidth = cardWidth * rosterCount + rosterGap * Math.max(0, rosterCount - 1);
+    const rowStartX = 640 - rowWidth / 2 + cardWidth / 2;
+    const rowY = 294;
 
     const rosterCards = STORY_COMPANIONS.map((companion, index) => {
-      const x = 360 + index * 250;
-      const frame = this.add.rectangle(x, 224, 214, 84, 0x16314d, 0.95)
+      const x = rowStartX + index * (cardWidth + rosterGap);
+      const frame = this.add.rectangle(0, 0, cardWidth, cardHeight, 0x0a1320, 0.9)
         .setDepth(42)
-        .setStrokeStyle(2, companion.trimColor, 0.62)
+        .setStrokeStyle(2, companion.trimColor, 0.4)
         .setInteractive({ useHandCursor: true });
-      const portrait = this.add.circle(x - 78, 224, companion.radius + 6, companion.coreColor, 1).setDepth(43);
-      portrait.setStrokeStyle(3, companion.trimColor, 1);
-      const titleText = this.add.text(x - 44, 204, companion.name, {
+
+      const beam = this.add.graphics({ x: 0, y: -8 }).setDepth(42);
+      beam.fillStyle(companion.coreColor, 1);
+      beam.fillPoints([
+        new Phaser.Geom.Point(-18, -94),
+        new Phaser.Geom.Point(18, -94),
+        new Phaser.Geom.Point(62, 42),
+        new Phaser.Geom.Point(-62, 42),
+      ], true);
+      beam.setAlpha(0.12);
+
+      const beamCore = this.add.graphics({ x: 0, y: -6 }).setDepth(42);
+      beamCore.fillStyle(companion.trimColor, 1);
+      beamCore.fillPoints([
+        new Phaser.Geom.Point(-10, -96),
+        new Phaser.Geom.Point(10, -96),
+        new Phaser.Geom.Point(30, 38),
+        new Phaser.Geom.Point(-30, 38),
+      ], true);
+      beamCore.setAlpha(0.16);
+
+      const portraitGlow = this.add.circle(0, -10, 52, companion.coreColor, 0.12).setDepth(43);
+      portraitGlow.setStrokeStyle(2, companion.trimColor, 0.18);
+
+      const portraitBody = this.add.rectangle(0, 8, Math.min(58, Math.floor(cardWidth * 0.42)), 82, companion.coreColor, 0.8)
+        .setDepth(44);
+      portraitBody.setStrokeStyle(3, companion.trimColor, 0.92);
+
+      const portraitHead = this.add.circle(0, -56, 18, companion.trimColor, 0.98).setDepth(45);
+      portraitHead.setStrokeStyle(3, companion.coreColor, 0.9);
+
+      const pedestal = this.add.ellipse(0, 42, 106, 22, companion.coreColor, 0.12).setDepth(43);
+      pedestal.setStrokeStyle(2, companion.trimColor, 0.26);
+
+      const titleText = this.add.text(0, 70, companion.name, {
         fontFamily: "Arial",
-        fontSize: "20px",
+        fontSize: cardWidth < 150 ? "16px" : "18px",
         color: "#f7fbff",
         fontStyle: "bold",
-      }).setDepth(43);
-      const detail = this.add.text(x - 44, 230, `${companion.roleLabel} | ${companion.maxHp} hp`, {
+      }).setOrigin(0.5).setDepth(45);
+      const detail = this.add.text(0, 92, companion.roleLabel, {
         fontFamily: "Arial",
-        fontSize: "14px",
+        fontSize: "13px",
         color: "#cfe0f7",
-      }).setDepth(43);
-      const container = this.add.container(0, 0, [frame, portrait, titleText, detail]).setDepth(42);
+        align: "center",
+        wordWrap: { width: cardWidth - 18 },
+      }).setOrigin(0.5, 0).setDepth(45);
+      const slotText = this.add.text(0, 116, "Unassigned", {
+        fontFamily: "Arial",
+        fontSize: "12px",
+        color: "#8ea5bf",
+        fontStyle: "bold",
+        align: "center",
+        wordWrap: { width: cardWidth - 18 },
+      }).setOrigin(0.5, 0).setDepth(45);
+
       frame.on("pointerdown", () => this.handleDeployRosterSelect(companion.id));
+      frame.on("pointerover", () => {
+        this.hoveredDeployCompanionId = companion.id;
+        this.refreshDeployOverlay();
+      });
+      frame.on("pointerout", () => {
+        if (this.hoveredDeployCompanionId === companion.id) {
+          this.hoveredDeployCompanionId = null;
+          this.refreshDeployOverlay();
+        }
+      });
+
+      const container = this.add.container(x, rowY, [
+        frame,
+        beam,
+        beamCore,
+        pedestal,
+        portraitGlow,
+        portraitBody,
+        portraitHead,
+        titleText,
+        detail,
+        slotText,
+      ]).setDepth(42);
+
       return {
         companionId: companion.id,
         companion,
+        baseY: rowY,
         container,
         frame,
+        beam,
+        beamCore,
+        portraitGlow,
+        portraitHead,
+        portraitBody,
+        pedestal,
         title: titleText,
         detail,
+        slotText,
       };
     });
 
-    const centerX = 640;
-    const centerY = 432;
-    const playerCore = this.add.circle(centerX, centerY, 20, 0xf2f7ff, 1).setDepth(43);
-    playerCore.setStrokeStyle(4, 0x7caeff, 1);
-    const playerLabel = this.add.text(centerX, centerY + 34, "Player", {
+    const formationFrame = this.add.rectangle(640, 532, 580, 138, 0x0b1522, 0.98)
+      .setDepth(41)
+      .setStrokeStyle(2, 0x294665, 0.78);
+    const formationTitle = this.add.text(640, 440, "Formation Layout", {
       fontFamily: "Arial",
-      fontSize: "15px",
+      fontSize: "18px",
+      color: "#f5fbff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(42);
+    const formationHint = this.add.text(640, 462, "Tanks forward, healers back, DPS anywhere.", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#8ea5bf",
+    }).setOrigin(0.5).setDepth(42);
+
+    const centerX = 640;
+    const centerY = 532;
+    const playerRing = this.add.circle(centerX, centerY, 34, 0xf2f7ff, 0.02).setDepth(42);
+    playerRing.setStrokeStyle(2, 0x547eaf, 0.42);
+    const playerCore = this.add.circle(centerX, centerY, 17, 0xf2f7ff, 1).setDepth(43);
+    playerCore.setStrokeStyle(4, 0x7caeff, 1);
+    const playerLabel = this.add.text(centerX, centerY + 28, "Player", {
+      fontFamily: "Arial",
+      fontSize: "14px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(43);
 
+    const formationScaleX = 0.48;
+    const formationScaleY = 0.42;
     const slotUis = FORMATION_SLOTS.map((slot) => {
-      const circle = this.add.circle(centerX + slot.boardX, centerY + slot.boardY, 28, 0x16314d, 0.98)
-        .setStrokeStyle(3, 0x5d86b9, 0.84)
+      const slotX = centerX + slot.boardX * formationScaleX;
+      const slotY = centerY + slot.boardY * formationScaleY + 6;
+      const circle = this.add.circle(slotX, slotY, 21, 0x122338, 0.98)
+        .setStrokeStyle(2, 0x5d86b9, 0.72)
         .setDepth(42)
         .setInteractive({ useHandCursor: true });
-      const label = this.add.text(circle.x, circle.y - 44, slot.label, {
+      const label = this.add.text(circle.x, circle.y - 27, slot.label, {
         fontFamily: "Arial",
-        fontSize: "13px",
-        color: "#9fc6ff",
+        fontSize: "11px",
+        color: "#9bb6d3",
         fontStyle: "bold",
       }).setOrigin(0.5).setDepth(43);
-      const occupantText = this.add.text(circle.x, circle.y + 44, "Empty", {
+      const occupantText = this.add.text(circle.x, circle.y + 23, "Empty", {
         fontFamily: "Arial",
-        fontSize: "12px",
-        color: "#9db3d2",
+        fontSize: "11px",
+        color: "#7f92a9",
       }).setOrigin(0.5).setDepth(43);
       circle.on("pointerdown", () => this.handleDeploySlotClick(slot.id));
       return { slot, circle, label, occupantText };
     });
 
-    this.deployStatusText = this.add.text(160, 598, "", {
+    this.deployStatusText = this.add.text(146, 596, "", {
       fontFamily: "Arial",
-      fontSize: "16px",
+      fontSize: "15px",
       color: "#d8edff",
+      wordWrap: { width: 470 },
     }).setDepth(42);
 
     this.deployCloseButton = createMenuButton({
       scene: this,
-      x: 972,
-      y: 92,
+      x: 982,
+      y: 88,
       width: 110,
       height: 40,
       label: "Close",
@@ -581,8 +704,8 @@ export class HubScene extends Phaser.Scene {
     });
     this.deployClearButton = createMenuButton({
       scene: this,
-      x: 734,
-      y: 608,
+      x: 772,
+      y: 618,
       width: 160,
       height: 44,
       label: "Clear Squad",
@@ -592,8 +715,8 @@ export class HubScene extends Phaser.Scene {
     });
     this.deployLaunchButton = createMenuButton({
       scene: this,
-      x: 920,
-      y: 608,
+      x: 952,
+      y: 618,
       width: 220,
       height: 50,
       label: "Launch Mission",
@@ -604,14 +727,20 @@ export class HubScene extends Phaser.Scene {
 
     this.deployOverlay = this.add.container(0, 0, [
       backdrop,
+      shadow,
       panel,
+      panelInset,
+      headerBand,
+      rosterBand,
+      footerBand,
       title,
       this.deploySubtitle,
       this.deployMissionText,
-      rosterFrame,
       formationFrame,
       formationTitle,
       formationHint,
+      rosterTitle,
+      playerRing,
       playerCore,
       playerLabel,
       this.deployStatusText,
@@ -943,6 +1072,7 @@ export class HubScene extends Phaser.Scene {
   private openDeployOverlay(): void {
     this.closePanel();
     this.selectedDeployCompanionId = null;
+    this.hoveredDeployCompanionId = null;
     this.deployOverlay?.setVisible(true);
     this.refreshDeployOverlay("Choose your squad and formation before launch.");
   }
@@ -950,44 +1080,66 @@ export class HubScene extends Phaser.Scene {
   private closeDeployOverlay(): void {
     this.deployOverlay?.setVisible(false);
     this.selectedDeployCompanionId = null;
+    this.hoveredDeployCompanionId = null;
   }
 
   private refreshDeployOverlay(statusMessage?: string): void {
     const assignments = gameSession.getSquadAssignments();
     const acceptedMission = gameSession.acceptedMissionId === FIRST_MISSION.id;
+    const selectedCompanion = this.selectedDeployCompanionId ? getCompanionDefinition(this.selectedDeployCompanionId) : undefined;
+    const fallbackStatus = selectedCompanion
+      ? `${selectedCompanion.name} selected. Choose a valid slot below.`
+      : assignments.length === 0
+        ? "No companions assigned. Launch will go solo until you slot someone in."
+        : `${assignments.length} companion${assignments.length === 1 ? "" : "s"} readied. You can still move them before launch.`;
 
     this.deployMissionText?.setText(acceptedMission
       ? `Accepted mission: ${FIRST_MISSION.title}`
       : "No mission accepted. You can still prep the squad, but launch stays locked until you have a destination.");
-    this.deployStatusText?.setText(statusMessage ?? "");
+    this.deployStatusText?.setText(statusMessage ?? fallbackStatus);
 
     this.deployRosterCards.forEach((card) => {
       const assignedSlot = assignments.find((assignment) => assignment.companionId === card.companionId)?.slotId ?? null;
       const selected = this.selectedDeployCompanionId === card.companionId;
-      card.frame.setStrokeStyle(3, card.companion.trimColor, selected ? 0.96 : assignedSlot ? 0.86 : 0.56);
-      card.frame.setFillStyle(selected ? 0x23476d : assignedSlot ? 0x1c3d5a : 0x16314d, 0.96);
-      card.detail.setText(assignedSlot
-        ? `${card.companion.roleLabel} | ${getFormationSlot(assignedSlot)?.label ?? assignedSlot}`
-        : `${card.companion.roleLabel} | Unassigned`);
+      const hovered = this.hoveredDeployCompanionId === card.companionId;
+      const assigned = assignedSlot !== null;
+      const slotLabel = assignedSlot ? getFormationSlot(assignedSlot)?.label ?? assignedSlot : "Unassigned";
+      const emphasis = selected ? 1 : hovered ? 0.92 : assigned ? 0.18 : 0.05;
+      const frameColor = selected ? 0x13263a : hovered ? 0x101d2e : assigned ? 0x0d1825 : 0x0a1320;
+
+      card.container.setScale(selected ? 1.03 : hovered ? 1.01 : 1);
+      card.container.setY(card.baseY - (selected ? 8 : hovered ? 3 : 0));
+      card.frame.setStrokeStyle(3, card.companion.trimColor, selected ? 0.98 : hovered ? 0.88 : assigned ? 0.7 : 0.34);
+      card.frame.setFillStyle(frameColor, 0.96);
+      card.beam.setAlpha(0.38 * emphasis);
+      card.beamCore.setAlpha(0.68 * emphasis);
+      card.portraitGlow.setAlpha(0.42 * emphasis + 0.04);
+      card.pedestal.setAlpha(0.08 + 0.24 * emphasis);
+      card.portraitHead.setScale(selected ? 1.04 : hovered ? 1.02 : 1);
+      card.portraitBody.setScale(selected ? 1.03 : hovered ? 1.015 : 1);
+      card.title.setColor(selected || hovered || assigned ? "#f7fbff" : "#d5e0f0");
+      card.detail.setColor(selected || hovered ? "#dbeaff" : "#b3c7de");
+      card.detail.setText(card.companion.roleLabel);
+      card.slotText.setColor(selected ? "#f4fbff" : assigned ? "#cfe4ff" : hovered ? "#bdd8f8" : "#7d90a8");
+      card.slotText.setText(assigned ? `Assigned: ${slotLabel}` : selected ? "Choose a slot below" : "Unassigned");
     });
 
     this.deploySlotUis.forEach((slotUi) => {
       const assignment = assignments.find((entry) => entry.slotId === slotUi.slot.id);
       const occupant = assignment ? getCompanionDefinition(assignment.companionId) : undefined;
-      const selectedCompanion = this.selectedDeployCompanionId ? getCompanionDefinition(this.selectedDeployCompanionId) : undefined;
       const validForSelection = selectedCompanion ? canCompanionOccupySlot(selectedCompanion, slotUi.slot) : true;
-      slotUi.circle.setFillStyle(occupant?.coreColor ?? 0x16314d, occupant ? 0.96 : 0.98);
+      slotUi.circle.setFillStyle(occupant?.coreColor ?? 0x122338, occupant ? 0.92 : 0.98);
       slotUi.circle.setStrokeStyle(
-        3,
+        2,
         selectedCompanion && !validForSelection ? 0x8c4b4b : occupant?.trimColor ?? 0x5d86b9,
-        selectedCompanion && !validForSelection ? 0.88 : 0.84,
+        selectedCompanion && !validForSelection ? 0.88 : occupant ? 0.92 : 0.72,
       );
       slotUi.occupantText.setText(occupant ? occupant.name : "Empty");
-      slotUi.occupantText.setColor(occupant ? "#f7fbff" : validForSelection ? "#9db3d2" : "#d59595");
+      slotUi.occupantText.setColor(occupant ? "#f7fbff" : validForSelection ? "#7f92a9" : "#d59595");
     });
 
     this.deployLaunchButton?.setEnabled(acceptedMission);
-    this.deployLaunchButton?.setLabel(acceptedMission ? "Launch Mission" : "No Mission");
+    this.deployLaunchButton?.setLabel(acceptedMission ? "Launch Mission" : "Launch Locked");
     this.deployClearButton?.setEnabled(assignments.length > 0);
   }
 
