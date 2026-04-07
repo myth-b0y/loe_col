@@ -11,6 +11,7 @@ import {
   type MissionStage,
   type RestStage,
 } from "../content/missions";
+import { STORY_COMPANIONS, type CompanionAttackStyle, type CompanionId } from "../content/companions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -19,8 +20,6 @@ import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSetting
 type BulletOwner = "player" | "companion" | "enemy";
 type EnemyKind = MissionEnemyKind | "boss";
 type ActorSide = "player" | "companion";
-type CompanionAttackStyle = "ranged" | "guard";
-type CompanionId = "sera" | "rook";
 
 type Bullet = {
   sprite: Phaser.GameObjects.Arc;
@@ -114,6 +113,8 @@ type CompanionState = {
   aggroWeight: number;
   sprite: Phaser.GameObjects.Arc;
   shieldRing: Phaser.GameObjects.Arc;
+  guardPlate?: Phaser.GameObjects.Rectangle;
+  guardFacing: Phaser.Math.Vector2;
   revivePromptText: Phaser.GameObjects.Text;
   hud: CompanionHud;
 };
@@ -148,39 +149,6 @@ const COMPANION_SHIELD_REGEN_RATE = 12;
 const COMPANION_REVIVE_HOLD_TIME = 2.4;
 const COMPANION_REVIVE_RANGE = 78;
 const COMPANION_BAR_SPACING = 48;
-
-const COMPANION_ARCHETYPES = [
-  {
-    id: "sera",
-    name: "Sera",
-    roleLabel: "Covering Fire",
-    attackStyle: "ranged",
-    coreColor: 0xf3cc7a,
-    trimColor: 0xfff1ba,
-    projectileColor: 0xffd779,
-    radius: 12,
-    maxHp: 52,
-    maxShield: 24,
-    formationSide: -1 as const,
-    formationDepth: 60,
-    aggroWeight: 0.98,
-  },
-  {
-    id: "rook",
-    name: "Rook",
-    roleLabel: "Bulwark Guard",
-    attackStyle: "guard",
-    coreColor: 0x79d98e,
-    trimColor: 0xd8ffd8,
-    projectileColor: 0x97f6b1,
-    radius: 14,
-    maxHp: 88,
-    maxShield: 24,
-    formationSide: 1 as const,
-    formationDepth: 76,
-    aggroWeight: 0.72,
-  },
-] as const;
 
 function cloneRect(rect: Phaser.Geom.Rectangle): Phaser.Geom.Rectangle {
   return new Phaser.Geom.Rectangle(rect.x, rect.y, rect.width, rect.height);
@@ -401,7 +369,7 @@ export class MissionScene extends Phaser.Scene {
       .setOrigin(0, 0.5)
       .setDepth(11);
 
-    this.companions = COMPANION_ARCHETYPES.map((companion, index) => {
+    this.companions = STORY_COMPANIONS.map((companion, index) => {
       const sprite = this.add.circle(
         this.player.x - companion.formationDepth,
         this.player.y + 34 + index * 20,
@@ -414,6 +382,13 @@ export class MissionScene extends Phaser.Scene {
         .setStrokeStyle(3, 0x7de6ff, 0.78)
         .setDepth(8);
       shieldRing.setVisible(gameSession.getModeRules().companionsEnabled);
+
+      const guardPlate = companion.attackStyle === "shield"
+        ? this.add.rectangle(sprite.x + companion.radius + 6, sprite.y, 10, 30, 0x325c48, 0.96)
+          .setStrokeStyle(3, companion.trimColor, 0.95)
+          .setDepth(10)
+        : undefined;
+      guardPlate?.setVisible(gameSession.getModeRules().companionsEnabled);
 
       const revivePromptText = this.add.text(sprite.x, sprite.y - 34, "", {
         fontFamily: "Arial",
@@ -450,6 +425,8 @@ export class MissionScene extends Phaser.Scene {
         aggroWeight: companion.aggroWeight,
         sprite,
         shieldRing,
+        guardPlate,
+        guardFacing: new Phaser.Math.Vector2(1, 0),
         revivePromptText,
         hud: {} as CompanionHud,
       };
@@ -870,6 +847,8 @@ export class MissionScene extends Phaser.Scene {
       companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
       companion.sprite.setVisible(gameSession.getModeRules().companionsEnabled);
       companion.shieldRing.setVisible(gameSession.getModeRules().companionsEnabled && companion.shield > 0.5);
+      companion.guardPlate?.setPosition(companion.sprite.x + companion.radius + 6, companion.sprite.y);
+      companion.guardPlate?.setVisible(gameSession.getModeRules().companionsEnabled && !companion.downed);
       companion.revivePromptText.setVisible(false);
     });
     this.lookPoint.set(this.player.x + 180, this.player.y);
@@ -1174,6 +1153,7 @@ export class MissionScene extends Phaser.Scene {
       this.companions.forEach((companion) => {
         companion.sprite.setVisible(false);
         companion.shieldRing.setVisible(false);
+        companion.guardPlate?.setVisible(false);
         companion.revivePromptText.setVisible(false);
       });
       return;
@@ -1185,6 +1165,7 @@ export class MissionScene extends Phaser.Scene {
       if (companion.downed) {
         companion.sprite.setVisible(true);
         companion.shieldRing.setVisible(true);
+        companion.guardPlate?.setVisible(false);
         companion.shieldRing.setStrokeStyle(3, 0xffd36d, 0.55 + 0.35 * (companion.reviveProgress / COMPANION_REVIVE_HOLD_TIME));
         companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
         companion.sprite.setFillStyle(0x5b4d3b, 0.92);
@@ -1192,22 +1173,28 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      const target = this.getNearestEnemy(companion.sprite.x, companion.sprite.y, companion.attackStyle === "guard" ? 240 : 360);
+      const target = this.getNearestEnemy(companion.sprite.x, companion.sprite.y, companion.attackStyle === "shield" ? 300 : 360);
       const threatAvoidance = this.getCompanionThreatAvoidance(companion);
       const combatStrafe = target
-        ? Math.sin(this.time.now / 170 + index * 0.8) * (companion.attackStyle === "guard" ? 8 : 14)
+        ? Math.sin(this.time.now / 170 + index * 0.8) * (companion.attackStyle === "shield" ? 6 : 14)
         : companion.formationSide * 8;
-      const desiredX = this.player.x
-        - followDirection.x * companion.formationDepth
-        + perpendicular.x * (companion.formationSide * 30 + combatStrafe)
-        + threatAvoidance.x;
-      const desiredY = this.player.y
-        - followDirection.y * companion.formationDepth
-        + perpendicular.y * (companion.formationSide * 30 + combatStrafe)
-        + threatAvoidance.y;
+      const guardDirection = target
+        ? new Phaser.Math.Vector2(target.sprite.x - this.player.x, target.sprite.y - this.player.y).normalize()
+        : followDirection.clone();
+      const desiredAnchor = companion.attackStyle === "shield"
+        ? new Phaser.Math.Vector2(
+          this.player.x + guardDirection.x * 42 + perpendicular.x * (companion.formationSide * 10),
+          this.player.y + guardDirection.y * 42 + perpendicular.y * (companion.formationSide * 10),
+        )
+        : new Phaser.Math.Vector2(
+          this.player.x - followDirection.x * companion.formationDepth + perpendicular.x * (companion.formationSide * 30 + combatStrafe),
+          this.player.y - followDirection.y * companion.formationDepth + perpendicular.y * (companion.formationSide * 30 + combatStrafe),
+        );
+      const desiredX = desiredAnchor.x + threatAvoidance.x;
+      const desiredY = desiredAnchor.y + threatAvoidance.y;
       const beforeX = companion.sprite.x;
       const beforeY = companion.sprite.y;
-      const smoothing = 1 - Math.exp(-dt * (companion.attackStyle === "guard" ? 8 : 10));
+      const smoothing = 1 - Math.exp(-dt * (companion.attackStyle === "shield" ? 9 : 10));
       companion.sprite.x = Phaser.Math.Linear(companion.sprite.x, desiredX, smoothing);
       companion.sprite.y = Phaser.Math.Linear(companion.sprite.y, desiredY, smoothing);
       companion.sprite.x = Phaser.Math.Clamp(companion.sprite.x, this.playArea.x + companion.radius, this.playArea.right - companion.radius);
@@ -1226,43 +1213,47 @@ export class MissionScene extends Phaser.Scene {
       const facing = target
         ? new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize()
         : followDirection;
+      companion.guardFacing = facing.clone();
+      this.updateCompanionGuardPlate(companion);
       this.applyHumanoidStride(companion.sprite, movementAmount, index + 0.9, facing);
 
       if (!target || companion.cooldown > 0 || this.currentStage?.type === "rest") {
         return;
       }
 
-      if (companion.attackStyle === "guard" && Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, target.sprite.x, target.sprite.y) <= 150) {
-        companion.cooldown = 1.05;
-        const ring = this.add.circle(companion.sprite.x, companion.sprite.y, 18)
+      if (companion.attackStyle === "shield" && Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, target.sprite.x, target.sprite.y) <= 164) {
+        companion.cooldown = 1.1;
+        const shieldWave = this.add.circle(companion.sprite.x, companion.sprite.y, 20)
           .setStrokeStyle(5, companion.projectileColor, 0.92)
           .setDepth(12);
         this.tweens.add({
-          targets: ring,
+          targets: shieldWave,
           scale: 3,
           alpha: 0,
           duration: 180,
-          onComplete: () => ring.destroy(),
+          onComplete: () => shieldWave.destroy(),
         });
 
         this.enemies.slice().forEach((enemy) => {
           const distance = Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, enemy.sprite.x, enemy.sprite.y);
-          if (distance <= 96) {
-            this.damageEnemy(enemy, 12);
+          if (distance <= 100) {
+            this.damageEnemy(enemy, 14);
+            enemy.chargeTimer = 0;
+            enemy.attackCooldown = Math.max(enemy.attackCooldown, 0.35);
           }
         });
         return;
       }
 
-      companion.cooldown = companion.attackStyle === "guard" ? 1.18 : 0.62;
+      companion.cooldown = companion.attackStyle === "shield" ? 1.24 : 0.62;
       const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
       this.spawnBullet(
         companion.sprite.x,
         companion.sprite.y,
         direction,
-        companion.attackStyle === "guard" ? 360 : 440,
-        companion.attackStyle === "guard" ? 14 : 10,
-        companion.attackStyle === "guard" ? 6 : 5,
+        companion.attackStyle === "shield" ? 340 : 440,
+        companion.attackStyle === "shield" ? 12 : 10,
+        companion.attackStyle === "shield" ? 6 : 5,
         "companion",
         companion.projectileColor,
       );
@@ -1414,6 +1405,14 @@ export class MissionScene extends Phaser.Scene {
       }
 
       if (bullet.owner === "enemy") {
+        const shieldBlocker = this.getShieldBlockingCompanion(bullet);
+        if (shieldBlocker) {
+          this.damageCompanion(shieldBlocker, Math.max(1, Math.round(bullet.damage * 0.8)));
+          bullet.sprite.destroy();
+          this.bullets.splice(index, 1);
+          continue;
+        }
+
         const hitCompanion = this.getTargetableCompanions()
           .find((companion) =>
             Phaser.Math.Distance.Between(bullet.sprite.x, bullet.sprite.y, companion.sprite.x, companion.sprite.y) <= bullet.radius + companion.radius,
@@ -1837,6 +1836,7 @@ export class MissionScene extends Phaser.Scene {
     companion.sprite.setVisible(true);
     companion.shield = 0;
     companion.shieldRing.setVisible(true);
+    companion.guardPlate?.setVisible(false);
     this.messageText.setText(`${companion.name} is down. Reach them and hold revive while the fight keeps moving.`);
   }
 
@@ -1853,6 +1853,7 @@ export class MissionScene extends Phaser.Scene {
     companion.sprite.setVisible(true);
     companion.revivePromptText.setVisible(false);
     companion.shieldRing.setVisible(companion.shield > 0.5);
+    companion.guardPlate?.setVisible(true);
     if (!fromRestRoom) {
       this.messageText.setText(`${companion.name} is back on their feet. Formation restored.`);
     }
@@ -2278,6 +2279,43 @@ export class MissionScene extends Phaser.Scene {
     }
 
     return avoid.normalize().scale(28);
+  }
+
+  private updateCompanionGuardPlate(companion: CompanionState): void {
+    if (!companion.guardPlate) {
+      return;
+    }
+
+    const facing = companion.guardFacing.lengthSq() > 0 ? companion.guardFacing.clone().normalize() : new Phaser.Math.Vector2(1, 0);
+    companion.guardPlate.setVisible(!companion.downed);
+    companion.guardPlate.setPosition(
+      companion.sprite.x + facing.x * (companion.radius + 9),
+      companion.sprite.y + facing.y * (companion.radius + 9),
+    );
+    companion.guardPlate.setRotation(facing.angle());
+  }
+
+  private getShieldBlockingCompanion(bullet: Bullet): CompanionState | null {
+    for (const companion of this.getTargetableCompanions()) {
+      if (!companion.guardPlate || companion.attackStyle !== "shield" || companion.shield <= 0.5) {
+        continue;
+      }
+
+      const plateCenter = companion.guardPlate.getCenter();
+      const distance = Phaser.Math.Distance.Between(bullet.sprite.x, bullet.sprite.y, plateCenter.x, plateCenter.y);
+      if (distance > bullet.radius + 16) {
+        continue;
+      }
+
+      const toBullet = new Phaser.Math.Vector2(bullet.sprite.x - companion.sprite.x, bullet.sprite.y - companion.sprite.y);
+      if (toBullet.lengthSq() > 0 && companion.guardFacing.dot(toBullet.normalize()) < 0.15) {
+        continue;
+      }
+
+      return companion;
+    }
+
+    return null;
   }
 
   private getBaseAimDirection(): Phaser.Math.Vector2 {

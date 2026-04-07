@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { STORY_COMPANIONS } from "../content/companions";
 import { FIRST_MISSION } from "../content/missions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
@@ -25,6 +26,19 @@ type InteractionTarget = {
   station?: Station;
 };
 
+type HubCompanionActor = {
+  id: string;
+  name: string;
+  roleLabel: string;
+  primaryGear: string;
+  supportGear: string;
+  anchor: Phaser.Math.Vector2;
+  sprite: Phaser.GameObjects.Arc;
+  shieldPlate?: Phaser.GameObjects.Rectangle;
+  label: Phaser.GameObjects.Text;
+  pulseOffset: number;
+};
+
 const HUB_ROOM = new Phaser.Geom.Rectangle(68, 110, 1144, 520);
 const HUB_SPEED = 250;
 const STICK_RADIUS = 72;
@@ -33,8 +47,7 @@ const STICK_DEADZONE = 18;
 export class HubScene extends Phaser.Scene {
   private brightnessLayer?: BrightnessLayer;
   private player!: Phaser.GameObjects.Arc;
-  private buddy!: Phaser.GameObjects.Arc;
-  private buddyAnchor = new Phaser.Math.Vector2(676, 536);
+  private crew: HubCompanionActor[] = [];
   private buddyPulse = 0;
   private stations: Station[] = [];
   private nearestStation: Station | null = null;
@@ -108,7 +121,7 @@ export class HubScene extends Phaser.Scene {
     const dt = delta / 1000;
     this.updateKeyboardVector();
     this.updateMovement(dt);
-    this.updateBuddy(dt);
+    this.updateCrew(dt);
     this.updateNearestStation();
     this.updateInteractionTarget();
     this.updatePrompt();
@@ -145,16 +158,16 @@ export class HubScene extends Phaser.Scene {
 
     this.add.rectangle(186, 368, 84, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
     this.add.rectangle(1094, 368, 130, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
-    this.add.rectangle(676, 536, 196, 120, 0x132a40, 0.88)
+    this.add.rectangle(676, 536, 232, 136, 0x132a40, 0.88)
       .setStrokeStyle(2, 0x7aa9dd, 0.72)
       .setDepth(-6);
-    this.add.text(676, 492, "Companion Bay", {
+    this.add.text(676, 486, "Crew Quarters", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#d7e8ff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(-5);
-    this.add.text(676, 518, "Friendly crew zone", {
+    this.add.text(676, 512, "Current mission squad resting here", {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#aecded",
@@ -185,14 +198,38 @@ export class HubScene extends Phaser.Scene {
     this.player = this.add.circle(186, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
 
-    this.buddy = this.add.circle(this.buddyAnchor.x, this.buddyAnchor.y, 12, 0xf0cd79).setDepth(7);
-    this.buddy.setStrokeStyle(3, 0xffedb3, 1);
-    this.add.text(this.buddyAnchor.x, this.buddyAnchor.y + 26, "Sera", {
-      fontFamily: "Arial",
-      fontSize: "14px",
-      color: "#fff0bf",
-      fontStyle: "bold",
-    }).setOrigin(0.5).setDepth(7);
+    this.crew = STORY_COMPANIONS.map((companion, index) => {
+      const anchor = new Phaser.Math.Vector2(companion.hubPosition.x, companion.hubPosition.y);
+      const sprite = this.add.circle(anchor.x, anchor.y, companion.radius, companion.coreColor).setDepth(7);
+      sprite.setStrokeStyle(3, companion.trimColor, 1);
+
+      const shieldPlate = companion.attackStyle === "shield"
+        ? this.add.rectangle(anchor.x + companion.radius + 8, anchor.y, 10, 28, 0x335e48, 0.96)
+          .setStrokeStyle(3, companion.trimColor, 0.95)
+          .setDepth(8)
+        : undefined;
+
+      const label = this.add.text(anchor.x, anchor.y + 28, `${companion.name}\n${companion.roleLabel}`, {
+        fontFamily: "Arial",
+        fontSize: "13px",
+        color: "#e8f3ff",
+        fontStyle: "bold",
+        align: "center",
+      }).setOrigin(0.5).setDepth(7);
+
+      return {
+        id: companion.id,
+        name: companion.name,
+        roleLabel: companion.roleLabel,
+        primaryGear: companion.primaryGear,
+        supportGear: companion.supportGear,
+        anchor,
+        sprite,
+        shieldPlate,
+        label,
+        pulseOffset: index * 0.9,
+      };
+    });
   }
 
   private createStations(): void {
@@ -533,10 +570,16 @@ export class HubScene extends Phaser.Scene {
     this.player.y = Phaser.Math.Clamp(this.player.y + move.y * HUB_SPEED * dt, HUB_ROOM.y + 22, HUB_ROOM.bottom - 22);
   }
 
-  private updateBuddy(dt: number): void {
+  private updateCrew(dt: number): void {
     this.buddyPulse += dt;
-    this.buddy.x = this.buddyAnchor.x + Math.sin(this.buddyPulse * 1.4) * 8;
-    this.buddy.y = this.buddyAnchor.y + Math.cos(this.buddyPulse * 1.8) * 5;
+    this.crew.forEach((companion) => {
+      companion.sprite.x = companion.anchor.x + Math.sin(this.buddyPulse * 1.3 + companion.pulseOffset) * 5;
+      companion.sprite.y = companion.anchor.y + Math.cos(this.buddyPulse * 1.7 + companion.pulseOffset) * 3;
+      if (companion.shieldPlate) {
+        companion.shieldPlate.setPosition(companion.sprite.x + companion.sprite.radius + 8, companion.sprite.y);
+      }
+      companion.label.setPosition(companion.sprite.x, companion.sprite.y + 30);
+    });
   }
 
   private updateNearestStation(): void {
@@ -631,15 +674,22 @@ export class HubScene extends Phaser.Scene {
 
     if (id === "loadout") {
       title?.setText("Loadout Console");
+      const squadLines = STORY_COMPANIONS.flatMap((companion) => [
+        `${companion.name} | ${companion.roleLabel}`,
+        `  Gear: ${companion.primaryGear} / ${companion.supportGear}`,
+        `  Stats: ${companion.maxHp} hp | ${companion.maxShield} shield`,
+      ]);
       this.panelBody.setText([
         `Weapon: ${gameSession.saveData.loadout.weapon}`,
         `Ability: ${gameSession.saveData.loadout.ability}`,
         `Support: ${gameSession.saveData.loadout.support}`,
-        `Companion: ${gameSession.saveData.loadout.companion}`,
+        "",
+        "Current mission squad:",
+        ...squadLines,
         "",
         "This console stays data-driven so adding new weapons, builds, and companions later will not break the hub flow.",
       ]);
-      this.panelFooter.setText("Current prototype kit: basic fire, Pulse, Arc Lance, Dash, and one ranged support companion.");
+      this.panelFooter.setText("Next step later: this becomes the real squad prep screen with the player in the middle and companions arrayed on either side for selection, gear, and stat review.");
       this.panelClose?.setLabel("Close");
       this.panelAction.setLabel("Close");
       this.panelAction.setEnabled(true);
@@ -930,10 +980,11 @@ export class HubScene extends Phaser.Scene {
         x: Math.round(this.player.x),
         y: Math.round(this.player.y),
       },
-      buddy: {
-        x: Math.round(this.buddy.x),
-        y: Math.round(this.buddy.y),
-      },
+      crew: this.crew.map((companion) => ({
+        id: companion.id,
+        x: Math.round(companion.sprite.x),
+        y: Math.round(companion.sprite.y),
+      })),
       nearestStation: this.nearestStation?.id ?? null,
       currentInteraction: this.currentInteraction?.kind ?? null,
       acceptedMissionId: gameSession.acceptedMissionId,
