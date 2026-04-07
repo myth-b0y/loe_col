@@ -157,9 +157,6 @@ export class MissionScene extends Phaser.Scene {
   private stageText!: Phaser.GameObjects.Text;
   private messageText!: Phaser.GameObjects.Text;
   private progressDots: Phaser.GameObjects.Arc[] = [];
-  private resultPanel?: Phaser.GameObjects.Container;
-  private resultBodyText?: Phaser.GameObjects.Text;
-  private resultReturnButton?: MenuButton;
   private autoAimTarget: Enemy | null = null;
   private toolbarCards?: {
     fire: AbilityCard;
@@ -186,7 +183,6 @@ export class MissionScene extends Phaser.Scene {
     this.createHud();
     this.createTouchUi();
     this.syncInputMode();
-    this.createResultPanel();
     this.bindKeyboard();
     this.bindPointers();
     this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
@@ -446,52 +442,6 @@ export class MissionScene extends Phaser.Scene {
       this.arcButton.container,
       this.dashButton.container,
     );
-  }
-
-  private createResultPanel(): void {
-    const background = this.add.rectangle(0, 0, 620, 360, 0x08111c, 0.98)
-      .setStrokeStyle(3, 0x79abed, 0.85)
-      .setDepth(60)
-      .setInteractive();
-
-    const title = this.add.text(-230, -146, "Mission Complete", {
-      fontFamily: "Arial",
-      fontSize: "30px",
-      color: "#f7fbff",
-      fontStyle: "bold",
-    }).setDepth(61);
-
-    const body = this.add.text(-230, -82, "", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#d7e8ff",
-      lineSpacing: 8,
-      wordWrap: { width: 460 },
-    }).setDepth(61);
-
-    const returnButton = createMenuButton({
-      scene: this,
-      x: 0,
-      y: 138,
-      width: 230,
-      label: "Return To Ship",
-      onClick: () => this.returnToShipWithReward(),
-      depth: 61,
-      accentColor: 0x1c4f7f,
-    });
-    returnButton.setInputEnabled(false);
-
-    this.resultPanel = this.add.container(640, 360, [
-      background,
-      title,
-      body,
-      returnButton.container,
-    ]).setDepth(60);
-
-    this.resultPanel.setScrollFactor(0);
-    this.resultPanel.setVisible(false);
-    this.resultBodyText = body;
-    this.resultReturnButton = returnButton;
   }
 
   private bindKeyboard(): void {
@@ -1158,18 +1108,13 @@ export class MissionScene extends Phaser.Scene {
     this.fireHeld = false;
     this.messageText.setText("Relay secure. Extraction confirmed.");
     this.setExitDoorOpen(false, "Complete");
-
-    this.resultBodyText?.setText([
-      `${this.mission.title} has been cleared.`,
-      "",
-      `Reward: +${this.mission.reward.xp} XP`,
-      `Credits: +${this.mission.reward.credits}`,
-      `Recovered Item: ${this.mission.reward.item}`,
-      "",
-      "Return to the command deck to save, regroup, and queue the next contract.",
-    ]);
-    this.resultPanel?.setVisible(true);
-    this.resultReturnButton?.setInputEnabled(true);
+    this.lockRing.setVisible(false);
+    this.scene.launch("mission-result", {
+      missionId: this.mission.id,
+      missionTitle: this.mission.title,
+      reward: this.mission.reward,
+    });
+    this.scene.pause();
   }
 
   private spawnEnemy(kind: EnemyKind, preferredX?: number, preferredY?: number): void {
@@ -1589,12 +1534,6 @@ export class MissionScene extends Phaser.Scene {
     return nearest;
   }
 
-  private returnToShipWithReward(): void {
-    gameSession.completeMission(this.mission.id, this.mission.reward);
-    this.scene.stop("game-over");
-    this.scene.start("hub");
-  }
-
   private setExitDoorOpen(open: boolean, label: string): void {
     if (!this.exitDoor) {
       return;
@@ -1698,7 +1637,6 @@ export class MissionScene extends Phaser.Scene {
       stageName: this.currentStage?.name ?? null,
       missionComplete: this.missionComplete,
       autoAimTarget: this.autoAimTarget?.kind ?? null,
-      resultVisible: this.resultPanel?.visible ?? false,
       playerHp: this.playerHp,
       player: {
         x: Math.round(this.player.x),
