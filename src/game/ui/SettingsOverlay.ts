@@ -320,13 +320,16 @@ export class SettingsOverlay {
           gameSession.setAutoAim(!controls.autoAim);
           this.refresh();
         }, true);
-        this.setRow(2, "Mouse Sensitivity", `${controls.mouseSensitivity}%`, () => undefined, false);
-        this.setRow(3, "Move", controls.move, () => undefined, false);
-        this.setRow(4, "Attack", controls.attack, () => undefined, false);
+        this.setRow(2, "Auto Fire", controls.autoFire ? "On" : "Off", () => {
+          gameSession.setAutoFire(!controls.autoFire);
+          this.refresh();
+        }, true);
+        this.setRow(3, "Mouse Sensitivity", `${controls.mouseSensitivity}%`, () => undefined, false);
+        this.setRow(4, "Combat Keys", "Q Pulse | E Arc | Tab Target", () => undefined, false);
 
         this.info.setText([
-          "Keyboard / mouse gets its own lane now so we can add mouse sensitivity, rebinding, and finer control options later without crowding touch settings.",
-          "For this pass, touch sensitivity is the active control-tuning setting and mouse sensitivity is reserved.",
+          "Keyboard / mouse now separates lock-on from auto-fire so you can choose assisted aiming without forcing automatic shots.",
+          "Mouse sensitivity is still scaffolded for a later tuning pass, while Tab target cycling is now part of the shared combat foundation.",
         ]);
         return;
       }
@@ -343,12 +346,15 @@ export class SettingsOverlay {
         gameSession.setAutoAim(!controls.autoAim);
         this.refresh();
       }, true);
-      this.setRow(3, "Move / Face", "One Floating Stick", () => undefined, false);
-      this.setRow(4, "Attack", "Dedicated Attack Button", () => undefined, false);
+      this.setRow(3, "Auto Fire", controls.autoFire ? "On" : "Off", () => {
+        gameSession.setAutoFire(!controls.autoFire);
+        this.refresh();
+      }, true);
+      this.setRow(4, "Combat Layout", "Stick + Attack + Target", () => undefined, false);
 
       this.info.setText([
-        "Touch can now start the movement/facing stick from any non-button area, not just the left side of the screen.",
-        "Touch sensitivity changes how quickly the stick reaches full strength while keeping the same general layout and ability buttons.",
+        "Touch can now mix manual attack, target cycling, auto aim, and auto fire without forcing all of them on together.",
+        "Touch sensitivity changes how quickly the floating stick reaches full strength while keeping the same combat layout.",
       ]);
       return;
     }

@@ -71,6 +71,7 @@ export type GameSettings = {
     pause: "Esc / Pause Button";
     inputMode: InputModePreference;
     autoAim: boolean;
+    autoFire: boolean;
     mouseSensitivity: ControlSensitivity;
     touchSensitivity: ControlSensitivity;
   };
@@ -139,6 +140,7 @@ const DEFAULT_SETTINGS: GameSettings = {
     pause: "Esc / Pause Button",
     inputMode: "Auto",
     autoAim: true,
+    autoFire: true,
     mouseSensitivity: 100,
     touchSensitivity: 100,
   },
@@ -494,6 +496,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   setAutoAim(value: boolean): void {
     this.settings.controls.autoAim = value;
+    this.persistSettings();
+  }
+
+  setAutoFire(value: boolean): void {
+    this.settings.controls.autoFire = value;
     this.persistSettings();
   }
 
