@@ -76,7 +76,7 @@ async function main() {
     window.__loeSession.acceptAllMissions(window.__loeContracts.map((contract) => contract.id));
     window.__loeSession.setSelectedMission("nightglass-abyss");
     hub.refreshMissionState();
-    hub.openStation("logbook");
+    hub.toggleLogbookOverlay();
 
     return {
       before,

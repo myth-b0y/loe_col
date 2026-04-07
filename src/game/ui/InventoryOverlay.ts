@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 
-import { STORY_COMPANIONS } from "../content/companions";
+import { getFormationSlot } from "../content/companions";
 import { EQUIPMENT_SLOTS, getItemDefinition, type EquipmentSlotId } from "../content/items";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
@@ -39,116 +39,136 @@ export class InventoryOverlay {
   constructor({ scene, onClose }: InventoryOverlayOptions) {
     this.onClose = onClose;
 
-    this.backdrop = scene.add.rectangle(640, 360, 1280, 720, 0x01050a, 0.9)
+    this.backdrop = scene.add.rectangle(640, 360, 1280, 720, 0x01050a, 0.91)
       .setDepth(60)
       .setInteractive();
     const panel = scene.add.rectangle(640, 360, 1120, 620, 0x06101a, 0.985)
       .setDepth(61)
       .setStrokeStyle(3, 0x6e9bd1, 0.84);
-    const leftRail = scene.add.rectangle(318, 360, 318, 534, 0x08141f, 0.985)
+    const leftRail = scene.add.rectangle(308, 366, 332, 556, 0x08141f, 0.99)
       .setDepth(61)
       .setStrokeStyle(2, 0x274566, 0.82);
-    const equipmentRail = scene.add.rectangle(756, 258, 696, 312, 0x09131f, 0.985)
+    const rightTopRail = scene.add.rectangle(806, 290, 646, 362, 0x09131f, 0.985)
       .setDepth(61)
       .setStrokeStyle(2, 0x274566, 0.82);
-    const cargoRail = scene.add.rectangle(756, 518, 696, 218, 0x09131f, 0.985)
+    const rightBottomRail = scene.add.rectangle(806, 548, 646, 154, 0x0a1521, 0.985)
       .setDepth(61)
       .setStrokeStyle(2, 0x274566, 0.82);
 
-    const title = scene.add.text(126, 92, "Loadout & Crafting Bench", {
+    const title = scene.add.text(120, 88, "Loadout Bench", {
       fontFamily: "Arial",
       fontSize: "32px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setDepth(62);
 
-    this.subtitle = scene.add.text(126, 138, "Inventory, cargo, equipped gear, and the first placeholder pass for shipboard crafting all live here.", {
+    this.subtitle = scene.add.text(120, 130, "Gear slots, cargo, and the shipboard crafting shell all live here.", {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#bdd4f3",
-      wordWrap: { width: 860 },
+      wordWrap: { width: 820 },
     }).setDepth(62);
 
-    const characterBeam = scene.add.triangle(318, 296, 0, 220, 180, 220, 90, 0, 0xf2f7ff, 0.1)
+    const dollFrame = scene.add.rectangle(308, 280, 252, 268, 0x09141f, 0.98)
+      .setDepth(62)
+      .setStrokeStyle(2, 0x2f4e70, 0.8);
+    const characterBeam = scene.add.triangle(308, 270, 0, 228, 180, 228, 90, 0, 0xf2f7ff, 0.08)
       .setDepth(62)
       .setOrigin(0.5);
-    const characterCore = scene.add.circle(318, 284, 70, 0xf2f7ff, 0.92)
+    const characterHalo = scene.add.circle(308, 252, 72, 0xf2f7ff, 0.08)
+      .setDepth(62)
+      .setStrokeStyle(2, 0x7caeff, 0.36);
+    const characterCore = scene.add.circle(308, 244, 34, 0xf2f7ff, 0.94)
       .setDepth(63)
       .setStrokeStyle(4, 0x7caeff, 0.96);
-    const characterBody = scene.add.rectangle(318, 374, 110, 148, 0xd8e8ff, 0.16)
+    const characterBody = scene.add.rectangle(308, 330, 120, 124, 0xd8e8ff, 0.14)
       .setDepth(62)
-      .setStrokeStyle(3, 0x7caeff, 0.76);
-    const silhouette = scene.add.text(318, 372, "PLAYER", {
+      .setStrokeStyle(3, 0x7caeff, 0.74);
+    const silhouette = scene.add.text(308, 330, "PLAYER", {
       fontFamily: "Arial",
-      fontSize: "22px",
+      fontSize: "24px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(63);
 
-    const profileTitle = scene.add.text(176, 448, "Pilot Readout", {
+    const profileTitle = scene.add.text(520, 518, "Pilot Readout", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setDepth(62);
 
-    this.profileText = scene.add.text(176, 478, "", {
+    this.profileText = scene.add.text(520, 548, "", {
       fontFamily: "Arial",
-      fontSize: "16px",
+      fontSize: "15px",
       color: "#d2e3fa",
       lineSpacing: 6,
-      wordWrap: { width: 248 },
+      wordWrap: { width: 220 },
     }).setDepth(62);
 
-    const squadTitle = scene.add.text(176, 606, "Active Squad", {
+    const squadTitle = scene.add.text(760, 518, "Squad Sync", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setDepth(62);
 
-    this.squadText = scene.add.text(176, 634, "", {
+    this.squadText = scene.add.text(760, 548, "", {
       fontFamily: "Arial",
       fontSize: "13px",
       color: "#9fc6ff",
       lineSpacing: 5,
-      wordWrap: { width: 248 },
+      wordWrap: { width: 178 },
     }).setDepth(62);
 
-    const equipmentTitle = scene.add.text(502, 166, "Gear Slots", {
+    const equipmentTitle = scene.add.text(504, 168, "Cargo + Bench", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setDepth(62);
 
-    const equipmentHint = scene.add.text(502, 192, "The command layer now tracks your equipment shell even before full loot/crafting depth lands.", {
+    const equipmentHint = scene.add.text(504, 194, "Gear sockets live around the paper-doll. Cargo, salvage, and bench systems live in this bay.", {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#8fb1d6",
-      wordWrap: { width: 642 },
+      wordWrap: { width: 600 },
     }).setDepth(62);
 
-    this.equipmentSlots = EQUIPMENT_SLOTS.map((slot, index) => {
-      const column = index < 5 ? 0 : 1;
-      const row = index < 5 ? index : index - 5;
-      const x = 620 + column * 246;
-      const y = 196 + row * 48;
-      const frame = scene.add.rectangle(x, y, 220, 42, 0x102035, 0.96)
-        .setDepth(62)
-        .setStrokeStyle(2, 0x35577f, 0.78);
-      const label = scene.add.text(x - 98, y - 12, slot.label, {
+    const equipmentSlotPositions: Record<EquipmentSlotId, { x: number; y: number }> = {
+      head: { x: 308, y: 192 },
+      chest: { x: 308, y: 272 },
+      legs: { x: 308, y: 352 },
+      leftHand: { x: 208, y: 274 },
+      rightHand: { x: 408, y: 274 },
+      belt: { x: 308, y: 434 },
+      back: { x: 208, y: 192 },
+      accessory1: { x: 208, y: 434 },
+      accessory2: { x: 308, y: 512 },
+      accessory3: { x: 408, y: 434 },
+    };
+
+    this.equipmentSlots = EQUIPMENT_SLOTS.map((slot) => {
+      const position = equipmentSlotPositions[slot.id];
+      const frame = scene.add.rectangle(position.x, position.y, 72, 72, 0x101b29, 0.98)
+        .setDepth(63)
+        .setStrokeStyle(2, 0x35577f, 0.74);
+      const item = scene.add.text(position.x, position.y - 4, "", {
         fontFamily: "Arial",
         fontSize: "14px",
-        color: "#9fc6ff",
-      }).setDepth(63);
-      const item = scene.add.text(x - 98, y + 4, "", {
-        fontFamily: "Arial",
-        fontSize: "16px",
         color: "#f7fbff",
         fontStyle: "bold",
-        wordWrap: { width: 188 },
-      }).setDepth(63);
+        align: "center",
+        wordWrap: { width: 60 },
+      }).setOrigin(0.5).setDepth(64);
+      const label = scene.add.text(position.x, position.y + 48, slot.label, {
+        fontFamily: "Arial",
+        fontSize: "11px",
+        color: "#92abc6",
+        fontStyle: "bold",
+        align: "center",
+        wordWrap: { width: 78 },
+      }).setOrigin(0.5).setDepth(64);
 
       return {
         slotId: slot.id,
@@ -158,7 +178,7 @@ export class InventoryOverlay {
       };
     });
 
-    this.cargoTitle = scene.add.text(502, 420, "Cargo Grid", {
+    this.cargoTitle = scene.add.text(520, 232, "Cargo Grid", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#f7fbff",
@@ -166,51 +186,71 @@ export class InventoryOverlay {
     }).setDepth(62);
 
     this.cargoCells = Array.from({ length: 20 }, (_, index) => {
-      const column = index % 4;
-      const row = Math.floor(index / 4);
-      const x = 500 + column * 90;
-      const y = 470 + row * 32;
-      const frame = scene.add.rectangle(x, y, 82, 34, 0x102035, 0.96)
+      const column = index % 5;
+      const row = Math.floor(index / 5);
+      const x = 556 + column * 78;
+      const y = 282 + row * 68;
+      const frame = scene.add.rectangle(x, y, 64, 64, 0x102035, 0.98)
         .setDepth(62)
-        .setStrokeStyle(2, 0x35577f, 0.72);
+        .setStrokeStyle(2, 0x35577f, 0.74);
       const label = scene.add.text(x, y, "", {
         fontFamily: "Arial",
         fontSize: "12px",
         color: "#d7e8ff",
         fontStyle: "bold",
         align: "center",
-        wordWrap: { width: 72 },
+        wordWrap: { width: 54 },
       }).setOrigin(0.5).setDepth(63);
 
       return { frame, label };
     });
 
-    this.materialsTitle = scene.add.text(852, 420, "Bench Materials", {
+    this.materialsTitle = scene.add.text(988, 232, "Bench Feed", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#f7fbff",
       fontStyle: "bold",
     }).setDepth(62);
 
-    this.materialsText = scene.add.text(852, 468, "", {
+    this.materialsText = scene.add.text(988, 274, "", {
       fontFamily: "Arial",
       fontSize: "15px",
       color: "#d2e3fa",
       lineSpacing: 6,
-      wordWrap: { width: 250 },
+      wordWrap: { width: 140 },
     }).setDepth(62);
 
-    const craftingHint = scene.add.text(852, 572, "Crafting stays lightweight for now, but this bench is where recipes, belt upgrades, shield variants, and weapon tuning will live.", {
+    const bottomTitle = scene.add.text(1012, 494, "Craft Shell", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#f7fbff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(62);
+    const bottomCopy = scene.add.text(1012, 518, "Future bench lane", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#9fc6ff",
+      align: "center",
+    }).setOrigin(0.5, 0).setDepth(62);
+    const bottomAccent = scene.add.rectangle(1012, 580, 118, 70, 0x101b29, 0.98)
+      .setDepth(62)
+      .setStrokeStyle(2, 0x35577f, 0.74);
+    const bottomAccentTitle = scene.add.text(1012, 564, "Bench Core", {
       fontFamily: "Arial",
       fontSize: "14px",
-      color: "#8fb1d6",
-      lineSpacing: 6,
-      wordWrap: { width: 250 },
-    }).setDepth(62);
+      color: "#f7fbff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(63);
+    const bottomAccentValue = scene.add.text(1012, 592, "READY", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#a6f3ff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(63);
 
     this.closeButton = createMenuButton({
       scene,
-      x: 982,
+      x: 984,
       y: 94,
       width: 112,
       height: 40,
@@ -224,11 +264,13 @@ export class InventoryOverlay {
       this.backdrop,
       panel,
       leftRail,
-      equipmentRail,
-      cargoRail,
+      rightTopRail,
+      rightBottomRail,
       title,
       this.subtitle,
+      dollFrame,
       characterBeam,
+      characterHalo,
       characterCore,
       characterBody,
       silhouette,
@@ -241,9 +283,13 @@ export class InventoryOverlay {
       this.cargoTitle,
       this.materialsTitle,
       this.materialsText,
-      craftingHint,
+      bottomTitle,
+      bottomCopy,
+      bottomAccent,
+      bottomAccentTitle,
+      bottomAccentValue,
       this.closeButton.container,
-      ...this.equipmentSlots.flatMap((slot) => [slot.frame, slot.label, slot.item]),
+      ...this.equipmentSlots.flatMap((slot) => [slot.frame, slot.item, slot.label]),
       ...this.cargoCells.flatMap((cell) => [cell.frame, cell.label]),
     ]).setDepth(60);
 
@@ -274,28 +320,32 @@ export class InventoryOverlay {
     const companions = gameSession.getSelectedCompanions();
 
     this.profileText.setText([
-      `Callsign: ${gameSession.saveData.profile.callsign}`,
-      `Level ${gameSession.saveData.profile.level} | Credits ${gameSession.saveData.profile.credits}`,
-      "",
-      `Abilities: ${gameSession.saveData.loadout.ability} / ${gameSession.saveData.loadout.support}`,
-      `Shield Belt: ${getItemDefinition(equipment.belt)?.name ?? "None"}`,
+      `${gameSession.saveData.profile.callsign}`,
+      `Lv ${gameSession.saveData.profile.level} | Credits ${gameSession.saveData.profile.credits}`,
+      `${gameSession.saveData.loadout.ability} | ${gameSession.saveData.loadout.support}`,
     ]);
 
     this.squadText.setText([
       companions.length > 0
         ? companions
-          .map(({ companion, slotId }) => `${companion.name} | ${slotId}`)
+          .map(({ companion, slotId }) => {
+            const slotLabel = getFormationSlot(slotId)?.label
+              .replace("Front ", "F ")
+              .replace("Back ", "B ")
+              .replace("Left", "L")
+              .replace("Right", "R") ?? slotId;
+            return `${companion.name} | ${slotLabel}`;
+          })
           .join("\n")
         : "No companions assigned.",
-      "",
-      `Roster Ready: ${STORY_COMPANIONS.length} companions`,
     ]);
 
     this.equipmentSlots.forEach((slot) => {
       const item = getItemDefinition(equipment[slot.slotId]);
-      slot.item.setText(item?.name ?? "Empty");
-      slot.item.setColor(item ? "#f7fbff" : "#7f92a9");
+      slot.item.setText(item?.shortLabel ?? "+");
+      slot.item.setColor(item ? "#f7fbff" : "#6f849d");
       slot.frame.setStrokeStyle(2, item?.color ?? 0x35577f, item ? 0.92 : 0.72);
+      slot.frame.setFillStyle(item ? 0x172436 : 0x101b29, 0.98);
     });
 
     this.cargoCells.forEach((cell, index) => {
@@ -303,15 +353,14 @@ export class InventoryOverlay {
       cell.label.setText(item?.shortLabel ?? "");
       cell.label.setColor(item ? "#f7fbff" : "#7f92a9");
       cell.frame.setStrokeStyle(2, item?.color ?? 0x35577f, item ? 0.92 : 0.72);
-      cell.frame.setFillStyle(item ? 0x172436 : 0x102035, 0.96);
+      cell.frame.setFillStyle(item ? 0x172436 : 0x102035, 0.98);
     });
 
     this.materialsText.setText([
-      `Alloy: ${materials.alloy}`,
-      `Shard Dust: ${materials.shardDust}`,
-      `Filament: ${materials.filament}`,
-      "",
-      `Cargo Slots Used: ${cargo.filter((itemId) => itemId !== null).length}/${cargo.length}`,
+      `Alloy | ${materials.alloy}`,
+      `Shard Dust | ${materials.shardDust}`,
+      `Filament | ${materials.filament}`,
+      `Cargo | ${cargo.filter((itemId) => itemId !== null).length}/${cargo.length}`,
     ]);
   }
 

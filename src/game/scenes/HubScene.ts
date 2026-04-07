@@ -20,7 +20,7 @@ import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { MissionBoardOverlay } from "../ui/MissionBoardOverlay";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
-type StationId = "cockpit" | "mission" | "logbook" | "loadout" | "save";
+type StationId = "cockpit" | "mission" | "loadout";
 type InteractionTargetKind = "station" | "airlock";
 
 type Station = {
@@ -152,6 +152,7 @@ export class HubScene extends Phaser.Scene {
   private airlockDoor?: Phaser.GameObjects.Rectangle;
   private airlockGlow?: Phaser.GameObjects.Rectangle;
   private airlockLabel?: Phaser.GameObjects.Text;
+  private logbookButton?: MenuButton;
   private pauseButton?: MenuButton;
   private activateButton?: MenuButton;
   private interactionHintFrame?: Phaser.GameObjects.Rectangle;
@@ -166,6 +167,7 @@ export class HubScene extends Phaser.Scene {
     left: Phaser.Input.Keyboard.Key;
     right: Phaser.Input.Keyboard.Key;
     interact: Phaser.Input.Keyboard.Key;
+    logbook: Phaser.Input.Keyboard.Key;
   };
   private moveVector = new Phaser.Math.Vector2();
   private keyboardVector = new Phaser.Math.Vector2();
@@ -330,10 +332,8 @@ export class HubScene extends Phaser.Scene {
   private createStations(): void {
     this.stations = [
       this.createStation("cockpit", 188, 360, 86, 176, "Cockpit", "Future space bridge"),
-      this.createStation("mission", 454, 252, 210, 120, "Mission Terminal", "Queue contracts"),
-      this.createStation("logbook", 716, 252, 210, 120, "Mission Log", "Choose active route"),
-      this.createStation("loadout", 978, 430, 218, 114, "Loadout Bench", "Gear + crafting"),
-      this.createStation("save", 936, 252, 194, 120, "Save Beacon", "Write active slot"),
+      this.createStation("mission", 482, 252, 230, 120, "Mission Terminal", "Queue contracts"),
+      this.createStation("loadout", 798, 252, 230, 120, "Loadout Bench", "Gear + crafting"),
     ];
   }
 
@@ -348,13 +348,9 @@ export class HubScene extends Phaser.Scene {
   ): Station {
     const accent = id === "mission"
       ? 0x59c9ff
-      : id === "logbook"
-        ? 0x9e87ff
-        : id === "loadout"
-          ? 0xffd36d
-          : id === "cockpit"
-            ? 0x8dc8ff
-            : 0x8cffaf;
+      : id === "loadout"
+        ? 0xffd36d
+        : 0x8dc8ff;
     const zone = this.add.rectangle(x, y, width, height, 0x17314f, 0.84)
       .setStrokeStyle(3, accent, 0.72)
       .setDepth(5)
@@ -370,12 +366,11 @@ export class HubScene extends Phaser.Scene {
 
     const hint = this.add.text(x, y + 24, hintText, {
       fontFamily: "Arial",
-      fontSize: "15px",
+      fontSize: "14px",
       color: "#bed4f1",
       align: "center",
+      wordWrap: { width: width - 24 },
     }).setOrigin(0.5).setDepth(6);
-
-    this.add.circle(x, y - 42, 16, accent, 0.68).setDepth(6);
 
     const station: Station = {
       id,
@@ -390,19 +385,19 @@ export class HubScene extends Phaser.Scene {
   }
 
   private createHud(): void {
-    this.add.text(756, 46, `Lv ${gameSession.saveData.profile.level}`, {
+    this.add.text(702, 46, `Lv ${gameSession.saveData.profile.level}`, {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#e7f1ff",
     });
 
-    this.add.text(826, 46, `${gameSession.saveData.profile.credits} credits`, {
+    this.add.text(770, 46, `${gameSession.saveData.profile.credits} credits`, {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#e7f1ff",
     });
 
-    this.add.text(986, 46, `Slot ${gameSession.getActiveSlotIndex() + 1}`, {
+    this.add.text(896, 46, `Slot ${gameSession.getActiveSlotIndex() + 1}`, {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#9fc6ff",
@@ -438,9 +433,22 @@ export class HubScene extends Phaser.Scene {
       color: "#e8f1ff",
     }).setOrigin(0.5);
 
+    this.logbookButton = createMenuButton({
+      scene: this,
+      x: 1008,
+      y: 54,
+      width: 128,
+      height: 40,
+      label: "Data Pad",
+      onClick: () => this.toggleLogbookOverlay(),
+      depth: 12,
+      accentColor: 0x2b4462,
+    });
+    this.logbookButton.container.setScrollFactor(0);
+
     this.pauseButton = createMenuButton({
       scene: this,
-      x: 1130,
+      x: 1136,
       y: 54,
       width: 114,
       height: 40,
@@ -875,6 +883,7 @@ export class HubScene extends Phaser.Scene {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
       interact: Phaser.Input.Keyboard.KeyCodes.E,
+      logbook: Phaser.Input.Keyboard.KeyCodes.L,
     }) as typeof this.moveKeys;
 
     keyboard.on("keydown-ESC", () => {
@@ -885,6 +894,10 @@ export class HubScene extends Phaser.Scene {
         this.closeDeployOverlay();
         return;
       }
+      if (this.hasBlockingOverlay()) {
+        this.closeCommandOverlays();
+        return;
+      }
       this.openPauseMenu();
     });
     keyboard.on("keydown-E", () => {
@@ -893,10 +906,17 @@ export class HubScene extends Phaser.Scene {
       }
       this.tryActivateCurrentTarget();
     });
+    keyboard.on("keydown-L", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.toggleLogbookOverlay();
+    });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
       keyboard.removeAllListeners("keydown-E");
+      keyboard.removeAllListeners("keydown-L");
     });
   }
 
@@ -1037,7 +1057,7 @@ export class HubScene extends Phaser.Scene {
       const selectedMission = gameSession.getSelectedMissionId();
       this.promptText.setText(selectedMission
         ? "Activate the deploy door to assign the squad and launch the active contract."
-        : "Activate the deploy door to assign the squad. Launch unlocks once the logbook has an active contract.");
+        : "Activate the deploy door to assign the squad. Launch unlocks once the Data Pad has an active contract.");
       return;
     }
 
@@ -1061,16 +1081,10 @@ export class HubScene extends Phaser.Scene {
 
     this.closeCommandOverlays();
     const title = this.panel.data?.get("title") as Phaser.GameObjects.Text | undefined;
-    this.panel.setVisible(id === "cockpit" || id === "save");
+    this.panel.setVisible(id === "cockpit");
 
     if (id === "mission") {
       this.missionBoardOverlay?.show();
-      this.syncSceneOverlayChrome();
-      return;
-    }
-
-    if (id === "logbook") {
-      this.logbookOverlay?.show();
       this.syncSceneOverlayChrome();
       return;
     }
@@ -1097,24 +1111,6 @@ export class HubScene extends Phaser.Scene {
       this.syncSceneOverlayChrome();
       return;
     }
-
-    title?.setText("Save Beacon");
-    this.panelBody.setText([
-      `Active slot: Slot ${gameSession.getActiveSlotIndex() + 1}`,
-      "",
-      "Save the current command-deck state, mission queue, inventory, squad assignments, and options.",
-      "",
-      "Mission saves remain disabled for now to keep the combat slice predictable while we build the foundation.",
-    ]);
-    this.panelFooter.setText("Use the main menu or pause menu load screen to choose which file to continue.");
-    this.panelClose?.setLabel("Close");
-    this.panelAction.setLabel("Save Game");
-    this.panelAction.setEnabled(true);
-    this.panelAction.setOnClick(() => {
-      const ok = gameSession.saveToDisk();
-      this.statusText?.setText(ok ? `Saved to Slot ${gameSession.getActiveSlotIndex() + 1}.` : "Save failed.");
-    });
-    this.syncSceneOverlayChrome();
   }
 
   private closePanel(): void {
@@ -1175,7 +1171,7 @@ export class HubScene extends Phaser.Scene {
 
     this.deployMissionText?.setText(activeMission
       ? `Active contract: ${activeMission.title} | ${activeMission.location}`
-      : "No active contract selected. Use the mission terminal and logbook before launch.");
+      : "No active contract selected. Use the mission terminal and Data Pad before launch.");
     this.deployStatusText?.setText(statusMessage ?? fallbackStatus);
 
     this.deployRosterCards.forEach((card) => {
@@ -1282,10 +1278,10 @@ export class HubScene extends Phaser.Scene {
     const queuedCount = gameSession.getAcceptedMissionIds().length;
     this.missionText?.setText(activeMission
       ? `Active contract: ${activeMission.title} | ${queuedCount} queued`
-      : "No active contract. Queue missions at the terminal, then make one active in the mission log.");
+      : "No active contract. Queue missions at the terminal, then make one active in the Data Pad.");
     this.statusText?.setText(activeMission
       ? `${activeMission.prompt}`
-      : "Mission Terminal queues routes. Mission Log picks the active one. Deploy Door launches it once your squad is set.");
+      : "Mission Terminal queues routes. Data Pad picks the active one. Deploy Door launches it once your squad is set.");
 
     this.airlockDoor?.setFillStyle(activeMission ? 0x1d5c8d : 0x173b5d, activeMission ? 0.98 : 0.9);
     this.airlockDoor?.setStrokeStyle(3, activeMission ? 0x8be4ff : 0x7ec4ff, activeMission ? 0.96 : 0.62);
@@ -1301,12 +1297,30 @@ export class HubScene extends Phaser.Scene {
     this.syncSceneOverlayChrome();
   }
 
+  private toggleLogbookOverlay(): void {
+    if (this.deployOverlay?.visible) {
+      this.closeDeployOverlay();
+    }
+
+    if (this.logbookOverlay?.isVisible()) {
+      this.logbookOverlay.hide();
+      return;
+    }
+
+    this.closeCommandOverlays();
+    this.logbookOverlay?.show();
+    this.syncSceneOverlayChrome();
+  }
+
   private syncSceneOverlayChrome(): void {
-    const alpha = this.hasBlockingOverlay() ? 0.08 : 1;
+    const blocking = this.hasBlockingOverlay();
+    const alpha = blocking ? 0.08 : 1;
     this.missionText?.setAlpha(alpha);
     this.statusText?.setAlpha(alpha);
     this.rewardText?.setAlpha(alpha);
     this.promptText?.setAlpha(alpha);
+    this.logbookButton?.container.setAlpha(blocking ? 0.28 : 1);
+    this.pauseButton?.container.setAlpha(blocking ? 0.28 : 1);
   }
 
   private presentPendingReward(): void {
@@ -1330,7 +1344,7 @@ export class HubScene extends Phaser.Scene {
 
     const missionId = gameSession.getSelectedMissionId();
     if (!missionId) {
-      this.refreshDeployOverlay("You can prep the squad now, but launch stays locked until the mission log has an active contract.");
+      this.refreshDeployOverlay("You can prep the squad now, but launch stays locked until the Data Pad has an active contract.");
       return;
     }
 
@@ -1360,11 +1374,7 @@ export class HubScene extends Phaser.Scene {
             ? "Use"
             : this.nearestStation.id === "cockpit"
               ? "Bridge"
-              : this.nearestStation.id === "logbook"
-                ? "Log"
-            : this.nearestStation.id === "save"
-              ? "Save"
-              : "Open",
+              : "Loadout",
           station: this.nearestStation,
         }
       : null;
@@ -1516,6 +1526,7 @@ export class HubScene extends Phaser.Scene {
   private pointerOverTouchUi(pointer: Phaser.Input.Pointer): boolean {
     return Boolean(
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || this.logbookButton?.container.getBounds().contains(pointer.x, pointer.y)
       || (this.activateButton?.container.visible && this.activateButton.container.getBounds().contains(pointer.x, pointer.y)),
     );
   }
@@ -1550,6 +1561,7 @@ export class HubScene extends Phaser.Scene {
       nearestStation: this.nearestStation?.id ?? null,
       currentInteraction: this.currentInteraction?.kind ?? null,
       acceptedMissionId: gameSession.acceptedMissionId,
+      logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       squadAssignments: gameSession.getSquadAssignments(),
       activeSlot: gameSession.getActiveSlotIndex(),
       prompt: this.promptText?.text ?? "",

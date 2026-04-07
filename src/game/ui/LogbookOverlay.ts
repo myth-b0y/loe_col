@@ -70,7 +70,7 @@ export class LogbookOverlay {
     const rightRail = scene.add.rectangle(786, 360, 556, 516, 0x09131f, 0.985)
       .setDepth(61)
       .setStrokeStyle(2, 0x274566, 0.82);
-    const title = scene.add.text(126, 92, "Mission Log", {
+    const title = scene.add.text(126, 92, "Data Pad", {
       fontFamily: "Arial",
       fontSize: "32px",
       color: "#f7fbff",
@@ -156,7 +156,7 @@ export class LogbookOverlay {
       x: 648,
       y: 604,
       width: 180,
-      label: "Set Active",
+      label: "Set Route",
       onClick: () => {
         if (gameSession.setSelectedMission(this.selectedMissionId)) {
           this.refresh();
@@ -171,7 +171,7 @@ export class LogbookOverlay {
       x: 838,
       y: 604,
       width: 180,
-      label: "Remove",
+      label: "Drop",
       onClick: () => {
         if (gameSession.abandonAcceptedMission(this.selectedMissionId)) {
           this.refresh();
@@ -240,7 +240,7 @@ export class LogbookOverlay {
       ? contracts.find((contract) => contract.id === gameSession.getSelectedMissionId())
       : undefined;
 
-    this.subtitle.setText("Queued contracts live here. Pick which accepted mission becomes active for deployment, and review what routes you have already cleared.");
+    this.subtitle.setText("Your datapad tracks queued contracts, the active deployment route, and the missions you have already cleared.");
     this.queueSummary.setText(
       acceptedMissionIds.length > 0
         ? `Queued routes: ${acceptedMissionIds.length} | Active: ${activeMission?.title ?? "none"}`

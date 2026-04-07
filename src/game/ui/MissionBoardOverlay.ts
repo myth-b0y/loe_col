@@ -249,11 +249,11 @@ export class MissionBoardOverlay {
       ? contracts.find((contract) => contract.id === selectedMissionId)
       : undefined;
 
-    this.subtitle.setText("Review the current contracts, accept one or all of them, then use the logbook to choose which queued route becomes your active deployment.");
+    this.subtitle.setText("Review the current contracts, accept one or all of them, then use the Data Pad to choose which queued route becomes your active deployment.");
     this.statusText.setText(
       acceptedMissionIds.length > 0
         ? `${acceptedMissionIds.length} contract${acceptedMissionIds.length === 1 ? "" : "s"} queued. Active contract: ${selectedContract?.title ?? "none selected"}.`
-        : "No contracts queued yet. Accept a route to make it available in the logbook and at the deploy door.",
+        : "No contracts queued yet. Accept a route to make it available in the Data Pad and at the deploy door.",
     );
 
     this.cards.forEach((card) => {
@@ -270,7 +270,7 @@ export class MissionBoardOverlay {
       card.status.setText(
         isAccepted
           ? selectedMissionId === card.contractId
-            ? "Queued | Active in logbook"
+            ? "Queued | Active in Data Pad"
             : "Queued"
           : isCompleted
             ? "Previously cleared"
