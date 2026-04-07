@@ -1,12 +1,13 @@
 import Phaser from "phaser";
 
 import {
+  createMissionDefinition,
   FIRST_MISSION,
-  missionRegistry,
   type BossStage,
   type HallwayStage,
   type MissionDefinition,
   type MissionEnemyKind,
+  type MissionFlow,
   type MissionHallwayZone,
   type MissionStage,
   type RestStage,
@@ -28,6 +29,8 @@ type Bullet = {
   damage: number;
   radius: number;
   owner: BulletOwner;
+  splashRadius?: number;
+  splashDamage?: number;
 };
 
 type Enemy = {
@@ -130,6 +133,8 @@ type EnemyFocusTarget = {
 
 const BASE_STAGE_BOUNDS = new Phaser.Geom.Rectangle(110, 174, 1500, 338);
 const BASE_REST_BOUNDS = new Phaser.Geom.Rectangle(140, 150, 820, 420);
+const BASE_STAGE_VERTICAL = new Phaser.Geom.Rectangle(338, 110, 604, 1500);
+const BASE_REST_VERTICAL = new Phaser.Geom.Rectangle(250, 150, 780, 820);
 const MOVE_SPEED = 315;
 const DASH_DISTANCE = 128;
 const PRIMARY_FIRE_COOLDOWN = 0.16;
@@ -155,6 +160,10 @@ function cloneRect(rect: Phaser.Geom.Rectangle): Phaser.Geom.Rectangle {
   return new Phaser.Geom.Rectangle(rect.x, rect.y, rect.width, rect.height);
 }
 
+function flowDirection(flow: MissionFlow): Phaser.Math.Vector2 {
+  return flow === "up" ? new Phaser.Math.Vector2(0, -1) : new Phaser.Math.Vector2(1, 0);
+}
+
 export class MissionScene extends Phaser.Scene {
   private mission: MissionDefinition = FIRST_MISSION;
   private brightnessLayer?: BrightnessLayer;
@@ -165,6 +174,7 @@ export class MissionScene extends Phaser.Scene {
   private transitioningStage = false;
   private currentStage?: MissionStage;
   private playArea = cloneRect(BASE_STAGE_BOUNDS);
+  private worldBounds = { width: GAME_WIDTH, height: GAME_HEIGHT };
   private stageObjects: Phaser.GameObjects.GameObject[] = [];
   private hallwayZones: HallwayZoneRuntime[] = [];
   private restStations?: RestStations;
@@ -250,7 +260,7 @@ export class MissionScene extends Phaser.Scene {
 
   init(data: { missionId?: string }): void {
     this.resetMissionRuntime();
-    this.mission = missionRegistry[data.missionId ?? FIRST_MISSION.id] ?? FIRST_MISSION;
+    this.mission = createMissionDefinition(data.missionId ?? FIRST_MISSION.id);
   }
 
   create(): void {
@@ -313,6 +323,7 @@ export class MissionScene extends Phaser.Scene {
     this.transitioningStage = false;
     this.currentStage = undefined;
     this.playArea = cloneRect(BASE_STAGE_BOUNDS);
+    this.worldBounds = { width: GAME_WIDTH, height: GAME_HEIGHT };
     this.stageObjects = [];
     this.hallwayZones = [];
     this.restStations = undefined;
@@ -834,23 +845,23 @@ export class MissionScene extends Phaser.Scene {
       ? `${this.currentStage.flavor} Combat is offline while you reset here.`
       : this.currentStage.flavor);
 
-    const isRest = this.currentStage.type === "rest";
-    const width = this.currentStage.width;
-    this.playArea = cloneRect(isRest ? BASE_REST_BOUNDS : BASE_STAGE_BOUNDS);
-    this.playArea.setPosition(isRest ? 120 : 110, isRest ? 146 : 174);
-    this.playArea.width = width - (isRest ? 240 : 220);
+    this.configureStageBounds(this.currentStage);
 
     this.cameras.main.stopFollow();
-    this.cameras.main.setBounds(0, 0, width, GAME_HEIGHT);
-    this.cameras.main.setScroll(0, 0);
+    this.cameras.main.setBounds(0, 0, this.worldBounds.width, this.worldBounds.height);
+    this.cameras.main.setScroll(
+      this.getStageFlow(this.currentStage) === "up" ? 0 : 0,
+      this.getStageFlow(this.currentStage) === "up" ? Math.max(0, this.worldBounds.height - GAME_HEIGHT) : 0,
+    );
 
     this.buildStageLayout(this.currentStage);
-    this.player.setPosition(this.playArea.x + 90, this.playArea.centerY);
+    const entryPoint = this.getStageEntryPoint(this.currentStage);
+    const forward = flowDirection(this.getStageFlow(this.currentStage));
+    this.player.setPosition(entryPoint.x, entryPoint.y);
     this.player.setAlpha(1);
     this.playerShieldRing.setPosition(this.player.x, this.player.y);
-    const spawnDirection = new Phaser.Math.Vector2(1, 0);
     this.companions.forEach((companion) => {
-      const spawnAnchor = this.getCompanionDesiredAnchor(companion, spawnDirection, null, new Phaser.Math.Vector2(0, 0));
+      const spawnAnchor = this.getCompanionDesiredAnchor(companion, forward, null, new Phaser.Math.Vector2(0, 0));
       companion.sprite.setPosition(spawnAnchor.x, spawnAnchor.y);
       companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
       companion.sprite.setVisible(gameSession.getModeRules().companionsEnabled);
@@ -859,7 +870,7 @@ export class MissionScene extends Phaser.Scene {
       companion.guardPlate?.setVisible(gameSession.getModeRules().companionsEnabled && !companion.downed);
       companion.revivePromptText.setVisible(false);
     });
-    this.lookPoint.set(this.player.x + 180, this.player.y);
+    this.lookPoint.set(this.player.x + forward.x * 180, this.player.y + forward.y * 180);
 
     this.progressDots.forEach((dot, dotIndex) => {
       dot.setFillStyle(dotIndex < index ? 0x79abed : dotIndex === index ? 0xffd36d : 0x29425f, 1);
@@ -879,8 +890,27 @@ export class MissionScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
   }
 
+  private configureStageBounds(stage: MissionStage): void {
+    const flow = this.getStageFlow(stage);
+    const isRest = stage.type === "rest";
+
+    if (flow === "up") {
+      this.worldBounds = { width: GAME_WIDTH, height: stage.span };
+      this.playArea = cloneRect(isRest ? BASE_REST_VERTICAL : BASE_STAGE_VERTICAL);
+      this.playArea.setPosition(isRest ? 250 : 338, isRest ? 150 : 110);
+      this.playArea.height = stage.span - (isRest ? 300 : 220);
+      return;
+    }
+
+    this.worldBounds = { width: stage.span, height: GAME_HEIGHT };
+    this.playArea = cloneRect(isRest ? BASE_REST_BOUNDS : BASE_STAGE_BOUNDS);
+    this.playArea.setPosition(isRest ? 120 : 110, isRest ? 146 : 174);
+    this.playArea.width = stage.span - (isRest ? 240 : 220);
+  }
+
   private buildStageLayout(stage: MissionStage): void {
-    const base = this.add.rectangle(stage.width / 2, GAME_HEIGHT / 2, stage.width, GAME_HEIGHT, 0x070d16).setDepth(-14);
+    const flow = this.getStageFlow(stage);
+    const base = this.add.rectangle(this.worldBounds.width / 2, this.worldBounds.height / 2, this.worldBounds.width, this.worldBounds.height, 0x070d16).setDepth(-14);
     this.stageObjects.push(base);
 
     const stars = this.add.graphics().setDepth(-13);
@@ -890,48 +920,73 @@ export class MissionScene extends Phaser.Scene {
       : gameSession.settings.graphics.quality === "Balanced"
         ? 0.68
         : 0.88;
-    for (let i = 0; i < Math.max(12, Math.floor((stage.width / 28) * density)); i += 1) {
+    const starBudget = flow === "up"
+      ? Math.max(18, Math.floor((this.worldBounds.height / 32) * density))
+      : Math.max(12, Math.floor((this.worldBounds.width / 28) * density));
+    for (let i = 0; i < starBudget; i += 1) {
       stars.fillCircle(
-        Phaser.Math.Between(18, stage.width - 18),
-        Phaser.Math.Between(16, GAME_HEIGHT - 16),
+        Phaser.Math.Between(18, this.worldBounds.width - 18),
+        Phaser.Math.Between(16, this.worldBounds.height - 16),
         Phaser.Math.FloatBetween(0.8, 2),
       );
     }
     this.stageObjects.push(stars);
 
-    const upperWall = this.add.rectangle(stage.width / 2, this.playArea.y - 42, stage.width - 100, 120, 0x0b1523, 0.98)
-      .setDepth(-10);
-    const lowerWall = this.add.rectangle(stage.width / 2, this.playArea.bottom + 42, stage.width - 100, 120, 0x0b1523, 0.98)
-      .setDepth(-10);
-    const floor = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x121f34, 0.98)
-      .setStrokeStyle(4, 0x78abed, 0.82)
-      .setDepth(-8);
-    this.stageObjects.push(upperWall, lowerWall, floor);
+    if (flow === "right") {
+      const upperWall = this.add.rectangle(this.worldBounds.width / 2, this.playArea.y - 42, this.worldBounds.width - 100, 120, 0x0b1523, 0.98)
+        .setDepth(-10);
+      const lowerWall = this.add.rectangle(this.worldBounds.width / 2, this.playArea.bottom + 42, this.worldBounds.width - 100, 120, 0x0b1523, 0.98)
+        .setDepth(-10);
+      const floor = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x121f34, 0.98)
+        .setStrokeStyle(4, 0x78abed, 0.82)
+        .setDepth(-8);
+      this.stageObjects.push(upperWall, lowerWall, floor);
 
-    const laneSpacing = gameSession.settings.graphics.quality === "Performance"
-      ? 360
-      : gameSession.settings.graphics.quality === "Balanced"
-        ? 300
-        : 240;
-    for (let lineX = this.playArea.x + 160; lineX < this.playArea.right - 120; lineX += laneSpacing) {
-      const line = this.add.rectangle(lineX, this.playArea.centerY, 14, this.playArea.height - 44, 0x1c304a, 0.6).setDepth(-7);
-      this.stageObjects.push(line);
+      const laneSpacing = gameSession.settings.graphics.quality === "Performance"
+        ? 360
+        : gameSession.settings.graphics.quality === "Balanced"
+          ? 300
+          : 240;
+      for (let lineX = this.playArea.x + 160; lineX < this.playArea.right - 120; lineX += laneSpacing) {
+        const line = this.add.rectangle(lineX, this.playArea.centerY, 14, this.playArea.height - 44, 0x1c304a, 0.6).setDepth(-7);
+        this.stageObjects.push(line);
+      }
+    } else {
+      const leftWall = this.add.rectangle(this.playArea.x - 42, this.worldBounds.height / 2, 120, this.worldBounds.height - 100, 0x0b1523, 0.98)
+        .setDepth(-10);
+      const rightWall = this.add.rectangle(this.playArea.right + 42, this.worldBounds.height / 2, 120, this.worldBounds.height - 100, 0x0b1523, 0.98)
+        .setDepth(-10);
+      const shaft = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x111f31, 0.98)
+        .setStrokeStyle(4, 0x78abed, 0.82)
+        .setDepth(-8);
+      this.stageObjects.push(leftWall, rightWall, shaft);
+
+      const rungSpacing = gameSession.settings.graphics.quality === "Performance"
+        ? 280
+        : gameSession.settings.graphics.quality === "Balanced"
+          ? 220
+          : 180;
+      for (let lineY = this.playArea.bottom - 140; lineY > this.playArea.y + 120; lineY -= rungSpacing) {
+        const line = this.add.rectangle(this.playArea.centerX, lineY, this.playArea.width - 48, 12, 0x1c304a, 0.58).setDepth(-7);
+        this.stageObjects.push(line);
+      }
     }
 
-    const startDoorX = this.playArea.x + 26;
-    const exitDoorX = this.playArea.right - 26;
+    const entryPoint = this.getStageEntryPoint(stage);
+    const exitPoint = this.getStageExitPoint(stage);
+    const entryVertical = flow === "up";
 
-    const startGlow = this.add.rectangle(startDoorX, this.playArea.centerY, 76, 148, 0x56c8ff, 0.14).setDepth(-6);
-    const startDoor = this.add.rectangle(startDoorX, this.playArea.centerY, 50, 134, 0x20486a, 0.96)
+    const startGlow = this.add.rectangle(entryPoint.x, entryPoint.y, entryVertical ? 148 : 76, entryVertical ? 76 : 148, 0x56c8ff, 0.14).setDepth(-6);
+    const startDoor = this.add.rectangle(entryPoint.x, entryPoint.y, entryVertical ? 134 : 50, entryVertical ? 50 : 134, 0x20486a, 0.96)
       .setStrokeStyle(3, 0x8be4ff, 0.72)
       .setDepth(-5);
     this.stageObjects.push(startGlow, startDoor);
 
-    const doorGlow = this.add.rectangle(exitDoorX, this.playArea.centerY, 76, 148, 0xffcb68, 0.08).setDepth(2);
-    const doorFrame = this.add.rectangle(exitDoorX, this.playArea.centerY, 50, 134, 0x473113, 0.94)
+    const doorGlow = this.add.rectangle(exitPoint.x, exitPoint.y, entryVertical ? 148 : 76, entryVertical ? 76 : 148, 0xffcb68, 0.08).setDepth(2);
+    const doorFrame = this.add.rectangle(exitPoint.x, exitPoint.y, entryVertical ? 134 : 50, entryVertical ? 50 : 134, 0x473113, 0.94)
       .setStrokeStyle(3, 0xffcb68, 0.5)
       .setDepth(3);
-    const doorLabel = this.add.text(exitDoorX - 58, this.playArea.y - 28, "Locked", {
+    const doorLabel = this.add.text(flow === "up" ? exitPoint.x - 42 : exitPoint.x - 58, flow === "up" ? exitPoint.y + 40 : this.playArea.y - 28, "Locked", {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#efd8b0",
@@ -951,16 +1006,23 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private setupHallway(stage: HallwayStage): void {
+    const flow = this.getStageFlow(stage);
     this.hallwayZones = stage.zones.map((zone) => {
-      const marker = this.add.rectangle(zone.triggerX, this.playArea.centerY, 10, this.playArea.height - 36, 0x6fa8ef, 0.16)
-        .setDepth(-6);
+      const triggerPoint = this.getWorldPointAlongFlow(flow, zone.triggerProgress);
+      const marker = flow === "up"
+        ? this.add.rectangle(this.playArea.centerX, triggerPoint.y, this.playArea.width - 32, 10, 0x6fa8ef, 0.16).setDepth(-6)
+        : this.add.rectangle(triggerPoint.x, this.playArea.centerY, 10, this.playArea.height - 36, 0x6fa8ef, 0.16).setDepth(-6);
       this.stageObjects.push(marker);
       return { data: zone, activated: false, marker };
     });
   }
 
   private setupRestRoom(_stage: RestStage): void {
-    const healPad = this.add.rectangle(this.playArea.centerX - 160, this.playArea.centerY, 134, 134, 0x173c2c, 0.94)
+    const flow = this.currentStage ? this.getStageFlow(this.currentStage) : "right";
+    const horizontalOffset = flow === "up" ? 0 : 160;
+    const verticalOffset = flow === "up" ? 160 : 0;
+
+    const healPad = this.add.rectangle(this.playArea.centerX - horizontalOffset, this.playArea.centerY - verticalOffset, 134, 134, 0x173c2c, 0.94)
       .setStrokeStyle(3, 0x7ff3b1, 0.86)
       .setDepth(2);
     const healText = this.add.text(healPad.x, healPad.y - 10, "Med Bay", {
@@ -975,7 +1037,7 @@ export class MissionScene extends Phaser.Scene {
       color: "#c5f3d6",
     }).setOrigin(0.5).setDepth(3);
 
-    const supplyPad = this.add.rectangle(this.playArea.centerX + 160, this.playArea.centerY, 134, 134, 0x3b2d18, 0.94)
+    const supplyPad = this.add.rectangle(this.playArea.centerX + horizontalOffset, this.playArea.centerY + verticalOffset, 134, 134, 0x3b2d18, 0.94)
       .setStrokeStyle(3, 0xffd36d, 0.86)
       .setDepth(2);
     const supplyText = this.add.text(supplyPad.x, supplyPad.y - 10, "Supply Locker", {
@@ -997,14 +1059,66 @@ export class MissionScene extends Phaser.Scene {
       supplyPad,
       supplyText,
     };
-    this.messageText.setText("Rest room secured. Heal up, check supplies, then move through the next door.");
+    this.messageText.setText("Safe room secured. Heal up, check supplies, then move through the next door.");
   }
 
   private setupBossRoom(stage: BossStage): void {
-    const triggerMarker = this.add.rectangle(stage.triggerX, this.playArea.centerY, 12, this.playArea.height - 36, 0xc8a7ff, 0.2)
-      .setDepth(-6);
+    const flow = this.getStageFlow(stage);
+    const triggerPoint = this.getWorldPointAlongFlow(flow, stage.triggerProgress);
+    const triggerMarker = flow === "up"
+      ? this.add.rectangle(this.playArea.centerX, triggerPoint.y, this.playArea.width - 36, 12, 0xc8a7ff, 0.2).setDepth(-6)
+      : this.add.rectangle(triggerPoint.x, this.playArea.centerY, 12, this.playArea.height - 36, 0xc8a7ff, 0.2).setDepth(-6);
     this.stageObjects.push(triggerMarker);
     this.messageText.setText("Advance into the relay heart. The brute should wake once you cross the core threshold.");
+  }
+
+  private getStageFlow(stage: MissionStage): MissionFlow {
+    return stage.flow;
+  }
+
+  private getStageEntryPoint(stage: MissionStage): Phaser.Math.Vector2 {
+    return this.getStageFlow(stage) === "up"
+      ? new Phaser.Math.Vector2(this.playArea.centerX, this.playArea.bottom - 90)
+      : new Phaser.Math.Vector2(this.playArea.x + 90, this.playArea.centerY);
+  }
+
+  private getStageExitPoint(stage: MissionStage): Phaser.Math.Vector2 {
+    return this.getStageFlow(stage) === "up"
+      ? new Phaser.Math.Vector2(this.playArea.centerX, this.playArea.y + 26)
+      : new Phaser.Math.Vector2(this.playArea.right - 26, this.playArea.centerY);
+  }
+
+  private getWorldPointAlongFlow(flow: MissionFlow, progress: number): Phaser.Math.Vector2 {
+    if (flow === "up") {
+      return new Phaser.Math.Vector2(
+        this.playArea.centerX,
+        Phaser.Math.Linear(this.playArea.bottom - 80, this.playArea.y + 80, progress),
+      );
+    }
+
+    return new Phaser.Math.Vector2(
+      Phaser.Math.Linear(this.playArea.x + 80, this.playArea.right - 80, progress),
+      this.playArea.centerY,
+    );
+  }
+
+  private hasReachedWorldPoint(point: Phaser.Math.Vector2, flow: MissionFlow): boolean {
+    return flow === "up" ? this.player.y <= point.y : this.player.x >= point.x;
+  }
+
+  private getSpawnPointAheadOfProgress(flow: MissionFlow, progress: number): Phaser.Math.Vector2 {
+    const base = this.getWorldPointAlongFlow(flow, progress);
+    if (flow === "up") {
+      return new Phaser.Math.Vector2(
+        this.playArea.centerX + Phaser.Math.Between(-110, 110),
+        Phaser.Math.Clamp(base.y - Phaser.Math.Between(140, 300), this.playArea.y + 60, this.playArea.bottom - 60),
+      );
+    }
+
+    return new Phaser.Math.Vector2(
+      Phaser.Math.Clamp(base.x + Phaser.Math.Between(140, 320), this.playArea.x + 60, this.playArea.right - 60),
+      this.playArea.centerY + Phaser.Math.Between(-110, 110),
+    );
   }
   private updateKeyboardVector(): void {
     this.keyboardVector.set(0, 0);
@@ -1180,14 +1294,14 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      const target = this.getNearestEnemy(companion.sprite.x, companion.sprite.y, companion.attackStyle === "shield" ? 300 : 360);
+      const target = this.getNearestEnemy(companion.sprite.x, companion.sprite.y, this.getCompanionAttackRange(companion.attackStyle));
       const threatAvoidance = this.getCompanionThreatAvoidance(companion);
       const desiredAnchor = this.getCompanionDesiredAnchor(companion, followDirection, target, threatAvoidance, index);
       const desiredX = desiredAnchor.x;
       const desiredY = desiredAnchor.y;
       const beforeX = companion.sprite.x;
       const beforeY = companion.sprite.y;
-      const smoothing = 1 - Math.exp(-dt * (companion.attackStyle === "shield" ? 9 : 10));
+      const smoothing = 1 - Math.exp(-dt * (companion.attackStyle === "shield" || companion.attackStyle === "melee" ? 9 : 10.5));
       companion.sprite.x = Phaser.Math.Linear(companion.sprite.x, desiredX, smoothing);
       companion.sprite.y = Phaser.Math.Linear(companion.sprite.y, desiredY, smoothing);
       companion.sprite.x = Phaser.Math.Clamp(companion.sprite.x, this.playArea.x + companion.radius, this.playArea.right - companion.radius);
@@ -1210,11 +1324,26 @@ export class MissionScene extends Phaser.Scene {
       this.updateCompanionGuardPlate(companion);
       this.applyHumanoidStride(companion.sprite, movementAmount, index + 0.9, facing);
 
-      if (!target || companion.cooldown > 0 || this.currentStage?.type === "rest") {
+      if (companion.cooldown > 0 || this.currentStage?.type === "rest") {
         return;
       }
 
-      if (companion.attackStyle === "shield" && Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, target.sprite.x, target.sprite.y) <= 164) {
+      if (companion.attackStyle === "healer") {
+        const healTarget = this.getCompanionHealTarget(companion);
+        if (healTarget) {
+          companion.cooldown = 1.25;
+          this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.46, 220);
+          this.applyCompanionHeal(healTarget, 14, 9);
+          return;
+        }
+      }
+
+      if (!target) {
+        return;
+      }
+
+      const distanceToTarget = Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, target.sprite.x, target.sprite.y);
+      if (companion.attackStyle === "shield" && distanceToTarget <= 164) {
         companion.cooldown = 1.1;
         const shieldWave = this.add.circle(companion.sprite.x, companion.sprite.y, 20)
           .setStrokeStyle(5, companion.projectileColor, 0.92)
@@ -1227,6 +1356,7 @@ export class MissionScene extends Phaser.Scene {
           onComplete: () => shieldWave.destroy(),
         });
 
+        this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.52, 200);
         this.enemies.slice().forEach((enemy) => {
           const distance = Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, enemy.sprite.x, enemy.sprite.y);
           if (distance <= 100) {
@@ -1238,8 +1368,68 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      companion.cooldown = companion.attackStyle === "shield" ? 1.24 : 0.62;
       const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
+
+      if (companion.attackStyle === "melee") {
+        if (distanceToTarget > 112) {
+          return;
+        }
+
+        companion.cooldown = 0.95;
+        const slash = this.add.rectangle(companion.sprite.x + direction.x * 18, companion.sprite.y + direction.y * 18, 84, 16, companion.projectileColor, 0.58)
+          .setOrigin(0.2, 0.5)
+          .setRotation(direction.angle())
+          .setDepth(12);
+        this.tweens.add({
+          targets: slash,
+          alpha: 0,
+          scaleX: 1.4,
+          duration: 160,
+          onComplete: () => slash.destroy(),
+        });
+        this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.42, 180);
+        this.damageEnemy(target, 16);
+        this.enemies.slice().forEach((enemy) => {
+          if (enemy === target) {
+            return;
+          }
+          const distance = Phaser.Math.Distance.Between(target.sprite.x, target.sprite.y, enemy.sprite.x, enemy.sprite.y);
+          if (distance <= 62) {
+            this.damageEnemy(enemy, 8);
+          }
+        });
+        return;
+      }
+
+      if (companion.attackStyle === "caster") {
+        companion.cooldown = 0.88;
+        this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.4, 200);
+        this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 470, 11, 5, "companion", companion.projectileColor);
+        const chainedEnemy = this.enemies.find((enemy) =>
+          enemy !== target
+          && Phaser.Math.Distance.Between(target.sprite.x, target.sprite.y, enemy.sprite.x, enemy.sprite.y) <= 92,
+        );
+        if (chainedEnemy) {
+          this.time.delayedCall(90, () => {
+            if (!this.enemies.includes(chainedEnemy)) {
+              return;
+            }
+            this.damageEnemy(chainedEnemy, 7);
+            this.spawnCombatLight(chainedEnemy.sprite.x, chainedEnemy.sprite.y, companion.projectileColor, 0.34, 160);
+          });
+        }
+        return;
+      }
+
+      if (companion.attackStyle === "demolition") {
+        companion.cooldown = 1.18;
+        this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.46, 220);
+        this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 320, 14, 8, "companion", companion.projectileColor, 68, 7);
+        return;
+      }
+
+      companion.cooldown = companion.attackStyle === "shield" ? 1.24 : 0.62;
+      this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.36, 180);
       this.spawnBullet(
         companion.sprite.x,
         companion.sprite.y,
@@ -1250,6 +1440,81 @@ export class MissionScene extends Phaser.Scene {
         "companion",
         companion.projectileColor,
       );
+    });
+  }
+
+  private getCompanionAttackRange(style: CompanionAttackStyle): number {
+    if (style === "shield") {
+      return 300;
+    }
+
+    if (style === "melee") {
+      return 220;
+    }
+
+    if (style === "demolition" || style === "caster" || style === "healer") {
+      return 420;
+    }
+
+    return 360;
+  }
+
+  private getCompanionHealTarget(companion: CompanionState): { side: ActorSide; companion?: CompanionState } | null {
+    const playerMissing = this.playerMaxHp - this.playerHp + Math.max(0, this.playerMaxShield - this.playerShield) * 0.55;
+    let best: { side: ActorSide; companion?: CompanionState; score: number } | null = playerMissing > 8
+      ? { side: "player", score: playerMissing }
+      : null;
+
+    this.companions.forEach((ally) => {
+      if (ally === companion || ally.downed) {
+        return;
+      }
+
+      const missing = (ally.maxHp - ally.hp) + Math.max(0, ally.maxShield - ally.shield) * 0.55;
+      if (missing <= 8) {
+        return;
+      }
+
+      if (!best || missing > best.score) {
+        best = {
+          side: "companion",
+          companion: ally,
+          score: missing,
+        };
+      }
+    });
+
+    return best ? { side: best.side, companion: best.companion } : null;
+  }
+
+  private applyCompanionHeal(target: { side: ActorSide; companion?: CompanionState }, hpAmount: number, shieldAmount: number): void {
+    if (target.side === "player") {
+      this.playerHp = Math.min(this.playerMaxHp, this.playerHp + hpAmount);
+      this.playerShield = Math.min(this.playerMaxShield, this.playerShield + shieldAmount);
+      this.playerShieldDelay = Math.max(0, this.playerShieldDelay - 0.35);
+      this.spawnCombatLight(this.player.x, this.player.y, 0x9be8ff, 0.52, 220);
+      return;
+    }
+
+    if (!target.companion) {
+      return;
+    }
+
+    target.companion.hp = Math.min(target.companion.maxHp, target.companion.hp + hpAmount);
+    target.companion.shield = Math.min(target.companion.maxShield, target.companion.shield + shieldAmount);
+    target.companion.shieldDelay = Math.max(0, target.companion.shieldDelay - 0.35);
+    this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0x9be8ff, 0.46, 220);
+  }
+
+  private spawnCombatLight(x: number, y: number, color: number, scale: number, duration: number): void {
+    const flash = this.add.circle(x, y, 26, color, 0.22).setDepth(13);
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      scaleX: 1 + scale,
+      scaleY: 1 + scale,
+      duration,
+      onComplete: () => flash.destroy(),
     });
   }
 
@@ -1413,6 +1678,7 @@ export class MissionScene extends Phaser.Scene {
         const hitPlayer = Phaser.Math.Distance.Between(bullet.sprite.x, bullet.sprite.y, this.player.x, this.player.y) <= bullet.radius + 18;
         if (hitCompanion) {
           this.damageCompanion(hitCompanion, bullet.damage);
+          this.spawnCombatLight(bullet.sprite.x, bullet.sprite.y, 0xff9bb0, 0.34, 160);
           bullet.sprite.destroy();
           this.bullets.splice(index, 1);
           continue;
@@ -1420,6 +1686,7 @@ export class MissionScene extends Phaser.Scene {
 
         if (hitPlayer) {
           this.damagePlayer(bullet.damage);
+          this.spawnCombatLight(bullet.sprite.x, bullet.sprite.y, 0xff9bb0, 0.4, 180);
           bullet.sprite.destroy();
           this.bullets.splice(index, 1);
           continue;
@@ -1440,6 +1707,21 @@ export class MissionScene extends Phaser.Scene {
         }
 
         this.damageEnemy(enemy, bullet.damage);
+        if (bullet.splashRadius && bullet.splashDamage) {
+          const splashRadius = bullet.splashRadius;
+          const splashDamage = bullet.splashDamage;
+          this.enemies.slice().forEach((other) => {
+            if (other === enemy) {
+              return;
+            }
+
+            const splashDistance = Phaser.Math.Distance.Between(enemy.sprite.x, enemy.sprite.y, other.sprite.x, other.sprite.y);
+            if (splashDistance <= splashRadius) {
+              this.damageEnemy(other, splashDamage);
+            }
+          });
+        }
+        this.spawnCombatLight(enemy.sprite.x, enemy.sprite.y, 0xffd28f, bullet.splashRadius ? 0.52 : 0.3, 190);
         hit = true;
       });
 
@@ -1468,7 +1750,7 @@ export class MissionScene extends Phaser.Scene {
 
   private updateHallwayState(): void {
     const nextZone = this.hallwayZones.find((zone) => !zone.activated);
-    if (nextZone && this.player.x >= nextZone.data.triggerX) {
+    if (nextZone && this.hasReachedWorldPoint(this.getWorldPointAlongFlow(this.getStageFlow(this.currentStage as MissionStage), nextZone.data.triggerProgress), this.getStageFlow(this.currentStage as MissionStage))) {
       this.activateHallwayZone(nextZone);
     }
 
@@ -1511,13 +1793,26 @@ export class MissionScene extends Phaser.Scene {
 
   private updateBossState(): void {
     const stage = this.currentStage as BossStage;
-    if (!this.bossTriggered && this.player.x >= stage.triggerX) {
+    const triggerPoint = this.getWorldPointAlongFlow(this.getStageFlow(stage), stage.triggerProgress);
+    if (!this.bossTriggered && this.hasReachedWorldPoint(triggerPoint, this.getStageFlow(stage))) {
       this.bossTriggered = true;
       this.messageText.setText("The brute wakes. Break it and extract.");
-      this.spawnEnemy("boss", this.playArea.right - 220, this.playArea.centerY);
+      const bossSpawn = this.getStageFlow(stage) === "up"
+        ? new Phaser.Math.Vector2(this.playArea.centerX, this.playArea.y + 220)
+        : new Phaser.Math.Vector2(this.playArea.right - 220, this.playArea.centerY);
+      this.spawnEnemy("boss", bossSpawn.x, bossSpawn.y);
       stage.adds?.forEach((group) => {
         for (let i = 0; i < group.count; i += 1) {
-          this.spawnEnemy(group.kind, this.playArea.right - 380 + i * 34, this.playArea.centerY + Phaser.Math.Between(-90, 90));
+          const spawnPoint = this.getStageFlow(stage) === "up"
+            ? new Phaser.Math.Vector2(
+              this.playArea.centerX + Phaser.Math.Between(-120, 120),
+              this.playArea.y + 320 + i * 28,
+            )
+            : new Phaser.Math.Vector2(
+              this.playArea.right - 380 + i * 34,
+              this.playArea.centerY + Phaser.Math.Between(-90, 90),
+            );
+          this.spawnEnemy(group.kind, spawnPoint.x, spawnPoint.y);
         }
       });
     }
@@ -1534,9 +1829,11 @@ export class MissionScene extends Phaser.Scene {
     zone.activated = true;
     zone.marker.setFillStyle(0x6fa8ef, 0.04);
     this.messageText.setText(zone.data.flavor);
+    const flow = this.getStageFlow(this.currentStage as MissionStage);
     zone.data.enemies.forEach((group) => {
       for (let i = 0; i < group.count; i += 1) {
-        this.spawnEnemy(group.kind, zone.data.triggerX + Phaser.Math.Between(140, 360), this.playArea.centerY + Phaser.Math.Between(-110, 110));
+        const spawnPoint = this.getSpawnPointAheadOfProgress(flow, zone.data.triggerProgress);
+        this.spawnEnemy(group.kind, spawnPoint.x, spawnPoint.y);
       }
     });
   }
@@ -1658,8 +1955,12 @@ export class MissionScene extends Phaser.Scene {
     radius: number,
     owner: BulletOwner,
     color: number,
+    splashRadius = 0,
+    splashDamage = 0,
   ): void {
     const bullet = this.add.circle(x, y, radius, color, 0.96).setDepth(9);
+    bullet.setStrokeStyle(2, color, 0.84);
+    this.spawnCombatLight(x, y, color, 0.22, 120);
     this.bullets.push({
       sprite: bullet,
       velocity: direction.clone().normalize().scale(speed),
@@ -1667,6 +1968,8 @@ export class MissionScene extends Phaser.Scene {
       damage,
       radius,
       owner,
+      splashRadius: splashRadius > 0 ? splashRadius : undefined,
+      splashDamage: splashDamage > 0 ? splashDamage : undefined,
     });
   }
 
@@ -1679,6 +1982,7 @@ export class MissionScene extends Phaser.Scene {
     if (gameSession.settings.graphics.screenShake) {
       this.cameras.main.shake(90, 0.0015);
     }
+    this.spawnCombatLight(this.player.x, this.player.y, 0x7fe3ff, 0.64, 220);
 
     const ring = this.add.circle(this.player.x, this.player.y, 24).setStrokeStyle(6, 0x7fe3ff, 0.95).setDepth(15);
     this.tweens.add({
@@ -1704,6 +2008,7 @@ export class MissionScene extends Phaser.Scene {
 
     this.arcCooldown = ARC_COOLDOWN;
     const direction = this.getCombatAimDirection();
+    this.spawnCombatLight(this.player.x, this.player.y, 0xffd16a, 0.52, 180);
     const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
     beam.setRotation(direction.angle());
     this.tweens.add({
@@ -1746,6 +2051,7 @@ export class MissionScene extends Phaser.Scene {
     this.player.x = Phaser.Math.Clamp(this.player.x + direction.x * DASH_DISTANCE, this.playArea.x + 18, this.playArea.right - 18);
     this.player.y = Phaser.Math.Clamp(this.player.y + direction.y * DASH_DISTANCE, this.playArea.y + 18, this.playArea.bottom - 18);
     this.playerInvuln = 0.22;
+    this.spawnCombatLight(this.player.x, this.player.y, 0x9ae7ff, 0.42, 150);
   }
 
   private damagePlayer(amount: number): void {
@@ -1764,6 +2070,7 @@ export class MissionScene extends Phaser.Scene {
     }
     this.playerInvuln = 0.45;
     this.playerHp = Math.max(0, this.playerHp - resolved.healthDamage);
+    this.spawnCombatLight(this.player.x, this.player.y, resolved.healthDamage > 0 ? 0xff9bb0 : 0x7de6ff, 0.54, 180);
     if (gameSession.settings.graphics.screenShake) {
       this.cameras.main.shake(80, 0.0012);
     }
@@ -1788,10 +2095,14 @@ export class MissionScene extends Phaser.Scene {
 
     enemy.hp -= resolved.healthDamage;
     enemy.damageFlash = 0.28;
+    this.spawnCombatLight(enemy.sprite.x, enemy.sprite.y, resolved.healthDamage > 0 ? enemy.roleColor : 0x7de6ff, 0.34, 170);
     if (enemy.hp > 0) {
       return;
     }
 
+    if (enemy.kind === "boss") {
+      this.spawnLootBurst(enemy.sprite.x, enemy.sprite.y);
+    }
     enemy.sprite.destroy();
     enemy.aura.destroy();
     enemy.shieldRing.destroy();
@@ -1816,6 +2127,7 @@ export class MissionScene extends Phaser.Scene {
       companion.shieldDelay = SHIELD_REGEN_DELAY;
     }
     companion.hp = Math.max(0, companion.hp - resolved.healthDamage);
+    this.spawnCombatLight(companion.sprite.x, companion.sprite.y, resolved.healthDamage > 0 ? 0xffb08e : 0x7de6ff, 0.4, 180);
 
     if (companion.hp > 0) {
       return;
@@ -1831,6 +2143,40 @@ export class MissionScene extends Phaser.Scene {
     companion.shieldRing.setVisible(true);
     companion.guardPlate?.setVisible(false);
     this.messageText.setText(`${companion.name} is down. Reach them and hold revive while the fight keeps moving.`);
+  }
+
+  private spawnLootBurst(x: number, y: number): void {
+    const colors = [0xffd67a, 0x8fe8ff, 0xc8a7ff, 0xffb27d];
+    for (let index = 0; index < 9; index += 1) {
+      const angle = (Math.PI * 2 * index) / 9;
+      const shard = this.add.circle(x, y, 6 + (index % 2), colors[index % colors.length], 0.92).setDepth(15);
+      this.tweens.add({
+        targets: shard,
+        x: x + Math.cos(angle) * Phaser.Math.Between(54, 108),
+        y: y + Math.sin(angle) * Phaser.Math.Between(54, 108),
+        alpha: 0,
+        scaleX: 1.45,
+        scaleY: 1.45,
+        duration: 460,
+        onComplete: () => shard.destroy(),
+      });
+    }
+
+    const rewardText = this.add.text(x, y - 26, "Loot Burst", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#fff4ca",
+      fontStyle: "bold",
+      backgroundColor: "#0c1522cc",
+      padding: { x: 8, y: 4 },
+    }).setOrigin(0.5).setDepth(16);
+    this.tweens.add({
+      targets: rewardText,
+      y: y - 58,
+      alpha: 0,
+      duration: 520,
+      onComplete: () => rewardText.destroy(),
+    });
   }
 
   private reviveCompanion(companion: CompanionState, fromRestRoom: boolean): void {
@@ -2300,9 +2646,19 @@ export class MissionScene extends Phaser.Scene {
         : normalizedForward.clone();
       anchor.add(guardDirection.scale(target ? 18 : 10));
       anchor.add(perpendicular.clone().scale(companion.slotLateral >= 0 ? 6 : -6));
+    } else if (companion.attackStyle === "melee" && target) {
+      const lungeDirection = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
+      anchor.add(lungeDirection.scale(20));
+    } else if (companion.attackStyle === "healer") {
+      anchor.add(normalizedForward.clone().scale(-12));
+      anchor.add(perpendicular.clone().scale(Math.sin(this.time.now / 260 + motionSeed) * 8));
+    } else if (companion.attackStyle === "demolition" && target) {
+      const stepOff = Math.sin(this.time.now / 240 + motionSeed * 0.8 + companion.slotLateral * 0.02) * 12;
+      anchor.add(perpendicular.clone().scale(stepOff));
+      anchor.add(normalizedForward.clone().scale(-4));
     } else if (target) {
       const weave = Math.sin(this.time.now / 180 + motionSeed * 0.8 + companion.slotLateral * 0.02) * 10;
-      anchor.add(perpendicular.scale(weave));
+      anchor.add(perpendicular.clone().scale(weave));
     }
 
     anchor.add(threatAvoidance);

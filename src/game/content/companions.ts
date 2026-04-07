@@ -1,5 +1,5 @@
-export type CompanionAttackStyle = "ranged" | "shield";
-export type CompanionId = "sera" | "rook";
+export type CompanionAttackStyle = "ranged" | "shield" | "melee" | "healer" | "caster" | "demolition";
+export type CompanionId = "sera" | "rook" | "vex" | "lyra" | "orin" | "ember";
 export type CompanionRole = "dps" | "tank" | "healer";
 export type FormationZone = "front" | "back" | "side";
 export type FormationSlotId = "front-left" | "front-right" | "back-left" | "back-right" | "left" | "right";
@@ -36,6 +36,7 @@ export type CompanionDefinition = {
   aggroWeight: number;
   primaryGear: string;
   supportGear: string;
+  abilityLabel: string;
   hubPosition: {
     x: number;
     y: number;
@@ -53,16 +54,17 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     trimColor: 0xfff1ba,
     projectileColor: 0xffd779,
     radius: 12,
-    maxHp: 52,
-    maxShield: 24,
-    formationSide: -1,
-    formationDepth: 60,
-    aggroWeight: 0.98,
+    maxHp: 50,
+    maxShield: 22,
+    formationSide: 1,
+    formationDepth: 44,
+    aggroWeight: 1.02,
     primaryGear: "Sunspike Repeater",
     supportGear: "Scout Harness Mk I",
+    abilityLabel: "Suppressive Volley",
     hubPosition: {
-      x: 634,
-      y: 530,
+      x: 520,
+      y: 554,
     },
   },
   {
@@ -75,16 +77,109 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     trimColor: 0xd8ffd8,
     projectileColor: 0x97f6b1,
     radius: 14,
-    maxHp: 88,
-    maxShield: 24,
-    formationSide: 1,
-    formationDepth: 80,
-    aggroWeight: 0.6,
+    maxHp: 92,
+    maxShield: 26,
+    formationSide: -1,
+    formationDepth: 82,
+    aggroWeight: 0.58,
     primaryGear: "Bulwark Shield Frame",
     supportGear: "Aegis Bash Emitter",
+    abilityLabel: "Front Guard",
     hubPosition: {
-      x: 720,
-      y: 530,
+      x: 600,
+      y: 516,
+    },
+  },
+  {
+    id: "vex",
+    name: "Vex",
+    role: "dps",
+    roleLabel: "Rift Skirmisher",
+    attackStyle: "melee",
+    coreColor: 0xff7979,
+    trimColor: 0xffd6d6,
+    projectileColor: 0xffa38a,
+    radius: 12,
+    maxHp: 58,
+    maxShield: 18,
+    formationSide: -1,
+    formationDepth: 62,
+    aggroWeight: 0.88,
+    primaryGear: "Sunder Blades",
+    supportGear: "Kinetic Anklets",
+    abilityLabel: "Gap Cleave",
+    hubPosition: {
+      x: 680,
+      y: 554,
+    },
+  },
+  {
+    id: "lyra",
+    name: "Lyra",
+    role: "healer",
+    roleLabel: "Tide Medic",
+    attackStyle: "healer",
+    coreColor: 0x76c6ff,
+    trimColor: 0xe7f7ff,
+    projectileColor: 0x9be8ff,
+    radius: 12,
+    maxHp: 48,
+    maxShield: 28,
+    formationSide: -1,
+    formationDepth: -54,
+    aggroWeight: 0.76,
+    primaryGear: "Mender Focus",
+    supportGear: "Wave Harness",
+    abilityLabel: "Restoration Pulse",
+    hubPosition: {
+      x: 760,
+      y: 516,
+    },
+  },
+  {
+    id: "orin",
+    name: "Orin",
+    role: "dps",
+    roleLabel: "Hex Channeler",
+    attackStyle: "caster",
+    coreColor: 0xb987ff,
+    trimColor: 0xf1e1ff,
+    projectileColor: 0xd7b4ff,
+    radius: 12,
+    maxHp: 46,
+    maxShield: 32,
+    formationSide: 1,
+    formationDepth: -34,
+    aggroWeight: 0.84,
+    primaryGear: "Gloam Focus",
+    supportGear: "Runed Veil",
+    abilityLabel: "Hex Arc",
+    hubPosition: {
+      x: 840,
+      y: 554,
+    },
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    role: "dps",
+    roleLabel: "Breach Demolitions",
+    attackStyle: "demolition",
+    coreColor: 0xffa35c,
+    trimColor: 0xffedd4,
+    projectileColor: 0xffcb8d,
+    radius: 12,
+    maxHp: 56,
+    maxShield: 20,
+    formationSide: 1,
+    formationDepth: 52,
+    aggroWeight: 0.92,
+    primaryGear: "Fuse Cannon",
+    supportGear: "Charge Rig",
+    abilityLabel: "Breach Charge",
+    hubPosition: {
+      x: 920,
+      y: 516,
     },
   },
 ] as const;
@@ -149,6 +244,7 @@ export const FORMATION_SLOTS: readonly FormationSlotDefinition[] = [
 export const DEFAULT_SQUAD_ASSIGNMENTS: readonly SquadAssignment[] = [
   { companionId: "rook", slotId: "front-left" },
   { companionId: "sera", slotId: "right" },
+  { companionId: "lyra", slotId: "back-right" },
 ] as const;
 
 export function getCompanionDefinition(companionId: CompanionId): CompanionDefinition | undefined {

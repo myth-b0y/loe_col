@@ -11,6 +11,13 @@ import {
   type SquadAssignment,
 } from "../content/companions";
 import {
+  DEFAULT_CARGO_SLOTS,
+  DEFAULT_CRAFTING_MATERIALS,
+  DEFAULT_EQUIPMENT,
+  type CraftingMaterials,
+  type EquipmentLoadout,
+} from "../content/items";
+import {
   DEFAULT_RUN_CONFIG,
   GAME_MODE_RULES,
   type GameModeRules,
@@ -30,6 +37,13 @@ export type DifficultyProfile = {
   enemyDamage: number;
   enemySpeed: number;
   enemyCooldown: number;
+};
+
+export type RewardData = {
+  credits: number;
+  xp: number;
+  item: string;
+  itemId?: string;
 };
 
 export const INPUT_MODE_OPTIONS: InputModePreference[] = ["Auto", "Desktop", "Touch"];
@@ -90,14 +104,8 @@ export type GameSettings = {
   };
 };
 
-export type RewardData = {
-  credits: number;
-  xp: number;
-  item: string;
-};
-
 export type SaveData = {
-  version: 3;
+  version: 4;
   meta: {
     lastSavedAt: string | null;
   };
@@ -113,6 +121,13 @@ export type SaveData = {
     support: string;
     companion: string;
     squad: SquadAssignment[];
+    equipment: EquipmentLoadout;
+    cargo: Array<string | null>;
+    crafting: CraftingMaterials;
+  };
+  missions: {
+    acceptedMissionIds: string[];
+    selectedMissionId: string | null;
   };
   progression: {
     completedMissionIds: string[];
@@ -161,7 +176,7 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const DEFAULT_SAVE: SaveData = {
-  version: 3,
+  version: 4,
   meta: {
     lastSavedAt: null,
   },
@@ -175,12 +190,19 @@ const DEFAULT_SAVE: SaveData = {
     weapon: "Lumen Carbine",
     ability: "Pulse Burst",
     support: "Arc Lance",
-    companion: "Rook / Sera",
+    companion: "Rook / Sera / Lyra",
     squad: clone([...DEFAULT_SQUAD_ASSIGNMENTS]),
+    equipment: clone(DEFAULT_EQUIPMENT),
+    cargo: clone(DEFAULT_CARGO_SLOTS),
+    crafting: clone(DEFAULT_CRAFTING_MATERIALS),
+  },
+  missions: {
+    acceptedMissionIds: [],
+    selectedMissionId: null,
   },
   progression: {
     completedMissionIds: [],
-    unlockedMissionIds: ["outpost-breach"],
+    unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
   },
 };
 
@@ -190,26 +212,6 @@ function clone<T>(value: T): T {
 
 function createEmptySlots(): Array<SaveData | null> {
   return Array.from({ length: SLOT_COUNT }, () => null);
-}
-
-function mergeSaveData(parsed: Partial<SaveData>): SaveData {
-  const merged = {
-    ...clone(DEFAULT_SAVE),
-    ...parsed,
-    version: 3 as const,
-    meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
-    profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
-    loadout: { ...clone(DEFAULT_SAVE.loadout), ...parsed.loadout },
-    progression: {
-      ...clone(DEFAULT_SAVE.progression),
-      ...parsed.progression,
-    },
-  };
-
-  const normalizedSquad = normalizeSquadAssignments(merged.loadout.squad ?? DEFAULT_SAVE.loadout.squad);
-  merged.loadout.squad = normalizedSquad;
-  merged.loadout.companion = summarizeSquadAssignments(normalizedSquad);
-  return merged;
 }
 
 function summarizeSquadAssignments(assignments: SquadAssignment[]): string {
@@ -245,6 +247,50 @@ function normalizeSquadAssignments(assignments: SquadAssignment[]): SquadAssignm
   return normalized.slice(0, 3);
 }
 
+function normalizeCargoSlots(cargo: Array<string | null> | undefined): Array<string | null> {
+  const defaults = clone(DEFAULT_CARGO_SLOTS);
+  if (!cargo || cargo.length === 0) {
+    return defaults;
+  }
+
+  const result = defaults.map((item, index) => cargo[index] ?? item);
+  return result.slice(0, defaults.length);
+}
+
+function mergeSaveData(parsed: Partial<SaveData>): SaveData {
+  const merged = {
+    ...clone(DEFAULT_SAVE),
+    ...parsed,
+    version: 4 as const,
+    meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
+    profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
+    loadout: {
+      ...clone(DEFAULT_SAVE.loadout),
+      ...parsed.loadout,
+      equipment: { ...clone(DEFAULT_SAVE.loadout.equipment), ...parsed.loadout?.equipment },
+      crafting: { ...clone(DEFAULT_SAVE.loadout.crafting), ...parsed.loadout?.crafting },
+      cargo: normalizeCargoSlots(parsed.loadout?.cargo),
+    },
+    missions: { ...clone(DEFAULT_SAVE.missions), ...parsed.missions },
+    progression: {
+      ...clone(DEFAULT_SAVE.progression),
+      ...parsed.progression,
+    },
+  };
+
+  const normalizedSquad = normalizeSquadAssignments(merged.loadout.squad ?? DEFAULT_SAVE.loadout.squad);
+  const acceptedMissionIds = Array.from(new Set((merged.missions.acceptedMissionIds ?? []).filter(Boolean)));
+  const selectedMissionId = merged.missions.selectedMissionId && acceptedMissionIds.includes(merged.missions.selectedMissionId)
+    ? merged.missions.selectedMissionId
+    : acceptedMissionIds[0] ?? null;
+
+  merged.loadout.squad = normalizedSquad;
+  merged.loadout.companion = summarizeSquadAssignments(normalizedSquad);
+  merged.missions.acceptedMissionIds = acceptedMissionIds;
+  merged.missions.selectedMissionId = selectedMissionId;
+  return merged;
+}
+
 function sortByMostRecent(slots: Array<SaveData | null>): number | null {
   let bestIndex: number | null = null;
   let bestTime = -1;
@@ -268,13 +314,16 @@ export class GameSession extends Phaser.Events.EventEmitter {
   saveData: SaveData = clone(DEFAULT_SAVE);
   runConfig: RunConfig = clone(DEFAULT_RUN_CONFIG);
   activeMissionId: string | null = null;
-  acceptedMissionId: string | null = null;
   pendingReward: RewardData | null = null;
   private activeSlotIndex = 0;
   private saveSlots: Array<SaveData | null> = createEmptySlots();
   private hasTouchInput = false;
   private prefersCoarsePointer = false;
   private lastInputMode: ResolvedInputMode = "desktop";
+
+  get acceptedMissionId(): string | null {
+    return this.getSelectedMissionId();
+  }
 
   bootstrap(): void {
     this.loadSettings();
@@ -416,6 +465,112 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return true;
   }
 
+  getEquipmentLoadout(): EquipmentLoadout {
+    return clone(this.saveData.loadout.equipment);
+  }
+
+  getCargoSlots(): Array<string | null> {
+    return [...this.saveData.loadout.cargo];
+  }
+
+  getCraftingMaterials(): CraftingMaterials {
+    return clone(this.saveData.loadout.crafting);
+  }
+
+  addItemToCargo(itemId: string): boolean {
+    const cargo = this.saveData.loadout.cargo;
+    const openIndex = cargo.findIndex((slot) => slot === null);
+    if (openIndex < 0) {
+      return false;
+    }
+
+    cargo[openIndex] = itemId;
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  getAcceptedMissionIds(): string[] {
+    return [...this.saveData.missions.acceptedMissionIds];
+  }
+
+  getSelectedMissionId(): string | null {
+    return this.saveData.missions.selectedMissionId;
+  }
+
+  getCompletedMissionIds(): string[] {
+    return [...this.saveData.progression.completedMissionIds];
+  }
+
+  isMissionAccepted(missionId: string): boolean {
+    return this.saveData.missions.acceptedMissionIds.includes(missionId);
+  }
+
+  isMissionCompleted(missionId: string): boolean {
+    return this.saveData.progression.completedMissionIds.includes(missionId);
+  }
+
+  acceptMission(missionId: string): void {
+    if (!this.saveData.progression.unlockedMissionIds.includes(missionId)) {
+      return;
+    }
+
+    const accepted = new Set(this.saveData.missions.acceptedMissionIds);
+    accepted.add(missionId);
+    this.saveData.missions.acceptedMissionIds = [...accepted];
+    if (!this.saveData.missions.selectedMissionId) {
+      this.saveData.missions.selectedMissionId = missionId;
+    }
+
+    this.emit("save-changed", this.saveData);
+    this.emit("mission-accepted", missionId);
+  }
+
+  acceptAllMissions(missionIds: string[]): void {
+    const accepted = new Set(this.saveData.missions.acceptedMissionIds);
+    missionIds.forEach((missionId) => {
+      if (this.saveData.progression.unlockedMissionIds.includes(missionId)) {
+        accepted.add(missionId);
+      }
+    });
+
+    this.saveData.missions.acceptedMissionIds = [...accepted];
+    if (!this.saveData.missions.selectedMissionId) {
+      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+    }
+
+    this.emit("save-changed", this.saveData);
+    this.emit("mission-accepted", this.getSelectedMissionId());
+  }
+
+  setSelectedMission(missionId: string | null): boolean {
+    if (missionId === null) {
+      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+      this.emit("save-changed", this.saveData);
+      return true;
+    }
+
+    if (!this.saveData.missions.acceptedMissionIds.includes(missionId)) {
+      return false;
+    }
+
+    this.saveData.missions.selectedMissionId = missionId;
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  abandonAcceptedMission(missionId: string): boolean {
+    if (!this.saveData.missions.acceptedMissionIds.includes(missionId)) {
+      return false;
+    }
+
+    this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);
+    if (this.saveData.missions.selectedMissionId === missionId) {
+      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+    }
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
   getPreferredNewGameSlot(): number {
     return this.firstEmptySlotOrActive();
   }
@@ -425,7 +580,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.saveData = clone(DEFAULT_SAVE);
     this.activeMissionId = null;
-    this.acceptedMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
     this.emit("run-config-changed", this.getRunConfig());
@@ -471,7 +625,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.activeSlotIndex = safeSlot;
     this.activeMissionId = null;
-    this.acceptedMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
     this.emit("run-config-changed", this.getRunConfig());
@@ -479,14 +632,13 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return true;
   }
 
-  acceptMission(missionId: string): void {
-    this.acceptedMissionId = missionId;
-    this.emit("mission-accepted", missionId);
-  }
-
   startMission(missionId: string): void {
     this.activeMissionId = missionId;
-    this.acceptedMissionId = null;
+    this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);
+    if (this.saveData.missions.selectedMissionId === missionId) {
+      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+    }
+    this.emit("save-changed", this.saveData);
     this.emit("mission-started", missionId);
   }
 
@@ -501,6 +653,9 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.saveData.profile.credits += reward.credits;
     this.saveData.profile.xp += reward.xp;
     this.saveData.profile.level = 1 + Math.floor(this.saveData.profile.xp / 160);
+    if (reward.itemId) {
+      this.addItemToCargo(reward.itemId);
+    }
 
     this.emit("save-changed", this.saveData);
   }
@@ -509,7 +664,16 @@ export class GameSession extends Phaser.Events.EventEmitter {
     const missionId = options?.missionId ?? this.activeMissionId;
     this.activeMissionId = null;
     this.pendingReward = null;
-    this.acceptedMissionId = options?.requeue && missionId ? missionId : null;
+
+    if (options?.requeue && missionId) {
+      this.saveData.missions.acceptedMissionIds = [
+        missionId,
+        ...this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId),
+      ];
+      this.saveData.missions.selectedMissionId = missionId;
+      this.emit("save-changed", this.saveData);
+    }
+
     this.emit("mission-left", {
       missionId,
       requeue: Boolean(options?.requeue && missionId),

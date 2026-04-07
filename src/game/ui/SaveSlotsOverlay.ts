@@ -167,11 +167,12 @@ export class SaveSlotsOverlay {
 
       const save = slot.data;
       const completedCount = save.progression.completedMissionIds.length;
+      const queuedCount = save.missions?.acceptedMissionIds?.length ?? 0;
       card.title.setText(`${slot.label}${slot.isActive ? " - Active" : ""} | Lv ${save.profile.level} ${save.profile.callsign}`);
       card.body.setText([
         `Saved: ${formatTimestamp(save.meta.lastSavedAt)} | Credits: ${save.profile.credits} | XP: ${save.profile.xp}`,
-        `Weapon: ${save.loadout.weapon} | Companion: ${save.loadout.companion}`,
-        `Completed missions: ${completedCount}`,
+        `Weapon: ${save.loadout.weapon} | Squad: ${save.loadout.companion}`,
+        `Queued missions: ${queuedCount} | Completed missions: ${completedCount}`,
       ]);
       card.action.setLabel(this.mode === "load" ? "Load" : "Overwrite");
       card.action.setEnabled(true);

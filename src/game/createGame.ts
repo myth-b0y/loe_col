@@ -1,5 +1,7 @@
 import Phaser from "phaser";
 
+import { getMissionContracts } from "./content/missions";
+import { gameSession } from "./core/session";
 import { BootScene } from "./scenes/BootScene";
 import { HubScene } from "./scenes/HubScene";
 import { MainMenuScene } from "./scenes/MainMenuScene";
@@ -57,9 +59,13 @@ export function createGame(parent: string): Phaser.Game {
   if (typeof window !== "undefined") {
     const debugWindow = window as Window & {
       __loeGame?: Phaser.Game;
+      __loeSession?: typeof gameSession;
+      __loeContracts?: ReturnType<typeof getMissionContracts>;
       render_game_to_text?: () => string;
     };
     debugWindow.__loeGame = game;
+    debugWindow.__loeSession = gameSession;
+    debugWindow.__loeContracts = getMissionContracts();
     debugWindow.render_game_to_text = () => {
       const activeScene = game.scene.getScenes(true).at(-1) as
         | (Phaser.Scene & { getDebugSnapshot?: () => unknown })
