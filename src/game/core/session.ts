@@ -13,6 +13,7 @@ export type GraphicsQuality = "High" | "Balanced" | "Performance";
 export type InputModePreference = "Auto" | "Desktop" | "Touch";
 export type ResolvedInputMode = "desktop" | "touch";
 export type GameplayDifficulty = "Novice" | "Knight" | "Legend" | "Mythic";
+export type ControlSensitivity = 60 | 80 | 100 | 120 | 140;
 
 export type DifficultyProfile = {
   enemyHp: number;
@@ -70,6 +71,8 @@ export type GameSettings = {
     pause: "Esc / Pause Button";
     inputMode: InputModePreference;
     autoAim: boolean;
+    mouseSensitivity: ControlSensitivity;
+    touchSensitivity: ControlSensitivity;
   };
   gameplay: {
     difficulty: GameplayDifficulty;
@@ -136,6 +139,8 @@ const DEFAULT_SETTINGS: GameSettings = {
     pause: "Esc / Pause Button",
     inputMode: "Auto",
     autoAim: true,
+    mouseSensitivity: 100,
+    touchSensitivity: 100,
   },
   gameplay: {
     difficulty: "Knight",
@@ -489,6 +494,16 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   setAutoAim(value: boolean): void {
     this.settings.controls.autoAim = value;
+    this.persistSettings();
+  }
+
+  setMouseSensitivity(value: ControlSensitivity): void {
+    this.settings.controls.mouseSensitivity = value;
+    this.persistSettings();
+  }
+
+  setTouchSensitivity(value: ControlSensitivity): void {
+    this.settings.controls.touchSensitivity = value;
     this.persistSettings();
   }
 

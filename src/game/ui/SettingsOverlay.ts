@@ -4,6 +4,7 @@ import {
   DIFFICULTY_OPTIONS,
   INPUT_MODE_OPTIONS,
   gameSession,
+  type ControlSensitivity,
   type GameplayDifficulty,
   type GraphicsQuality,
   type InputModePreference,
@@ -11,6 +12,7 @@ import {
 import { createMenuButton, type MenuButton } from "./buttons";
 
 type SettingsTab = "graphics" | "audio" | "controls" | "gameplay";
+type ControlSubTab = "keyboard" | "touch";
 
 type SettingsOverlayOptions = {
   scene: Phaser.Scene;
@@ -28,6 +30,7 @@ const BRIGHTNESS_OPTIONS: Array<90 | 100 | 110> = [90, 100, 110];
 const AUDIO_OPTIONS: Array<100 | 80 | 60 | 40 | 20 | 0> = [100, 80, 60, 40, 20, 0];
 const INPUT_OPTIONS: InputModePreference[] = INPUT_MODE_OPTIONS;
 const GAMEPLAY_OPTIONS: GameplayDifficulty[] = DIFFICULTY_OPTIONS;
+const SENSITIVITY_OPTIONS: ControlSensitivity[] = [60, 80, 100, 120, 140];
 
 function cycleValue<T>(values: readonly T[], current: T): T {
   const index = values.indexOf(current);
@@ -43,9 +46,11 @@ export class SettingsOverlay {
   private readonly title: Phaser.GameObjects.Text;
   private readonly info: Phaser.GameObjects.Text;
   private readonly tabButtons: Record<SettingsTab, MenuButton>;
+  private readonly controlTabButtons: Record<ControlSubTab, MenuButton>;
   private readonly rows: RowUi[];
   private readonly closeButton: MenuButton;
   private currentTab: SettingsTab = "graphics";
+  private currentControlTab: ControlSubTab = "touch";
 
   constructor({ scene, title = "Options", onClose }: SettingsOverlayOptions) {
     this.onClose = onClose;
@@ -74,6 +79,7 @@ export class SettingsOverlay {
       lineSpacing: 6,
       wordWrap: { width: 700 },
     }).setDepth(82);
+    this.info.setPosition(270, 538);
 
     this.closeButton = createMenuButton({
       scene,
@@ -126,8 +132,33 @@ export class SettingsOverlay {
       }),
     };
 
+    this.controlTabButtons = {
+      keyboard: createMenuButton({
+        scene,
+        x: 456,
+        y: 278,
+        width: 170,
+        height: 40,
+        label: "Keyboard / Mouse",
+        onClick: () => this.setControlTab("keyboard"),
+        depth: 82,
+        accentColor: 0x214569,
+      }),
+      touch: createMenuButton({
+        scene,
+        x: 642,
+        y: 278,
+        width: 126,
+        height: 40,
+        label: "Touch",
+        onClick: () => this.setControlTab("touch"),
+        depth: 82,
+        accentColor: 0x214569,
+      }),
+    };
+
     this.rows = Array.from({ length: 5 }, (_, index) => {
-      const y = 290 + index * 58;
+      const y = 314 + index * 48;
       const label = scene.add.text(298, y, "", {
         fontFamily: "Arial",
         fontSize: "18px",
@@ -158,6 +189,8 @@ export class SettingsOverlay {
       this.tabButtons.audio.container,
       this.tabButtons.controls.container,
       this.tabButtons.gameplay.container,
+      this.controlTabButtons.keyboard.container,
+      this.controlTabButtons.touch.container,
       ...this.rows.flatMap((row) => [row.label, row.valueButton.container]),
     ]).setDepth(80);
 
@@ -192,7 +225,14 @@ export class SettingsOverlay {
     this.tabButtons.audio.setInputEnabled(enabled);
     this.tabButtons.controls.setInputEnabled(enabled);
     this.tabButtons.gameplay.setInputEnabled(enabled);
+    this.controlTabButtons.keyboard.setInputEnabled(enabled && this.currentTab === "controls");
+    this.controlTabButtons.touch.setInputEnabled(enabled && this.currentTab === "controls");
     this.rows.forEach((row) => row.valueButton.setInputEnabled(enabled));
+  }
+
+  private setControlTab(tab: ControlSubTab): void {
+    this.currentControlTab = tab;
+    this.refresh();
   }
 
   private refresh(): void {
@@ -209,6 +249,17 @@ export class SettingsOverlay {
     };
 
     tabAccent(this.currentTab);
+    const controlsVisible = this.currentTab === "controls";
+    this.controlTabButtons.keyboard.container.setVisible(controlsVisible);
+    this.controlTabButtons.touch.container.setVisible(controlsVisible);
+    this.controlTabButtons.keyboard.setInputEnabled(this.root.visible && controlsVisible);
+    this.controlTabButtons.touch.setInputEnabled(this.root.visible && controlsVisible);
+    this.controlTabButtons.keyboard.label.setColor(
+      controlsVisible && this.currentControlTab === "keyboard" ? "#ffffff" : "#d5e6ff",
+    );
+    this.controlTabButtons.touch.label.setColor(
+      controlsVisible && this.currentControlTab === "touch" ? "#ffffff" : "#d5e6ff",
+    );
 
     if (this.currentTab === "graphics") {
       this.setRow(0, "Render Quality", graphics.quality, () => {
@@ -260,21 +311,44 @@ export class SettingsOverlay {
     }
 
     if (this.currentTab === "controls") {
+      if (this.currentControlTab === "keyboard") {
+        this.setRow(0, "Input Mode", controls.inputMode, () => {
+          gameSession.setInputMode(cycleValue(INPUT_OPTIONS, controls.inputMode));
+          this.refresh();
+        }, true);
+        this.setRow(1, "Auto Aim", controls.autoAim ? "On" : "Off", () => {
+          gameSession.setAutoAim(!controls.autoAim);
+          this.refresh();
+        }, true);
+        this.setRow(2, "Mouse Sensitivity", `${controls.mouseSensitivity}%`, () => undefined, false);
+        this.setRow(3, "Move", controls.move, () => undefined, false);
+        this.setRow(4, "Attack", controls.attack, () => undefined, false);
+
+        this.info.setText([
+          "Keyboard / mouse gets its own lane now so we can add mouse sensitivity, rebinding, and finer control options later without crowding touch settings.",
+          "For this pass, touch sensitivity is the active control-tuning setting and mouse sensitivity is reserved.",
+        ]);
+        return;
+      }
+
       this.setRow(0, "Input Mode", controls.inputMode, () => {
         gameSession.setInputMode(cycleValue(INPUT_OPTIONS, controls.inputMode));
         this.refresh();
       }, true);
-      this.setRow(1, "Auto Aim", controls.autoAim ? "On" : "Off", () => {
+      this.setRow(1, "Touch Sensitivity", `${controls.touchSensitivity}%`, () => {
+        gameSession.setTouchSensitivity(cycleValue(SENSITIVITY_OPTIONS, controls.touchSensitivity));
+        this.refresh();
+      }, true);
+      this.setRow(2, "Auto Aim", controls.autoAim ? "On" : "Off", () => {
         gameSession.setAutoAim(!controls.autoAim);
         this.refresh();
       }, true);
-      this.setRow(2, "Move", controls.move, () => undefined, false);
-      this.setRow(3, "Aim", controls.aim, () => undefined, false);
-      this.setRow(4, "Attack", controls.attack, () => undefined, false);
+      this.setRow(3, "Move / Face", "One Floating Stick", () => undefined, false);
+      this.setRow(4, "Attack", "Dedicated Attack Button", () => undefined, false);
 
       this.info.setText([
-        "Touch now uses one floating stick for movement and facing, plus dedicated attack and ability buttons.",
-        "Auto still switches HUD presentation between desktop and touch, or you can lock the layout while testing.",
+        "Touch can now start the movement/facing stick from any non-button area, not just the left side of the screen.",
+        "Touch sensitivity changes how quickly the stick reaches full strength while keeping the same general layout and ability buttons.",
       ]);
       return;
     }

@@ -1373,8 +1373,8 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.moveBase.setPosition(
-      Phaser.Math.Clamp(x, 110, GAME_WIDTH - 110),
-      Phaser.Math.Clamp(y, 380, 628),
+      Phaser.Math.Clamp(x, 86, GAME_WIDTH - 86),
+      Phaser.Math.Clamp(y, 104, GAME_HEIGHT - 88),
     );
     this.moveBase.setFillStyle(0x173054, 0.52);
     this.moveKnob.setPosition(this.moveBase.x, this.moveBase.y);
@@ -1396,11 +1396,13 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const strength = Phaser.Math.Clamp(
+    const rawStrength = Phaser.Math.Clamp(
       (Math.min(distance, STICK_RADIUS) - STICK_DEADZONE) / (STICK_RADIUS - STICK_DEADZONE),
       0,
       1,
     );
+    const sensitivityCurve = 100 / gameSession.settings.controls.touchSensitivity;
+    const strength = Math.pow(rawStrength, sensitivityCurve);
     this.moveVector.set(vector.x, vector.y).normalize().scale(strength);
     this.aimVector.set(vector.x, vector.y).normalize();
   }
