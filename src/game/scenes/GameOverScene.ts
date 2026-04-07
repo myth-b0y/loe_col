@@ -98,8 +98,6 @@ export class GameOverScene extends Phaser.Scene {
           return;
         }
 
-        this.scene.stop("mission");
-        this.scene.stop();
         this.scene.start("hub");
       },
       onNewSlot: () => undefined,
@@ -116,8 +114,6 @@ export class GameOverScene extends Phaser.Scene {
 
   private restartMission(): void {
     gameSession.startMission(this.missionId);
-    this.scene.stop("mission");
-    this.scene.stop();
     this.scene.start("mission", { missionId: this.missionId });
   }
 
@@ -126,8 +122,6 @@ export class GameOverScene extends Phaser.Scene {
       missionId: this.missionId,
       requeue: true,
     });
-    this.scene.stop("mission");
-    this.scene.stop();
     this.scene.start("hub");
   }
 
@@ -136,8 +130,6 @@ export class GameOverScene extends Phaser.Scene {
       missionId: this.missionId,
       requeue: false,
     });
-    this.scene.stop("mission");
-    this.scene.stop();
     this.scene.start("main-menu");
   }
 }

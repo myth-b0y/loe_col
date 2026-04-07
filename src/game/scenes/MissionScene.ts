@@ -1109,12 +1109,12 @@ export class MissionScene extends Phaser.Scene {
     this.messageText.setText("Relay secure. Extraction confirmed.");
     this.setExitDoorOpen(false, "Complete");
     this.lockRing.setVisible(false);
-    this.scene.launch("mission-result", {
+    this.releaseMissionControls();
+    this.scene.start("mission-result", {
       missionId: this.mission.id,
       missionTitle: this.mission.title,
       reward: this.mission.reward,
     });
-    this.scene.pause();
   }
 
   private spawnEnemy(kind: EnemyKind, preferredX?: number, preferredY?: number): void {
@@ -1359,10 +1359,10 @@ export class MissionScene extends Phaser.Scene {
   private openGameOver(): void {
     this.fireHeld = false;
     this.lockRing.setVisible(false);
-    this.scene.launch("game-over", {
+    this.releaseMissionControls();
+    this.scene.start("game-over", {
       missionId: this.mission.id,
     });
-    this.scene.pause();
   }
 
   private anchorMoveStick(x: number, y: number): void {
@@ -1498,6 +1498,15 @@ export class MissionScene extends Phaser.Scene {
     const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     this.lookPoint.set(worldPoint.x, worldPoint.y);
     return new Phaser.Math.Vector2(worldPoint.x - this.player.x, worldPoint.y - this.player.y);
+  }
+
+  private releaseMissionControls(): void {
+    this.movePointerId = null;
+    this.aimPointerId = null;
+    this.fireHeld = false;
+    this.moveVector.set(0, 0);
+    this.resetMoveStick();
+    this.resetAimStick();
   }
 
   private getAutoAimTarget(direction: Phaser.Math.Vector2): Enemy | null {

@@ -84,8 +84,6 @@ export class MissionResultScene extends Phaser.Scene {
     }
 
     gameSession.completeMission(this.missionId, this.reward);
-    this.scene.stop("mission");
-    this.scene.stop();
     this.scene.start("hub");
   }
 }
