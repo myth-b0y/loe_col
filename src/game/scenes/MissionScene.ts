@@ -69,6 +69,7 @@ type RestStations = {
 
 type AbilityCard = {
   frame: Phaser.GameObjects.Rectangle;
+  cooldownMask: Phaser.GameObjects.Rectangle;
   title: Phaser.GameObjects.Text;
   detail: Phaser.GameObjects.Text;
 };
@@ -77,6 +78,10 @@ const BASE_STAGE_BOUNDS = new Phaser.Geom.Rectangle(110, 174, 1500, 338);
 const BASE_REST_BOUNDS = new Phaser.Geom.Rectangle(140, 150, 820, 420);
 const MOVE_SPEED = 315;
 const DASH_DISTANCE = 128;
+const PRIMARY_FIRE_COOLDOWN = 0.16;
+const PULSE_COOLDOWN = 2.8;
+const ARC_COOLDOWN = 4.5;
+const DASH_COOLDOWN = 1.25;
 const STICK_RADIUS = 72;
 const STICK_DEADZONE = 18;
 
@@ -577,9 +582,13 @@ export class MissionScene extends Phaser.Scene {
     this.clearBullets();
     this.clearEnemies();
     this.clearStageObjects();
+    this.releaseMissionControls();
+    this.autoAimTarget = null;
     this.restStations = undefined;
     this.exitDoor = undefined;
-    this.messageText.setText(this.currentStage.flavor);
+    this.messageText.setText(this.currentStage.type === "rest"
+      ? `${this.currentStage.flavor} Combat is offline while you reset here.`
+      : this.currentStage.flavor);
 
     const isRest = this.currentStage.type === "rest";
     const width = this.currentStage.width;
@@ -803,7 +812,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private handleFiring(): void {
-    if (this.missionComplete || this.transitioningStage || this.currentStage?.type === "rest" || this.fireCooldown > 0) {
+    if (this.isCombatLocked() || this.fireCooldown > 0) {
       return;
     }
 
@@ -812,7 +821,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.fireCooldown = 0.16;
+    this.fireCooldown = PRIMARY_FIRE_COOLDOWN;
     const direction = this.getCombatAimDirection();
     this.spawnBullet(this.player.x + direction.x * 24, this.player.y + direction.y * 24, direction, 560, 12, 5, "player", 0x7ee1ff);
   }
@@ -1098,6 +1107,9 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.transitioningStage = true;
+    this.releaseMissionControls();
+    this.autoAimTarget = null;
+    this.lockRing.setVisible(false);
     this.cameras.main.fadeOut(180, 8, 12, 18);
     this.time.delayedCall(180, () => {
       this.cameras.main.fadeIn(180, 8, 12, 18);
@@ -1183,11 +1195,11 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private castPulse(): void {
-    if (this.pulseCooldown > 0 || this.missionComplete || this.currentStage?.type === "rest") {
+    if (this.pulseCooldown > 0 || this.isCombatLocked()) {
       return;
     }
 
-    this.pulseCooldown = 2.8;
+    this.pulseCooldown = PULSE_COOLDOWN;
     if (gameSession.settings.graphics.screenShake) {
       this.cameras.main.shake(90, 0.0015);
     }
@@ -1210,11 +1222,11 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private castArcLance(): void {
-    if (this.arcCooldown > 0 || this.missionComplete || this.currentStage?.type === "rest") {
+    if (this.arcCooldown > 0 || this.isCombatLocked()) {
       return;
     }
 
-    this.arcCooldown = 4.5;
+    this.arcCooldown = ARC_COOLDOWN;
     const direction = this.getCombatAimDirection();
     const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
     beam.setRotation(direction.angle());
@@ -1236,11 +1248,11 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private tryDash(): void {
-    if (this.dashCooldown > 0 || this.missionComplete || this.transitioningStage) {
+    if (this.dashCooldown > 0 || this.isCombatLocked()) {
       return;
     }
 
-    this.dashCooldown = 1.25;
+    this.dashCooldown = DASH_COOLDOWN;
     const direction = this.moveVector.lengthSq() > 0.01
       ? this.moveVector.clone()
       : this.keyboardVector.lengthSq() > 0.01
@@ -1295,6 +1307,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateHudState(): void {
+    const combatLocked = this.isCombatLocked();
     this.hpFill.width = 160 * (this.playerHp / this.playerMaxHp);
 
     const boss = this.enemies.find((enemy) => enemy.kind === "boss");
@@ -1318,27 +1331,56 @@ export class MissionScene extends Phaser.Scene {
 
     if (this.toolbarCards) {
       this.toolbarCards.fire.detail.setText(
-        gameSession.settings.controls.autoAim
-          ? this.autoAimTarget
-            ? "Auto Lock | Firing"
-            : "Auto Lock | Ready"
-          : "LMB Hold | Manual",
+        combatLocked
+          ? this.currentStage?.type === "rest"
+            ? "Safe Room | Combat Offline"
+            : "Transitioning | Hold"
+          : gameSession.settings.controls.autoAim
+            ? this.autoAimTarget
+              ? "Auto Lock | Firing"
+              : "Auto Lock | Ready"
+            : "LMB Hold | Manual",
       );
-      this.toolbarCards.pulse.detail.setText(this.pulseCooldown <= 0 ? "Q | Ready" : `Q | ${this.pulseCooldown.toFixed(1)}s`);
-      this.toolbarCards.arc.detail.setText(this.arcCooldown <= 0 ? "R | Ready" : `R | ${this.arcCooldown.toFixed(1)}s`);
-      this.toolbarCards.dash.detail.setText(this.dashCooldown <= 0 ? "Shift / RMB | Ready" : `Shift | ${this.dashCooldown.toFixed(1)}s`);
+      this.toolbarCards.pulse.detail.setText(this.getCooldownDetail("Q", this.pulseCooldown, combatLocked));
+      this.toolbarCards.arc.detail.setText(this.getCooldownDetail("R", this.arcCooldown, combatLocked));
+      this.toolbarCards.dash.detail.setText(this.getCooldownDetail("Shift / RMB", this.dashCooldown, combatLocked));
       this.setAbilityCardColor(this.toolbarCards.pulse, this.pulseCooldown <= 0 ? 0x144d6a : 0x17314f);
       this.setAbilityCardColor(this.toolbarCards.arc, this.arcCooldown <= 0 ? 0x5a4617 : 0x17314f);
       this.setAbilityCardColor(this.toolbarCards.dash, this.dashCooldown <= 0 ? 0x4a3370 : 0x17314f);
+      this.setAbilityCardCooldown(this.toolbarCards.fire, combatLocked ? 1 : 0);
+      this.setAbilityCardCooldown(this.toolbarCards.pulse, combatLocked ? 1 : this.pulseCooldown / PULSE_COOLDOWN);
+      this.setAbilityCardCooldown(this.toolbarCards.arc, combatLocked ? 1 : this.arcCooldown / ARC_COOLDOWN);
+      this.setAbilityCardCooldown(this.toolbarCards.dash, combatLocked ? 1 : this.dashCooldown / DASH_COOLDOWN);
     }
 
-    this.pulseButton?.setLabel(this.pulseCooldown <= 0 ? "Pulse" : `Pulse ${this.pulseCooldown.toFixed(0)}`);
-    this.arcButton?.setLabel(this.arcCooldown <= 0 ? "Arc" : `Arc ${this.arcCooldown.toFixed(0)}`);
-    this.dashButton?.setLabel(this.dashCooldown <= 0 ? "Dash" : `Dash ${this.dashCooldown.toFixed(0)}`);
+    this.attackButton?.setLabel(combatLocked ? "Safe\nRoom" : "Attack");
+    this.attackButton?.setCooldownProgress(combatLocked ? 1 : 0);
+    this.attackButton?.setInputEnabled(this.touchMode && !combatLocked);
+
+    this.pulseButton?.setLabel(this.getTouchCooldownLabel("Pulse", this.pulseCooldown, combatLocked));
+    this.arcButton?.setLabel(this.getTouchCooldownLabel("Arc", this.arcCooldown, combatLocked));
+    this.dashButton?.setLabel(this.getTouchCooldownLabel("Dash", this.dashCooldown, combatLocked));
+    this.pulseButton?.setCooldownProgress(combatLocked ? 1 : this.pulseCooldown / PULSE_COOLDOWN);
+    this.arcButton?.setCooldownProgress(combatLocked ? 1 : this.arcCooldown / ARC_COOLDOWN);
+    this.dashButton?.setCooldownProgress(combatLocked ? 1 : this.dashCooldown / DASH_COOLDOWN);
+    this.pulseButton?.setInputEnabled(this.touchMode && !combatLocked && this.pulseCooldown <= 0);
+    this.arcButton?.setInputEnabled(this.touchMode && !combatLocked && this.arcCooldown <= 0);
+    this.dashButton?.setInputEnabled(this.touchMode && !combatLocked && this.dashCooldown <= 0);
   }
 
   private setAbilityCardColor(card: AbilityCard, color: number): void {
     card.frame.setFillStyle(color, 0.94);
+  }
+
+  private setAbilityCardCooldown(card: AbilityCard, progress: number): void {
+    const clamped = Phaser.Math.Clamp(progress, 0, 1);
+    if (clamped <= 0) {
+      card.cooldownMask.setVisible(false);
+      return;
+    }
+
+    card.cooldownMask.setVisible(true);
+    card.cooldownMask.setDisplaySize(190, Math.max(4, 44 * clamped));
   }
 
   private openPauseMenu(): void {
@@ -1568,6 +1610,9 @@ export class MissionScene extends Phaser.Scene {
   private createAbilityCard(x: number, y: number, titleText: string, detailText: string): AbilityCard {
     const frame = this.pin(this.add.rectangle(x, y, 196, 50, 0x17314f, 0.94)
       .setStrokeStyle(2, 0x6ea2e5, 0.78));
+    const cooldownMask = this.pin(this.add.rectangle(x, y - 22, 190, 44, 0x03070d, 0.38)
+      .setOrigin(0.5, 0)
+      .setVisible(false));
     const title = this.pin(this.add.text(x - 84, y - 18, titleText, {
       fontFamily: "Arial",
       fontSize: "16px",
@@ -1580,9 +1625,9 @@ export class MissionScene extends Phaser.Scene {
       color: "#cfe0f7",
     }));
 
-    this.desktopUiObjects.push(frame, title, detail);
+    this.desktopUiObjects.push(frame, cooldownMask, title, detail);
 
-    return { frame, title, detail };
+    return { frame, cooldownMask, title, detail };
   }
 
   private clearBullets(): void {
@@ -1615,11 +1660,6 @@ export class MissionScene extends Phaser.Scene {
       (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(desktopVisible);
     });
 
-    this.pulseButton?.setInputEnabled(this.touchMode);
-    this.arcButton?.setInputEnabled(this.touchMode);
-    this.dashButton?.setInputEnabled(this.touchMode);
-    this.attackButton?.setInputEnabled(this.touchMode);
-
     if (!this.touchMode) {
       this.movePointerId = null;
       this.attackPointerId = null;
@@ -1627,6 +1667,26 @@ export class MissionScene extends Phaser.Scene {
       this.fireHeld = false;
       this.resetMoveStick();
     }
+  }
+
+  private isCombatLocked(): boolean {
+    return this.missionComplete || this.transitioningStage || this.currentStage?.type === "rest";
+  }
+
+  private getCooldownDetail(hotkey: string, cooldown: number, combatLocked: boolean): string {
+    if (combatLocked) {
+      return this.currentStage?.type === "rest" ? "Safe Room | Offline" : "Transitioning | Hold";
+    }
+
+    return cooldown <= 0 ? `${hotkey} | Ready` : `${hotkey} | ${cooldown.toFixed(1)}s`;
+  }
+
+  private getTouchCooldownLabel(label: string, cooldown: number, combatLocked: boolean): string {
+    if (combatLocked) {
+      return "Safe\nRoom";
+    }
+
+    return cooldown <= 0 ? label : `${label}\n${cooldown.toFixed(1)}s`;
   }
 
   private reportDesktopInput(): void {

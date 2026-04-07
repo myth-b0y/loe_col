@@ -7,6 +7,7 @@ export type MenuButton = {
   setInputEnabled: (enabled: boolean) => void;
   setLabel: (label: string) => void;
   setOnClick: (onClick: () => void) => void;
+  setCooldownProgress: (progress: number) => void;
 };
 
 type ButtonOptions = {
@@ -43,6 +44,10 @@ export function createMenuButton({
     .setStrokeStyle(2, 0xaed0ff, disabled ? 0.35 : 0.75);
   background.setInteractive({ useHandCursor: true });
 
+  const cooldownOverlay = scene.add.rectangle(0, -height / 2 + 3, width - 6, height - 6, 0x03070d, 0.42)
+    .setOrigin(0.5, 0)
+    .setVisible(false);
+
   const text = scene.add.text(0, 0, label, {
     fontFamily: "Arial",
     fontSize: "18px",
@@ -51,7 +56,7 @@ export function createMenuButton({
   });
   text.setOrigin(0.5);
 
-  const button = scene.add.container(x, y, [background, text]).setDepth(depth);
+  const button = scene.add.container(x, y, [background, cooldownOverlay, text]).setDepth(depth);
   button.setSize(width, height);
 
   let enabled = !disabled;
@@ -85,6 +90,7 @@ export function createMenuButton({
   let clickHandler = onClick;
   let pressHandler = onPress;
   let releaseHandler = onRelease;
+  let cooldownProgress = 0;
 
   background.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
     if (!enabled) {
@@ -128,6 +134,16 @@ export function createMenuButton({
     },
     setOnClick(nextHandler: () => void) {
       clickHandler = nextHandler;
+    },
+    setCooldownProgress(progress: number) {
+      cooldownProgress = Phaser.Math.Clamp(progress, 0, 1);
+      if (cooldownProgress <= 0) {
+        cooldownOverlay.setVisible(false);
+        return;
+      }
+
+      cooldownOverlay.setVisible(true);
+      cooldownOverlay.setDisplaySize(width - 6, Math.max(3, (height - 6) * cooldownProgress));
     },
   };
 }

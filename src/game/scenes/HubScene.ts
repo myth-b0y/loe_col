@@ -42,6 +42,7 @@ export class HubScene extends Phaser.Scene {
   private panelBody?: Phaser.GameObjects.Text;
   private panelFooter?: Phaser.GameObjects.Text;
   private panelAction?: MenuButton;
+  private panelClose?: MenuButton;
   private promptText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private rewardText?: Phaser.GameObjects.Text;
@@ -111,7 +112,6 @@ export class HubScene extends Phaser.Scene {
     this.updateNearestStation();
     this.updateInteractionTarget();
     this.updatePrompt();
-    this.handleAirlockDeploy();
   }
 
   private drawBackdrop(): void {
@@ -346,7 +346,7 @@ export class HubScene extends Phaser.Scene {
       wordWrap: { width: 430 },
     }).setDepth(21);
 
-    const close = createMenuButton({
+    this.panelClose = createMenuButton({
       scene: this,
       x: 1102,
       y: 286,
@@ -374,7 +374,7 @@ export class HubScene extends Phaser.Scene {
       title,
       this.panelBody,
       this.panelFooter,
-      close.container,
+      this.panelClose.container,
       this.panelAction.container,
     ]).setDepth(20);
 
@@ -617,6 +617,7 @@ export class HubScene extends Phaser.Scene {
         ...FIRST_MISSION.briefing,
       ]);
       this.panelFooter.setText("Mission terminal accepts the contract. The deploy door is the temporary stand-in for future space travel.");
+      this.panelClose?.setLabel("Close");
       this.panelAction.setLabel(gameSession.acceptedMissionId === FIRST_MISSION.id ? "Mission Accepted" : "Accept Mission");
       this.panelAction.setEnabled(gameSession.acceptedMissionId !== FIRST_MISSION.id);
       this.panelAction.setOnClick(() => {
@@ -639,6 +640,7 @@ export class HubScene extends Phaser.Scene {
         "This console stays data-driven so adding new weapons, builds, and companions later will not break the hub flow.",
       ]);
       this.panelFooter.setText("Current prototype kit: basic fire, Pulse, Arc Lance, Dash, and one ranged support companion.");
+      this.panelClose?.setLabel("Close");
       this.panelAction.setLabel("Close");
       this.panelAction.setEnabled(true);
       this.panelAction.setOnClick(() => this.closePanel());
@@ -654,6 +656,7 @@ export class HubScene extends Phaser.Scene {
       "Mission saves remain disabled for now to keep the combat slice predictable while we build the foundation.",
     ]);
     this.panelFooter.setText("Use the main menu or pause menu load screen to choose which file to continue.");
+    this.panelClose?.setLabel("Close");
     this.panelAction.setLabel("Save Game");
     this.panelAction.setEnabled(true);
     this.panelAction.setOnClick(() => {
@@ -696,17 +699,13 @@ export class HubScene extends Phaser.Scene {
     });
   }
 
-  private handleAirlockDeploy(): void {
-    if (this.panel?.visible || !this.airlockDoor || this.deploying || !gameSession.acceptedMissionId) {
-      return;
-    }
-
-    const bounds = this.airlockDoor.getBounds();
-    if (!bounds.contains(this.player.x, this.player.y)) {
+  private deployAcceptedMission(): void {
+    if (!this.airlockDoor || this.deploying || !gameSession.acceptedMissionId) {
       return;
     }
 
     this.deploying = true;
+    this.closePanel();
     this.statusText?.setText("Deploying through temporary airlock shortcut.");
     this.cameras.main.fadeOut(220, 8, 12, 18);
     this.time.delayedCall(220, () => {
@@ -789,7 +788,25 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    this.handleAirlockDeploy();
+    if (!this.panel || !this.panelBody || !this.panelFooter || !this.panelAction) {
+      return;
+    }
+
+    const title = this.panel.data?.get("title") as Phaser.GameObjects.Text | undefined;
+    title?.setText("Deploy Door");
+    this.panel.setVisible(true);
+    this.panelBody.setText([
+      `Launch contract: ${FIRST_MISSION.title}`,
+      "",
+      `Location: ${FIRST_MISSION.location}`,
+      "",
+      "You are about to leave the command deck and begin the current mission slice.",
+    ]);
+    this.panelFooter.setText("Start mission now? Choose Start Mission to deploy, or Decline to stay on the ship.");
+    this.panelClose?.setLabel("Decline");
+    this.panelAction.setLabel("Start Mission");
+    this.panelAction.setEnabled(true);
+    this.panelAction.setOnClick(() => this.deployAcceptedMission());
   }
 
   private canActivateAirlock(): boolean {
