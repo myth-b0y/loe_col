@@ -12,6 +12,7 @@ export class MainMenuScene extends Phaser.Scene {
   private settingsOverlay?: SettingsOverlay;
   private saveSlotsOverlay?: SaveSlotsOverlay;
   private loadButton?: MenuButton;
+  private uiVisionButton?: MenuButton;
   private creditsPanel?: Phaser.GameObjects.Container;
   private creditsCloseButton?: MenuButton;
 
@@ -82,12 +83,21 @@ export class MainMenuScene extends Phaser.Scene {
         label: "Credits",
         onClick: () => this.showCredits(true),
       }),
+      createMenuButton({
+        scene: this,
+        x: 286,
+        y: 612,
+        width: 250,
+        label: "UI Vision",
+        onClick: () => this.scene.start("ui-vision"),
+      }),
     ];
 
     this.loadButton = buttons[1];
+    this.uiVisionButton = buttons[4];
     this.loadButton.setEnabled(gameSession.hasSaveData());
 
-    this.add.text(162, 628, `Current milestone: ${GAME_MILESTONE}`, {
+    this.add.text(162, 662, `Current milestone: ${GAME_MILESTONE}`, {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#98aed1",
@@ -222,6 +232,7 @@ export class MainMenuScene extends Phaser.Scene {
     keyboard.on("keydown-L", () => this.saveSlotsOverlay?.show("load"));
     keyboard.on("keydown-O", () => this.settingsOverlay?.show("graphics"));
     keyboard.on("keydown-C", () => this.showCredits(true));
+    keyboard.on("keydown-V", () => this.scene.start("ui-vision"));
     keyboard.on("keydown-ESC", () => {
       if (this.creditsPanel?.visible) {
         this.showCredits(false);
@@ -238,6 +249,7 @@ export class MainMenuScene extends Phaser.Scene {
       keyboard.removeAllListeners("keydown-L");
       keyboard.removeAllListeners("keydown-O");
       keyboard.removeAllListeners("keydown-C");
+      keyboard.removeAllListeners("keydown-V");
       keyboard.removeAllListeners("keydown-ESC");
     });
   }
@@ -254,6 +266,7 @@ export class MainMenuScene extends Phaser.Scene {
       run: gameSession.getRunConfig(),
       hasSaves: gameSession.hasSaveData(),
       creditsVisible: this.creditsPanel?.visible ?? false,
+      uiVisionReady: Boolean(this.uiVisionButton),
     };
   }
 }
