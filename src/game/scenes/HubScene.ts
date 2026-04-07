@@ -1,12 +1,13 @@
 import Phaser from "phaser";
 
 import { FIRST_MISSION } from "../content/missions";
-import { GAME_WIDTH } from "../createGame";
+import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
 type StationId = "mission" | "loadout" | "save";
+type InteractionTargetKind = "station" | "airlock";
 
 type Station = {
   id: StationId;
@@ -14,6 +15,14 @@ type Station = {
   label: Phaser.GameObjects.Text;
   hint: Phaser.GameObjects.Text;
   interactionRadius: number;
+};
+
+type InteractionTarget = {
+  kind: InteractionTargetKind;
+  x: number;
+  y: number;
+  buttonLabel: string;
+  station?: Station;
 };
 
 const HUB_ROOM = new Phaser.Geom.Rectangle(68, 110, 1144, 520);
@@ -40,9 +49,14 @@ export class HubScene extends Phaser.Scene {
   private airlockDoor?: Phaser.GameObjects.Rectangle;
   private airlockGlow?: Phaser.GameObjects.Rectangle;
   private airlockLabel?: Phaser.GameObjects.Text;
+  private pauseButton?: MenuButton;
+  private activateButton?: MenuButton;
+  private interactionHintFrame?: Phaser.GameObjects.Rectangle;
+  private interactionHintText?: Phaser.GameObjects.Text;
   private deploying = false;
   private touchCapable = false;
   private touchMode = false;
+  private currentInteraction: InteractionTarget | null = null;
   private moveKeys?: {
     up: Phaser.Input.Keyboard.Key;
     down: Phaser.Input.Keyboard.Key;
@@ -62,6 +76,8 @@ export class HubScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.deploying = false;
+    this.currentInteraction = null;
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.drawBackdrop();
@@ -93,6 +109,7 @@ export class HubScene extends Phaser.Scene {
     this.updateMovement(dt);
     this.updateBuddy(dt);
     this.updateNearestStation();
+    this.updateInteractionTarget();
     this.updatePrompt();
     this.handleAirlockDeploy();
   }
@@ -146,7 +163,9 @@ export class HubScene extends Phaser.Scene {
     this.airlockGlow = this.add.rectangle(1120, HUB_ROOM.centerY, 84, 166, 0x4abfff, 0.1).setDepth(4);
     this.airlockDoor = this.add.rectangle(1120, HUB_ROOM.centerY, 60, 148, 0x173b5d, 0.92)
       .setStrokeStyle(3, 0x7ec4ff, 0.62)
-      .setDepth(5);
+      .setDepth(5)
+      .setInteractive({ useHandCursor: true });
+    this.airlockDoor.on("pointerdown", () => this.tryActivateAirlock());
     this.airlockLabel = this.add.text(1070, 192, "Deploy Door", {
       fontFamily: "Arial",
       fontSize: "18px",
@@ -273,7 +292,7 @@ export class HubScene extends Phaser.Scene {
       color: "#e8f1ff",
     }).setOrigin(0.5);
 
-    createMenuButton({
+    this.pauseButton = createMenuButton({
       scene: this,
       x: 1130,
       y: 54,
@@ -284,6 +303,18 @@ export class HubScene extends Phaser.Scene {
       depth: 12,
       accentColor: 0x233956,
     });
+    this.pauseButton.container.setScrollFactor(0);
+
+    this.interactionHintFrame = this.add.rectangle(0, 0, 48, 36, 0x102035, 0.95)
+      .setStrokeStyle(2, 0x8ed2ff, 0.9)
+      .setDepth(14)
+      .setVisible(false);
+    this.interactionHintText = this.add.text(0, 0, "E", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#f5fbff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(15).setVisible(false);
 
     this.createPanel();
   }
@@ -370,7 +401,22 @@ export class HubScene extends Phaser.Scene {
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(15);
 
-    this.touchUiObjects.push(this.stickBase, this.stickKnob, label);
+    this.activateButton = createMenuButton({
+      scene: this,
+      x: 1114,
+      y: 566,
+      width: 150,
+      height: 68,
+      label: "Activate",
+      onClick: () => this.tryActivateCurrentTarget(),
+      depth: 15,
+      accentColor: 0x1f5a87,
+    });
+    this.activateButton.container.setScrollFactor(0);
+    this.activateButton.container.setVisible(false);
+    this.activateButton.setInputEnabled(false);
+
+    this.touchUiObjects.push(this.stickBase, this.stickKnob, label, this.activateButton.container);
   }
 
   private bindKeyboard(): void {
@@ -397,9 +443,7 @@ export class HubScene extends Phaser.Scene {
       if (this.touchCapable) {
         gameSession.reportInputMode("desktop", this.touchCapable);
       }
-      if (this.nearestStation) {
-        this.openStation(this.nearestStation.id);
-      }
+      this.tryActivateCurrentTarget();
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -419,7 +463,7 @@ export class HubScene extends Phaser.Scene {
         return;
       }
 
-      if (pointer.x > GAME_WIDTH * 0.45) {
+      if (this.pointerOverTouchUi(pointer) || this.pointerOverInteractionArea(pointer)) {
         return;
       }
 
@@ -530,16 +574,14 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    if (this.nearestStation) {
-      this.promptText.setText(this.touchMode
-        ? `Tap ${this.nearestStation.label.text} while standing nearby.`
-        : `Press E near ${this.nearestStation.label.text}.`);
+    if (this.currentInteraction) {
+      this.promptText.setText("");
       return;
     }
 
     if (this.isNearAirlock()) {
       this.promptText.setText(gameSession.acceptedMissionId
-        ? "Walk into the deploy door to enter the mission zone."
+        ? "Move closer to the deploy door to activate it."
         : "Accept a mission at the terminal before deploying.");
       return;
     }
@@ -635,6 +677,9 @@ export class HubScene extends Phaser.Scene {
     this.airlockDoor?.setStrokeStyle(3, missionAccepted ? 0x8be4ff : 0x7ec4ff, missionAccepted ? 0.96 : 0.62);
     this.airlockGlow?.setFillStyle(0x4abfff, missionAccepted ? 0.28 : 0.08);
     this.airlockLabel?.setColor(missionAccepted ? "#f4fbff" : "#c8ddff");
+    if (!missionAccepted) {
+      this.deploying = false;
+    }
   }
 
   private presentPendingReward(): void {
@@ -652,7 +697,7 @@ export class HubScene extends Phaser.Scene {
   }
 
   private handleAirlockDeploy(): void {
-    if (!gameSession.acceptedMissionId || this.panel?.visible || !this.airlockDoor || this.deploying) {
+    if (this.panel?.visible || !this.airlockDoor || this.deploying || !gameSession.acceptedMissionId) {
       return;
     }
 
@@ -669,6 +714,90 @@ export class HubScene extends Phaser.Scene {
       gameSession.startMission(missionId);
       this.scene.start("mission", { missionId });
     });
+  }
+
+  private updateInteractionTarget(): void {
+    const stationTarget = this.nearestStation
+      ? {
+          kind: "station" as const,
+          x: this.nearestStation.zone.x,
+          y: this.nearestStation.zone.getBounds().top - 26,
+          buttonLabel: this.nearestStation.id === "mission"
+            ? "Use"
+            : this.nearestStation.id === "save"
+              ? "Save"
+              : "Open",
+          station: this.nearestStation,
+        }
+      : null;
+
+    const airlockTarget = this.canActivateAirlock()
+      ? {
+          kind: "airlock" as const,
+          x: this.airlockDoor?.x ?? 0,
+          y: (this.airlockDoor?.getBounds().top ?? 0) - 26,
+          buttonLabel: "Deploy",
+        }
+      : null;
+
+    if (stationTarget && airlockTarget) {
+      const stationDistance = Phaser.Math.Distance.Between(this.player.x, this.player.y, stationTarget.x, stationTarget.y);
+      const airlockDistance = Phaser.Math.Distance.Between(this.player.x, this.player.y, airlockTarget.x, airlockTarget.y);
+      this.currentInteraction = stationDistance <= airlockDistance ? stationTarget : airlockTarget;
+    } else {
+      this.currentInteraction = stationTarget ?? airlockTarget;
+    }
+
+    this.updateInteractionVisuals();
+  }
+
+  private updateInteractionVisuals(): void {
+    const showTouchActivate = this.touchMode && !this.panel?.visible && Boolean(this.currentInteraction);
+    this.activateButton?.container.setVisible(showTouchActivate);
+    this.activateButton?.setInputEnabled(showTouchActivate);
+    if (showTouchActivate && this.currentInteraction) {
+      this.activateButton?.setLabel(this.currentInteraction.buttonLabel);
+    }
+
+    const showDesktopHint = !this.touchMode && !this.panel?.visible && Boolean(this.currentInteraction);
+    this.interactionHintFrame?.setVisible(showDesktopHint);
+    this.interactionHintText?.setVisible(showDesktopHint);
+    if (showDesktopHint && this.currentInteraction) {
+      this.interactionHintFrame?.setPosition(this.currentInteraction.x, this.currentInteraction.y);
+      this.interactionHintText?.setPosition(this.currentInteraction.x, this.currentInteraction.y);
+    }
+  }
+
+  private tryActivateCurrentTarget(): void {
+    if (!this.currentInteraction) {
+      return;
+    }
+
+    if (this.currentInteraction.kind === "station" && this.currentInteraction.station) {
+      this.openStation(this.currentInteraction.station.id);
+      return;
+    }
+
+    this.tryActivateAirlock();
+  }
+
+  private tryActivateAirlock(): void {
+    if (!this.canActivateAirlock()) {
+      this.statusText?.setText(gameSession.acceptedMissionId
+        ? "Move closer to the deploy door."
+        : "Accept a mission before deploying.");
+      return;
+    }
+
+    this.handleAirlockDeploy();
+  }
+
+  private canActivateAirlock(): boolean {
+    return Boolean(
+      this.airlockDoor
+      && gameSession.acceptedMissionId
+      && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.airlockDoor.x, this.airlockDoor.y) < 108,
+    );
   }
 
   private isNearAirlock(): boolean {
@@ -696,8 +825,8 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    const anchorX = Phaser.Math.Clamp(x, 110, GAME_WIDTH * 0.42);
-    const anchorY = Phaser.Math.Clamp(y, 380, 628);
+    const anchorX = Phaser.Math.Clamp(x, 86, GAME_WIDTH - 86);
+    const anchorY = Phaser.Math.Clamp(y, 104, GAME_HEIGHT - 88);
     this.stickBase.setPosition(anchorX, anchorY).setFillStyle(0x173054, 0.52);
     this.stickKnob.setPosition(anchorX, anchorY);
   }
@@ -723,11 +852,13 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    const strength = Phaser.Math.Clamp(
+    const rawStrength = Phaser.Math.Clamp(
       (Math.min(distance, STICK_RADIUS) - STICK_DEADZONE) / (STICK_RADIUS - STICK_DEADZONE),
       0,
       1,
     );
+    const sensitivityCurve = 100 / gameSession.settings.controls.touchSensitivity;
+    const strength = Math.pow(rawStrength, sensitivityCurve);
     this.moveVector.set(vector.x, vector.y).normalize().scale(strength);
   }
 
@@ -745,12 +876,27 @@ export class HubScene extends Phaser.Scene {
     this.touchUiObjects.forEach((object) => {
       (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
     });
+    this.updateInteractionVisuals();
 
     if (!this.touchMode) {
       this.movePointerId = null;
       this.moveVector.set(0, 0);
       this.resetStick();
     }
+  }
+
+  private pointerOverTouchUi(pointer: Phaser.Input.Pointer): boolean {
+    return Boolean(
+      this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || (this.activateButton?.container.visible && this.activateButton.container.getBounds().contains(pointer.x, pointer.y)),
+    );
+  }
+
+  private pointerOverInteractionArea(pointer: Phaser.Input.Pointer): boolean {
+    return Boolean(
+      this.stations.some((station) => station.zone.getBounds().contains(pointer.x, pointer.y))
+      || this.airlockDoor?.getBounds().contains(pointer.x, pointer.y),
+    );
   }
 
   private isTouchPointer(pointer: Phaser.Input.Pointer): boolean {
@@ -772,6 +918,7 @@ export class HubScene extends Phaser.Scene {
         y: Math.round(this.buddy.y),
       },
       nearestStation: this.nearestStation?.id ?? null,
+      currentInteraction: this.currentInteraction?.kind ?? null,
       acceptedMissionId: gameSession.acceptedMissionId,
       activeSlot: gameSession.getActiveSlotIndex(),
       prompt: this.promptText?.text ?? "",

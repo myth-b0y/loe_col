@@ -357,7 +357,7 @@ export class MissionScene extends Phaser.Scene {
     this.toolbarCards = {
       fire: this.createAbilityCard(296, 652, "Primary Fire", "LMB Hold | Ready"),
       pulse: this.createAbilityCard(516, 652, "Pulse Burst", "Q | Ready"),
-      arc: this.createAbilityCard(736, 652, "Arc Lance", "E | Ready"),
+      arc: this.createAbilityCard(736, 652, "Arc Lance", "R | Ready"),
       dash: this.createAbilityCard(956, 652, "Dash Step", "Shift / RMB | Ready"),
     };
   }
@@ -464,7 +464,7 @@ export class MissionScene extends Phaser.Scene {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
       pulse: Phaser.Input.Keyboard.KeyCodes.Q,
-      arc: Phaser.Input.Keyboard.KeyCodes.E,
+      arc: Phaser.Input.Keyboard.KeyCodes.R,
       dash: Phaser.Input.Keyboard.KeyCodes.SHIFT,
     }) as typeof this.moveKeys;
 
@@ -472,7 +472,7 @@ export class MissionScene extends Phaser.Scene {
       this.reportDesktopInput();
       this.castPulse();
     });
-    keyboard.on("keydown-E", () => {
+    keyboard.on("keydown-R", () => {
       this.reportDesktopInput();
       this.castArcLance();
     });
@@ -487,7 +487,7 @@ export class MissionScene extends Phaser.Scene {
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-Q");
-      keyboard.removeAllListeners("keydown-E");
+      keyboard.removeAllListeners("keydown-R");
       keyboard.removeAllListeners("keydown-SHIFT");
       keyboard.removeAllListeners("keydown-ESC");
     });
@@ -780,7 +780,8 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateFacing(): void {
-    const direction = this.getAimDirection(true);
+    const direction = this.getBaseAimDirection();
+    this.refreshAutoAimTarget(direction);
 
     if (!Number.isFinite(direction.x) || !Number.isFinite(direction.y) || direction.lengthSq() === 0) {
       direction.set(1, 0);
@@ -812,7 +813,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.fireCooldown = 0.16;
-    const direction = this.getAimDirection(true);
+    const direction = this.getCombatAimDirection();
     this.spawnBullet(this.player.x + direction.x * 24, this.player.y + direction.y * 24, direction, 560, 12, 5, "player", 0x7ee1ff);
   }
 
@@ -1214,7 +1215,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.arcCooldown = 4.5;
-    const direction = this.getAimDirection(true);
+    const direction = this.getCombatAimDirection();
     const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
     beam.setRotation(direction.angle());
     this.tweens.add({
@@ -1324,7 +1325,7 @@ export class MissionScene extends Phaser.Scene {
           : "LMB Hold | Manual",
       );
       this.toolbarCards.pulse.detail.setText(this.pulseCooldown <= 0 ? "Q | Ready" : `Q | ${this.pulseCooldown.toFixed(1)}s`);
-      this.toolbarCards.arc.detail.setText(this.arcCooldown <= 0 ? "E | Ready" : `E | ${this.arcCooldown.toFixed(1)}s`);
+      this.toolbarCards.arc.detail.setText(this.arcCooldown <= 0 ? "R | Ready" : `R | ${this.arcCooldown.toFixed(1)}s`);
       this.toolbarCards.dash.detail.setText(this.dashCooldown <= 0 ? "Shift / RMB | Ready" : `Shift | ${this.dashCooldown.toFixed(1)}s`);
       this.setAbilityCardColor(this.toolbarCards.pulse, this.pulseCooldown <= 0 ? 0x144d6a : 0x17314f);
       this.setAbilityCardColor(this.toolbarCards.arc, this.arcCooldown <= 0 ? 0x5a4617 : 0x17314f);
@@ -1447,7 +1448,7 @@ export class MissionScene extends Phaser.Scene {
     return nearest;
   }
 
-  private getAimDirection(allowAssist: boolean): Phaser.Math.Vector2 {
+  private getBaseAimDirection(): Phaser.Math.Vector2 {
     const direction = this.touchMode
       ? this.aimVector.clone()
       : this.getDesktopAimVector();
@@ -1458,20 +1459,29 @@ export class MissionScene extends Phaser.Scene {
       direction.normalize();
     }
 
-    if (!allowAssist || !gameSession.settings.controls.autoAim) {
-      this.autoAimTarget = null;
-      return direction;
-    }
+    return direction;
+  }
 
-    this.autoAimTarget = this.getAutoAimTarget(direction);
-    if (!this.autoAimTarget) {
-      return direction;
+  private getCombatAimDirection(): Phaser.Math.Vector2 {
+    const baseDirection = this.getBaseAimDirection();
+    this.refreshAutoAimTarget(baseDirection);
+    if (!gameSession.settings.controls.autoAim || !this.autoAimTarget) {
+      return baseDirection;
     }
 
     return new Phaser.Math.Vector2(
       this.autoAimTarget.sprite.x - this.player.x,
       this.autoAimTarget.sprite.y - this.player.y,
     ).normalize();
+  }
+
+  private refreshAutoAimTarget(direction: Phaser.Math.Vector2): void {
+    if (!gameSession.settings.controls.autoAim) {
+      this.autoAimTarget = null;
+      return;
+    }
+
+    this.autoAimTarget = this.getAutoAimTarget(direction);
   }
 
   private getDesktopAimVector(): Phaser.Math.Vector2 {
@@ -1494,6 +1504,10 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private getAutoAimTarget(direction: Phaser.Math.Vector2): Enemy | null {
+    if (this.autoAimTarget && this.isAutoAimTargetValid(this.autoAimTarget)) {
+      return this.autoAimTarget;
+    }
+
     let nearest: Enemy | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
     const normalized = direction.clone().normalize();
@@ -1525,6 +1539,11 @@ export class MissionScene extends Phaser.Scene {
     }
 
     return nearest;
+  }
+
+  private isAutoAimTargetValid(target: Enemy): boolean {
+    return this.enemies.includes(target)
+      && Phaser.Math.Distance.Between(this.player.x, this.player.y, target.sprite.x, target.sprite.y) <= 460;
   }
 
   private setExitDoorOpen(open: boolean, label: string): void {
