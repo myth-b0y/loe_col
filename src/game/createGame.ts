@@ -5,6 +5,7 @@ import { HubScene } from "./scenes/HubScene";
 import { MainMenuScene } from "./scenes/MainMenuScene";
 import { MissionScene } from "./scenes/MissionScene";
 import { PauseScene } from "./scenes/PauseScene";
+import { GameOverScene } from "./scenes/GameOverScene";
 
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
@@ -16,7 +17,7 @@ export function createGame(parent: string): Phaser.Game {
     width: GAME_WIDTH,
     height: GAME_HEIGHT,
     backgroundColor: "#070b12",
-    scene: [BootScene, MainMenuScene, HubScene, MissionScene, PauseScene],
+    scene: [BootScene, MainMenuScene, HubScene, MissionScene, PauseScene, GameOverScene],
     input: {
       activePointers: 6,
     },

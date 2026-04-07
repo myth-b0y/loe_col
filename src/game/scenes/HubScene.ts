@@ -25,6 +25,8 @@ export class HubScene extends Phaser.Scene {
   private brightnessLayer?: BrightnessLayer;
   private player!: Phaser.GameObjects.Arc;
   private buddy!: Phaser.GameObjects.Arc;
+  private buddyAnchor = new Phaser.Math.Vector2(676, 536);
+  private buddyPulse = 0;
   private stations: Station[] = [];
   private nearestStation: Station | null = null;
   private panel?: Phaser.GameObjects.Container;
@@ -126,6 +128,20 @@ export class HubScene extends Phaser.Scene {
 
     this.add.rectangle(186, 368, 84, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
     this.add.rectangle(1094, 368, 130, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
+    this.add.rectangle(676, 536, 196, 120, 0x132a40, 0.88)
+      .setStrokeStyle(2, 0x7aa9dd, 0.72)
+      .setDepth(-6);
+    this.add.text(676, 492, "Companion Bay", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#d7e8ff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(-5);
+    this.add.text(676, 518, "Friendly crew zone", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#aecded",
+    }).setOrigin(0.5).setDepth(-5);
 
     this.airlockGlow = this.add.rectangle(1120, HUB_ROOM.centerY, 84, 166, 0x4abfff, 0.1).setDepth(4);
     this.airlockDoor = this.add.rectangle(1120, HUB_ROOM.centerY, 60, 148, 0x173b5d, 0.92)
@@ -150,8 +166,14 @@ export class HubScene extends Phaser.Scene {
     this.player = this.add.circle(186, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
 
-    this.buddy = this.add.circle(this.player.x - 42, this.player.y + 44, 12, 0xf0cd79).setDepth(7);
+    this.buddy = this.add.circle(this.buddyAnchor.x, this.buddyAnchor.y, 12, 0xf0cd79).setDepth(7);
     this.buddy.setStrokeStyle(3, 0xffedb3, 1);
+    this.add.text(this.buddyAnchor.x, this.buddyAnchor.y + 26, "Sera", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#fff0bf",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(7);
   }
 
   private createStations(): void {
@@ -468,12 +490,9 @@ export class HubScene extends Phaser.Scene {
   }
 
   private updateBuddy(dt: number): void {
-    const desiredX = this.player.x - 38;
-    const desiredY = this.player.y + 44;
-    const smoothing = 1 - Math.exp(-dt * 7);
-
-    this.buddy.x = Phaser.Math.Linear(this.buddy.x, desiredX, smoothing);
-    this.buddy.y = Phaser.Math.Linear(this.buddy.y, desiredY, smoothing);
+    this.buddyPulse += dt;
+    this.buddy.x = this.buddyAnchor.x + Math.sin(this.buddyPulse * 1.4) * 8;
+    this.buddy.y = this.buddyAnchor.y + Math.cos(this.buddyPulse * 1.8) * 5;
   }
 
   private updateNearestStation(): void {
@@ -746,6 +765,10 @@ export class HubScene extends Phaser.Scene {
       player: {
         x: Math.round(this.player.x),
         y: Math.round(this.player.y),
+      },
+      buddy: {
+        x: Math.round(this.buddy.x),
+        y: Math.round(this.buddy.y),
       },
       nearestStation: this.nearestStation?.id ?? null,
       acceptedMissionId: gameSession.acceptedMissionId,

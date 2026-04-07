@@ -378,6 +378,17 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.emit("save-changed", this.saveData);
   }
 
+  leaveMission(options?: { missionId?: string | null; requeue?: boolean }): void {
+    const missionId = options?.missionId ?? this.activeMissionId;
+    this.activeMissionId = null;
+    this.pendingReward = null;
+    this.acceptedMissionId = options?.requeue && missionId ? missionId : null;
+    this.emit("mission-left", {
+      missionId,
+      requeue: Boolean(options?.requeue && missionId),
+    });
+  }
+
   consumePendingReward(): RewardData | null {
     const reward = this.pendingReward;
     this.pendingReward = null;

@@ -1,3 +1,3 @@
 export const GAME_CODE = "loe_col";
-export const GAME_VERSION = "v0.0.11";
+export const GAME_VERSION = "v0.0.12";
 export const GAME_MILESTONE = "first playable loop + systems settings pass";

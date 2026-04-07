@@ -147,6 +147,7 @@ export class MissionScene extends Phaser.Scene {
 
   private aimLine!: Phaser.GameObjects.Graphics;
   private reticle!: Phaser.GameObjects.Arc;
+  private lockRing!: Phaser.GameObjects.Arc;
   private hpFill!: Phaser.GameObjects.Rectangle;
   private bossFill!: Phaser.GameObjects.Rectangle;
   private bossFrame!: Phaser.GameObjects.Rectangle;
@@ -157,6 +158,9 @@ export class MissionScene extends Phaser.Scene {
   private messageText!: Phaser.GameObjects.Text;
   private progressDots: Phaser.GameObjects.Arc[] = [];
   private resultPanel?: Phaser.GameObjects.Container;
+  private resultBodyText?: Phaser.GameObjects.Text;
+  private resultReturnButton?: MenuButton;
+  private autoAimTarget: Enemy | null = null;
   private toolbarCards?: {
     fire: AbilityCard;
     pulse: AbilityCard;
@@ -265,6 +269,7 @@ export class MissionScene extends Phaser.Scene {
     this.pauseButton = undefined;
     this.touchUiObjects = [];
     this.desktopUiObjects = [];
+    this.autoAimTarget = null;
     this.moveKeys = undefined;
     this.toolbarCards = undefined;
   }
@@ -283,6 +288,8 @@ export class MissionScene extends Phaser.Scene {
     this.aimLine = this.add.graphics().setDepth(8);
     this.reticle = this.add.circle(this.lookPoint.x, this.lookPoint.y, 14, 0x7ee1ff, 0.14).setDepth(8);
     this.reticle.setStrokeStyle(3, 0xbef2ff, 0.82);
+    this.lockRing = this.add.circle(this.lookPoint.x, this.lookPoint.y, 24).setStrokeStyle(3, 0xffd36d, 0.92).setDepth(8);
+    this.lockRing.setVisible(false);
   }
 
   private createHud(): void {
@@ -442,51 +449,49 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private createResultPanel(): void {
-    const background = this.pin(this.add.rectangle(640, 360, 620, 360, 0x08111c, 0.98)
+    const background = this.add.rectangle(0, 0, 620, 360, 0x08111c, 0.98)
       .setStrokeStyle(3, 0x79abed, 0.85)
-      .setDepth(40));
+      .setDepth(60)
+      .setInteractive();
 
-    const title = this.pin(this.add.text(410, 214, "Mission Complete", {
+    const title = this.add.text(-230, -146, "Mission Complete", {
       fontFamily: "Arial",
       fontSize: "30px",
       color: "#f7fbff",
       fontStyle: "bold",
-    }).setDepth(41));
+    }).setDepth(61);
 
-    const body = this.pin(this.add.text(410, 278, "", {
+    const body = this.add.text(-230, -82, "", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#d7e8ff",
       lineSpacing: 8,
       wordWrap: { width: 460 },
-    }).setDepth(41));
+    }).setDepth(61);
 
     const returnButton = createMenuButton({
       scene: this,
-      x: 640,
-      y: 498,
+      x: 0,
+      y: 138,
       width: 230,
       label: "Return To Ship",
-      onClick: () => {
-        gameSession.completeMission(this.mission.id, this.mission.reward);
-        this.scene.start("hub");
-      },
-      depth: 41,
+      onClick: () => this.returnToShipWithReward(),
+      depth: 61,
       accentColor: 0x1c4f7f,
     });
-    returnButton.container.setScrollFactor(0);
+    returnButton.setInputEnabled(false);
 
-    this.resultPanel = this.add.container(0, 0, [
+    this.resultPanel = this.add.container(640, 360, [
       background,
       title,
       body,
       returnButton.container,
-    ]).setDepth(40);
+    ]).setDepth(60);
 
     this.resultPanel.setScrollFactor(0);
     this.resultPanel.setVisible(false);
-    this.resultPanel.setDataEnabled();
-    this.resultPanel.data?.set("body", body);
+    this.resultBodyText = body;
+    this.resultReturnButton = returnButton;
   }
 
   private bindKeyboard(): void {
@@ -856,7 +861,8 @@ export class MissionScene extends Phaser.Scene {
     }
 
     const touchAutoFire = this.touchMode && this.aimPointerId !== null && this.aimVector.lengthSq() > 0.2;
-    if (!this.fireHeld && !touchAutoFire) {
+    const lockAutoFire = gameSession.settings.controls.autoAim && this.autoAimTarget !== null;
+    if (!this.fireHeld && !touchAutoFire && !lockAutoFire) {
       return;
     }
 
@@ -1149,11 +1155,11 @@ export class MissionScene extends Phaser.Scene {
 
   private finishMission(): void {
     this.missionComplete = true;
+    this.fireHeld = false;
     this.messageText.setText("Relay secure. Extraction confirmed.");
     this.setExitDoorOpen(false, "Complete");
 
-    const body = this.resultPanel?.data?.get("body") as Phaser.GameObjects.Text | undefined;
-    body?.setText([
+    this.resultBodyText?.setText([
       `${this.mission.title} has been cleared.`,
       "",
       `Reward: +${this.mission.reward.xp} XP`,
@@ -1163,6 +1169,7 @@ export class MissionScene extends Phaser.Scene {
       "Return to the command deck to save, regroup, and queue the next contract.",
     ]);
     this.resultPanel?.setVisible(true);
+    this.resultReturnButton?.setInputEnabled(true);
   }
 
   private spawnEnemy(kind: EnemyKind, preferredX?: number, preferredY?: number): void {
@@ -1321,7 +1328,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.scene.start("mission", { missionId: this.mission.id });
+    this.openGameOver();
   }
 
   private damageEnemy(enemy: Enemy, amount: number): void {
@@ -1352,9 +1359,23 @@ export class MissionScene extends Phaser.Scene {
       this.bossFill.width = 242 * (boss.hp / boss.maxHp);
     }
 
+    if (this.autoAimTarget) {
+      this.lockRing.setVisible(true);
+      this.lockRing.setPosition(this.autoAimTarget.sprite.x, this.autoAimTarget.sprite.y);
+      this.lockRing.setRadius(this.autoAimTarget.radius + 10);
+      this.reticle.setStrokeStyle(3, 0xffe18a, 0.96);
+    } else {
+      this.lockRing.setVisible(false);
+      this.reticle.setStrokeStyle(3, 0xbef2ff, 0.82);
+    }
+
     if (this.toolbarCards) {
       this.toolbarCards.fire.detail.setText(
-        gameSession.settings.controls.autoAim ? "LMB Hold | Assist On" : "LMB Hold | Manual",
+        gameSession.settings.controls.autoAim
+          ? this.autoAimTarget
+            ? "Auto Lock | Firing"
+            : "Auto Lock | Ready"
+          : "LMB Hold | Manual",
       );
       this.toolbarCards.pulse.detail.setText(this.pulseCooldown <= 0 ? "Q | Ready" : `Q | ${this.pulseCooldown.toFixed(1)}s`);
       this.toolbarCards.arc.detail.setText(this.arcCooldown <= 0 ? "E | Ready" : `E | ${this.arcCooldown.toFixed(1)}s`);
@@ -1388,6 +1409,15 @@ export class MissionScene extends Phaser.Scene {
       || (this.arcButton?.container.visible && this.arcButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.dashButton?.container.visible && this.dashButton.container.getBounds().contains(pointer.x, pointer.y)),
     );
+  }
+
+  private openGameOver(): void {
+    this.fireHeld = false;
+    this.lockRing.setVisible(false);
+    this.scene.launch("game-over", {
+      missionId: this.mission.id,
+    });
+    this.scene.pause();
   }
 
   private anchorMoveStick(x: number, y: number): void {
@@ -1499,10 +1529,19 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (!allowAssist || !gameSession.settings.controls.autoAim) {
+      this.autoAimTarget = null;
       return direction;
     }
 
-    return this.getAutoAimDirection(direction) ?? direction;
+    this.autoAimTarget = this.getAutoAimTarget(direction);
+    if (!this.autoAimTarget) {
+      return direction;
+    }
+
+    return new Phaser.Math.Vector2(
+      this.autoAimTarget.sprite.x - this.player.x,
+      this.autoAimTarget.sprite.y - this.player.y,
+    ).normalize();
   }
 
   private getDesktopAimVector(): Phaser.Math.Vector2 {
@@ -1516,7 +1555,7 @@ export class MissionScene extends Phaser.Scene {
     return new Phaser.Math.Vector2(worldPoint.x - this.player.x, worldPoint.y - this.player.y);
   }
 
-  private getAutoAimDirection(direction: Phaser.Math.Vector2): Phaser.Math.Vector2 | null {
+  private getAutoAimTarget(direction: Phaser.Math.Vector2): Enemy | null {
     let nearest: Enemy | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
     const normalized = direction.clone().normalize();
@@ -1547,7 +1586,13 @@ export class MissionScene extends Phaser.Scene {
       return null;
     }
 
-    return new Phaser.Math.Vector2(nearest.sprite.x - this.player.x, nearest.sprite.y - this.player.y).normalize();
+    return nearest;
+  }
+
+  private returnToShipWithReward(): void {
+    gameSession.completeMission(this.mission.id, this.mission.reward);
+    this.scene.stop("game-over");
+    this.scene.start("hub");
   }
 
   private setExitDoorOpen(open: boolean, label: string): void {
@@ -1652,6 +1697,8 @@ export class MissionScene extends Phaser.Scene {
       stageIndex: this.stageIndex,
       stageName: this.currentStage?.name ?? null,
       missionComplete: this.missionComplete,
+      autoAimTarget: this.autoAimTarget?.kind ?? null,
+      resultVisible: this.resultPanel?.visible ?? false,
       playerHp: this.playerHp,
       player: {
         x: Math.round(this.player.x),
