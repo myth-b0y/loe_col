@@ -39,7 +39,8 @@ export class HubScene extends Phaser.Scene {
   private airlockGlow?: Phaser.GameObjects.Rectangle;
   private airlockLabel?: Phaser.GameObjects.Text;
   private deploying = false;
-  private touchEnabled = false;
+  private touchCapable = false;
+  private touchMode = false;
   private moveKeys?: {
     up: Phaser.Input.Keyboard.Key;
     down: Phaser.Input.Keyboard.Key;
@@ -52,25 +53,34 @@ export class HubScene extends Phaser.Scene {
   private movePointerId: number | null = null;
   private stickBase?: Phaser.GameObjects.Arc;
   private stickKnob?: Phaser.GameObjects.Arc;
+  private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
 
   constructor() {
     super("hub");
   }
 
   create(): void {
-    this.touchEnabled = this.sys.game.device.input.touch;
+    this.touchCapable = this.sys.game.device.input.touch;
+    this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.drawBackdrop();
     this.brightnessLayer = createBrightnessLayer(this);
     this.createActors();
     this.createStations();
     this.createHud();
     this.createTouchControls();
+    this.syncInputMode();
     this.bindKeyboard();
     this.bindPointerInput();
     this.presentPendingReward();
     this.refreshMissionState();
 
+    const syncInputMode = (): void => this.syncInputMode();
+    gameSession.on("settings-changed", syncInputMode);
+    gameSession.on("input-mode-changed", syncInputMode);
+
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      gameSession.off("settings-changed", syncInputMode);
+      gameSession.off("input-mode-changed", syncInputMode);
       this.brightnessLayer?.destroy();
     });
   }
@@ -90,7 +100,12 @@ export class HubScene extends Phaser.Scene {
 
     const stars = this.add.graphics().setDepth(-13);
     stars.fillStyle(0xc8ddff, 0.92);
-    for (let i = 0; i < 60; i += 1) {
+    const starCount = gameSession.settings.graphics.quality === "Performance"
+      ? 28
+      : gameSession.settings.graphics.quality === "Balanced"
+        ? 40
+        : 54;
+    for (let i = 0; i < starCount; i += 1) {
       stars.fillCircle(
         Phaser.Math.Between(14, 1266),
         Phaser.Math.Between(14, 706),
@@ -316,7 +331,7 @@ export class HubScene extends Phaser.Scene {
   }
 
   private createTouchControls(): void {
-    if (!this.touchEnabled) {
+    if (!this.touchCapable) {
       return;
     }
 
@@ -326,12 +341,14 @@ export class HubScene extends Phaser.Scene {
     this.stickKnob = this.add.circle(150, 566, 34, 0xdde9ff, 0.72).setDepth(15);
     this.stickKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.add.text(150, 470, "MOVE", {
+    const label = this.add.text(150, 470, "MOVE", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(15);
+
+    this.touchUiObjects.push(this.stickBase, this.stickKnob, label);
   }
 
   private bindKeyboard(): void {
@@ -348,8 +365,16 @@ export class HubScene extends Phaser.Scene {
       interact: Phaser.Input.Keyboard.KeyCodes.E,
     }) as typeof this.moveKeys;
 
-    keyboard.on("keydown-ESC", () => this.openPauseMenu());
+    keyboard.on("keydown-ESC", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.openPauseMenu();
+    });
     keyboard.on("keydown-E", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
       if (this.nearestStation) {
         this.openStation(this.nearestStation.id);
       }
@@ -363,7 +388,12 @@ export class HubScene extends Phaser.Scene {
 
   private bindPointerInput(): void {
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      if (!this.touchEnabled || !this.stickBase || this.panel?.visible) {
+      const touchLike = this.isTouchPointer(pointer);
+      if (this.touchCapable) {
+        gameSession.reportInputMode(touchLike ? "touch" : "desktop", this.touchCapable);
+      }
+
+      if (!this.touchMode || !touchLike || !this.stickBase || this.panel?.visible) {
         return;
       }
 
@@ -377,6 +407,10 @@ export class HubScene extends Phaser.Scene {
     });
 
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      if (!this.touchMode || !this.isTouchPointer(pointer)) {
+        return;
+      }
+
       if (pointer.id !== this.movePointerId || !pointer.isDown) {
         return;
       }
@@ -417,6 +451,9 @@ export class HubScene extends Phaser.Scene {
 
     if (this.keyboardVector.lengthSq() > 0) {
       this.keyboardVector.normalize();
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
     }
   }
 
@@ -475,7 +512,7 @@ export class HubScene extends Phaser.Scene {
     }
 
     if (this.nearestStation) {
-      this.promptText.setText(this.touchEnabled
+      this.promptText.setText(this.touchMode
         ? `Tap ${this.nearestStation.label.text} while standing nearby.`
         : `Press E near ${this.nearestStation.label.text}.`);
       return;
@@ -682,5 +719,38 @@ export class HubScene extends Phaser.Scene {
 
     this.stickBase.setPosition(150, 566).setFillStyle(0x173054, 0.36);
     this.stickKnob.setPosition(150, 566);
+  }
+
+  private syncInputMode(): void {
+    this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
+    });
+
+    if (!this.touchMode) {
+      this.movePointerId = null;
+      this.moveVector.set(0, 0);
+      this.resetStick();
+    }
+  }
+
+  private isTouchPointer(pointer: Phaser.Input.Pointer): boolean {
+    const augmentedPointer = pointer as Phaser.Input.Pointer & { wasTouch?: boolean };
+    const event = pointer.event as (PointerEvent & { pointerType?: string }) | undefined;
+    return Boolean(augmentedPointer.wasTouch || event?.pointerType === "touch");
+  }
+
+  getDebugSnapshot(): Record<string, unknown> {
+    return {
+      touchMode: this.touchMode,
+      player: {
+        x: Math.round(this.player.x),
+        y: Math.round(this.player.y),
+      },
+      nearestStation: this.nearestStation?.id ?? null,
+      acceptedMissionId: gameSession.acceptedMissionId,
+      activeSlot: gameSession.getActiveSlotIndex(),
+      prompt: this.promptText?.text ?? "",
+    };
   }
 }

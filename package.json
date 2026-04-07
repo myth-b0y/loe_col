@@ -1,7 +1,7 @@
 {
   "name": "loe-col",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
+    "playwright": "^1.59.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.4"
   }

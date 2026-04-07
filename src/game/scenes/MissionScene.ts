@@ -117,7 +117,8 @@ export class MissionScene extends Phaser.Scene {
   private enemies: Enemy[] = [];
   private fireHeld = false;
 
-  private touchEnabled = false;
+  private touchCapable = false;
+  private touchMode = false;
   private moveKeys?: {
     up: Phaser.Input.Keyboard.Key;
     down: Phaser.Input.Keyboard.Key;
@@ -141,6 +142,8 @@ export class MissionScene extends Phaser.Scene {
   private dashButton?: MenuButton;
   private arcButton?: MenuButton;
   private pauseButton?: MenuButton;
+  private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
+  private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
 
   private aimLine!: Phaser.GameObjects.Graphics;
   private reticle!: Phaser.GameObjects.Arc;
@@ -171,12 +174,14 @@ export class MissionScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.touchEnabled = this.sys.game.device.input.touch;
+    this.touchCapable = this.sys.game.device.input.touch;
+    this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.cameras.main.setBackgroundColor("#050911");
     this.brightnessLayer = createBrightnessLayer(this);
     this.createActors();
     this.createHud();
     this.createTouchUi();
+    this.syncInputMode();
     this.createResultPanel();
     this.bindKeyboard();
     this.bindPointers();
@@ -184,7 +189,13 @@ export class MissionScene extends Phaser.Scene {
     this.cameras.main.setDeadzone(120, 40);
     this.loadStage(0);
 
+    const syncInputMode = (): void => this.syncInputMode();
+    gameSession.on("settings-changed", syncInputMode);
+    gameSession.on("input-mode-changed", syncInputMode);
+
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      gameSession.off("settings-changed", syncInputMode);
+      gameSession.off("input-mode-changed", syncInputMode);
       this.brightnessLayer?.destroy();
     });
   }
@@ -252,6 +263,8 @@ export class MissionScene extends Phaser.Scene {
     this.dashButton = undefined;
     this.arcButton = undefined;
     this.pauseButton = undefined;
+    this.touchUiObjects = [];
+    this.desktopUiObjects = [];
     this.moveKeys = undefined;
     this.toolbarCards = undefined;
   }
@@ -339,18 +352,16 @@ export class MissionScene extends Phaser.Scene {
     });
     this.pauseButton.container.setScrollFactor(0);
 
-    if (!this.touchEnabled) {
-      this.toolbarCards = {
-        fire: this.createAbilityCard(344, 652, "Fire", "Mouse Hold"),
-        pulse: this.createAbilityCard(560, 652, "Pulse", "Q"),
-        arc: this.createAbilityCard(776, 652, "Arc Lance", "E"),
-        dash: this.createAbilityCard(992, 652, "Dash", "Shift / RMB"),
-      };
-    }
+    this.toolbarCards = {
+      fire: this.createAbilityCard(296, 652, "Primary Fire", "LMB Hold | Ready"),
+      pulse: this.createAbilityCard(516, 652, "Pulse Burst", "Q | Ready"),
+      arc: this.createAbilityCard(736, 652, "Arc Lance", "E | Ready"),
+      dash: this.createAbilityCard(956, 652, "Dash Step", "Shift / RMB | Ready"),
+    };
   }
 
   private createTouchUi(): void {
-    if (!this.touchEnabled) {
+    if (!this.touchCapable) {
       return;
     }
 
@@ -364,14 +375,14 @@ export class MissionScene extends Phaser.Scene {
     this.aimKnob = this.pin(this.add.circle(1114, 566, 34, 0xdde9ff, 0.72).setDepth(15));
     this.aimKnob.setStrokeStyle(2, 0xffffff, 0.9);
 
-    this.pin(this.add.text(148, 470, "MOVE", {
+    const moveLabel = this.pin(this.add.text(148, 470, "MOVE", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(15));
 
-    this.pin(this.add.text(1114, 470, "AIM / FIRE", {
+    const aimLabel = this.pin(this.add.text(1114, 470, "AIM / FIRE", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#9fc6ff",
@@ -416,6 +427,18 @@ export class MissionScene extends Phaser.Scene {
       accentColor: 0x63408f,
     });
     this.dashButton.container.setScrollFactor(0);
+
+    this.touchUiObjects.push(
+      this.moveBase,
+      this.moveKnob,
+      this.aimBase,
+      this.aimKnob,
+      moveLabel,
+      aimLabel,
+      this.pulseButton.container,
+      this.arcButton.container,
+      this.dashButton.container,
+    );
   }
 
   private createResultPanel(): void {
@@ -482,10 +505,22 @@ export class MissionScene extends Phaser.Scene {
       dash: Phaser.Input.Keyboard.KeyCodes.SHIFT,
     }) as typeof this.moveKeys;
 
-    keyboard.on("keydown-Q", () => this.castPulse());
-    keyboard.on("keydown-E", () => this.castArcLance());
-    keyboard.on("keydown-SHIFT", () => this.tryDash());
-    keyboard.on("keydown-ESC", () => this.openPauseMenu());
+    keyboard.on("keydown-Q", () => {
+      this.reportDesktopInput();
+      this.castPulse();
+    });
+    keyboard.on("keydown-E", () => {
+      this.reportDesktopInput();
+      this.castArcLance();
+    });
+    keyboard.on("keydown-SHIFT", () => {
+      this.reportDesktopInput();
+      this.tryDash();
+    });
+    keyboard.on("keydown-ESC", () => {
+      this.reportDesktopInput();
+      this.openPauseMenu();
+    });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-Q");
@@ -501,7 +536,12 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      if (this.touchEnabled) {
+      const touchLike = this.isTouchPointer(pointer);
+      if (this.touchCapable) {
+        gameSession.reportInputMode(touchLike ? "touch" : "desktop", this.touchCapable);
+      }
+
+      if (this.touchMode && touchLike) {
         if (this.pointerOverUi(pointer)) {
           return;
         }
@@ -522,17 +562,27 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
+      if (this.pointerOverUi(pointer)) {
+        return;
+      }
+
       if (pointer.rightButtonDown()) {
+        this.reportDesktopInput();
         this.tryDash();
         return;
       }
 
+      this.reportDesktopInput();
       this.fireHeld = true;
-      this.lookPoint.set(pointer.worldX, pointer.worldY);
     });
 
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
-      if (this.touchEnabled) {
+      const touchLike = this.isTouchPointer(pointer);
+      if (this.touchCapable) {
+        gameSession.reportInputMode(touchLike ? "touch" : "desktop", this.touchCapable);
+      }
+
+      if (this.touchMode && touchLike) {
         if (pointer.id === this.movePointerId && pointer.isDown) {
           this.updateMoveStick(pointer);
           return;
@@ -545,12 +595,10 @@ export class MissionScene extends Phaser.Scene {
 
         return;
       }
-
-      this.lookPoint.set(pointer.worldX, pointer.worldY);
     });
 
     this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => {
-      if (this.touchEnabled) {
+      if (this.touchMode && this.isTouchPointer(pointer)) {
         if (pointer.id === this.movePointerId) {
           this.movePointerId = null;
           this.moveVector.set(0, 0);
@@ -564,6 +612,7 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
+      this.reportDesktopInput();
       this.fireHeld = false;
     });
   }
@@ -622,7 +671,12 @@ export class MissionScene extends Phaser.Scene {
 
     const stars = this.add.graphics().setDepth(-13);
     stars.fillStyle(0xc6ddff, 0.9);
-    for (let i = 0; i < Math.max(20, Math.floor(stage.width / 28)); i += 1) {
+    const density = gameSession.settings.graphics.quality === "Performance"
+      ? 0.48
+      : gameSession.settings.graphics.quality === "Balanced"
+        ? 0.68
+        : 0.88;
+    for (let i = 0; i < Math.max(12, Math.floor((stage.width / 28) * density)); i += 1) {
       stars.fillCircle(
         Phaser.Math.Between(18, stage.width - 18),
         Phaser.Math.Between(16, GAME_HEIGHT - 16),
@@ -640,7 +694,12 @@ export class MissionScene extends Phaser.Scene {
       .setDepth(-8);
     this.stageObjects.push(upperWall, lowerWall, floor);
 
-    for (let lineX = this.playArea.x + 160; lineX < this.playArea.right - 120; lineX += 240) {
+    const laneSpacing = gameSession.settings.graphics.quality === "Performance"
+      ? 360
+      : gameSession.settings.graphics.quality === "Balanced"
+        ? 300
+        : 240;
+    for (let lineX = this.playArea.x + 160; lineX < this.playArea.right - 120; lineX += laneSpacing) {
       const line = this.add.rectangle(lineX, this.playArea.centerY, 14, this.playArea.height - 44, 0x1c304a, 0.6).setDepth(-7);
       this.stageObjects.push(line);
     }
@@ -754,6 +813,7 @@ export class MissionScene extends Phaser.Scene {
 
     if (this.keyboardVector.lengthSq() > 0) {
       this.keyboardVector.normalize();
+      this.reportDesktopInput();
     }
   }
 
@@ -769,9 +829,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateFacing(): void {
-    const direction = this.touchEnabled
-      ? this.aimVector.clone().normalize()
-      : new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y).normalize();
+    const direction = this.getAimDirection(true);
 
     if (!Number.isFinite(direction.x) || !Number.isFinite(direction.y) || direction.lengthSq() === 0) {
       direction.set(1, 0);
@@ -797,13 +855,13 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const touchAutoFire = this.touchEnabled && this.aimPointerId !== null && this.aimVector.lengthSq() > 0.2;
+    const touchAutoFire = this.touchMode && this.aimPointerId !== null && this.aimVector.lengthSq() > 0.2;
     if (!this.fireHeld && !touchAutoFire) {
       return;
     }
 
     this.fireCooldown = 0.16;
-    const direction = new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y).normalize();
+    const direction = this.getAimDirection(true);
     this.spawnBullet(this.player.x + direction.x * 24, this.player.y + direction.y * 24, direction, 560, 12, 5, "player", 0x7ee1ff);
   }
 
@@ -825,6 +883,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateEnemies(dt: number): void {
+    const difficulty = gameSession.getDifficultyProfile();
     const stageIntensity = 1 + this.stageIndex * 0.08;
 
     this.enemies.forEach((enemy) => {
@@ -846,7 +905,7 @@ export class MissionScene extends Phaser.Scene {
 
       if (enemy.kind === "rusher") {
         if (enemy.specialCooldown <= 0 && distance > 120 && distance < 360) {
-          enemy.specialCooldown = 2.6;
+          enemy.specialCooldown = 2.6 * difficulty.enemyCooldown;
           enemy.chargeTimer = 0.45;
         }
 
@@ -856,8 +915,8 @@ export class MissionScene extends Phaser.Scene {
         enemy.sprite.y += move.y * enemy.speed * dt;
 
         if (distance < enemy.radius + 26 && enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 0.9;
-          this.damagePlayer(11 + Math.floor(this.stageIndex * 1.5));
+          enemy.attackCooldown = 0.9 * difficulty.enemyCooldown;
+          this.damagePlayer(Math.round((11 + Math.floor(this.stageIndex * 1.5)) * difficulty.enemyDamage));
         }
       } else if (enemy.kind === "shooter") {
         const desiredRange = 270;
@@ -880,8 +939,17 @@ export class MissionScene extends Phaser.Scene {
         }
 
         if (enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 1.2;
-          this.spawnBullet(enemy.sprite.x, enemy.sprite.y, direction, 280 + stageIntensity * 10, 9 + this.stageIndex, 6, "enemy", enemy.roleColor);
+          enemy.attackCooldown = 1.2 * difficulty.enemyCooldown;
+          this.spawnBullet(
+            enemy.sprite.x,
+            enemy.sprite.y,
+            direction,
+            280 + stageIntensity * 10,
+            Math.round((9 + this.stageIndex) * difficulty.enemyDamage),
+            6,
+            "enemy",
+            enemy.roleColor,
+          );
         }
       } else {
         if (!enemy.spawnedAdds && enemy.hp < enemy.maxHp * 0.52) {
@@ -893,17 +961,17 @@ export class MissionScene extends Phaser.Scene {
         }
 
         if (enemy.specialCooldown <= 0) {
-          enemy.specialCooldown = enemy.hp < enemy.maxHp * 0.5 ? 1.8 : 2.6;
+          enemy.specialCooldown = (enemy.hp < enemy.maxHp * 0.5 ? 1.8 : 2.6) * difficulty.enemyCooldown;
           const burstCount = enemy.hp < enemy.maxHp * 0.5 ? 10 : 8;
           for (let burst = 0; burst < burstCount; burst += 1) {
             const angle = (Math.PI * 2 * burst) / burstCount;
             const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
-            this.spawnBullet(enemy.sprite.x, enemy.sprite.y, vector, 230, 9, 7, "enemy", 0xc8a7ff);
+            this.spawnBullet(enemy.sprite.x, enemy.sprite.y, vector, 230, Math.round(9 * difficulty.enemyDamage), 7, "enemy", 0xc8a7ff);
           }
         }
 
         if (enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 1.6;
+          enemy.attackCooldown = 1.6 * difficulty.enemyCooldown;
           enemy.chargeTimer = 0.42;
         }
 
@@ -912,7 +980,7 @@ export class MissionScene extends Phaser.Scene {
         enemy.sprite.y += move.y * enemy.speed * dt;
 
         if (distance < enemy.radius + 30 && enemy.attackCooldown > 0.9) {
-          this.damagePlayer(17 + this.stageIndex * 2);
+          this.damagePlayer(Math.round((17 + this.stageIndex * 2) * difficulty.enemyDamage));
           enemy.attackCooldown = 0.75;
         }
       }
@@ -1098,6 +1166,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private spawnEnemy(kind: EnemyKind, preferredX?: number, preferredY?: number): void {
+    const difficulty = gameSession.getDifficultyProfile();
     const stageIntensity = 1 + this.stageIndex * 0.09;
     const config = kind === "rusher"
       ? { color: 0xff6b7d, hp: 60, radius: 18, speed: 150 }
@@ -1124,10 +1193,10 @@ export class MissionScene extends Phaser.Scene {
       kind,
       sprite,
       aura,
-      hp: Math.round(config.hp * stageIntensity),
-      maxHp: Math.round(config.hp * stageIntensity),
+      hp: Math.round(config.hp * stageIntensity * difficulty.enemyHp),
+      maxHp: Math.round(config.hp * stageIntensity * difficulty.enemyHp),
       radius: config.radius,
-      speed: config.speed * Math.min(stageIntensity, 1.35),
+      speed: config.speed * Math.min(stageIntensity, 1.35) * difficulty.enemySpeed,
       attackCooldown: Phaser.Math.FloatBetween(0.45, 1.05),
       specialCooldown: kind === "boss" ? 1.9 : 1.4,
       chargeTimer: 0,
@@ -1192,7 +1261,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.arcCooldown = 4.5;
-    const direction = new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y).normalize();
+    const direction = this.getAimDirection(true);
     const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
     beam.setRotation(direction.angle());
     this.tweens.add({
@@ -1222,7 +1291,7 @@ export class MissionScene extends Phaser.Scene {
       ? this.moveVector.clone()
       : this.keyboardVector.lengthSq() > 0.01
         ? this.keyboardVector.clone()
-        : this.touchEnabled
+        : this.touchMode
           ? this.aimVector.clone()
           : new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y);
 
@@ -1284,7 +1353,9 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (this.toolbarCards) {
-      this.toolbarCards.fire.detail.setText("Mouse Hold");
+      this.toolbarCards.fire.detail.setText(
+        gameSession.settings.controls.autoAim ? "LMB Hold | Assist On" : "LMB Hold | Manual",
+      );
       this.toolbarCards.pulse.detail.setText(this.pulseCooldown <= 0 ? "Q | Ready" : `Q | ${this.pulseCooldown.toFixed(1)}s`);
       this.toolbarCards.arc.detail.setText(this.arcCooldown <= 0 ? "E | Ready" : `E | ${this.arcCooldown.toFixed(1)}s`);
       this.toolbarCards.dash.detail.setText(this.dashCooldown <= 0 ? "Shift / RMB | Ready" : `Shift | ${this.dashCooldown.toFixed(1)}s`);
@@ -1313,9 +1384,9 @@ export class MissionScene extends Phaser.Scene {
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
     return Boolean(
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
-      || this.pulseButton?.container.getBounds().contains(pointer.x, pointer.y)
-      || this.arcButton?.container.getBounds().contains(pointer.x, pointer.y)
-      || this.dashButton?.container.getBounds().contains(pointer.x, pointer.y),
+      || (this.pulseButton?.container.visible && this.pulseButton.container.getBounds().contains(pointer.x, pointer.y))
+      || (this.arcButton?.container.visible && this.arcButton.container.getBounds().contains(pointer.x, pointer.y))
+      || (this.dashButton?.container.visible && this.dashButton.container.getBounds().contains(pointer.x, pointer.y)),
     );
   }
 
@@ -1416,6 +1487,69 @@ export class MissionScene extends Phaser.Scene {
     return nearest;
   }
 
+  private getAimDirection(allowAssist: boolean): Phaser.Math.Vector2 {
+    const direction = this.touchMode
+      ? this.aimVector.clone()
+      : this.getDesktopAimVector();
+
+    if (!Number.isFinite(direction.x) || !Number.isFinite(direction.y) || direction.lengthSq() === 0) {
+      direction.set(1, 0);
+    } else {
+      direction.normalize();
+    }
+
+    if (!allowAssist || !gameSession.settings.controls.autoAim) {
+      return direction;
+    }
+
+    return this.getAutoAimDirection(direction) ?? direction;
+  }
+
+  private getDesktopAimVector(): Phaser.Math.Vector2 {
+    const pointer = this.input.activePointer;
+    if (!pointer.isDown && pointer.x === 0 && pointer.y === 0) {
+      return new Phaser.Math.Vector2(this.lookPoint.x - this.player.x, this.lookPoint.y - this.player.y);
+    }
+
+    const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    this.lookPoint.set(worldPoint.x, worldPoint.y);
+    return new Phaser.Math.Vector2(worldPoint.x - this.player.x, worldPoint.y - this.player.y);
+  }
+
+  private getAutoAimDirection(direction: Phaser.Math.Vector2): Phaser.Math.Vector2 | null {
+    let nearest: Enemy | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    const normalized = direction.clone().normalize();
+
+    for (const enemy of this.enemies) {
+      const toEnemy = new Phaser.Math.Vector2(enemy.sprite.x - this.player.x, enemy.sprite.y - this.player.y);
+      const distance = toEnemy.length();
+      if (distance <= 0 || distance > 420) {
+        continue;
+      }
+
+      const aimVector = toEnemy.normalize();
+      const angle = Math.abs(Phaser.Math.Angle.Wrap(aimVector.angle() - normalized.angle()));
+      if (angle > 0.52) {
+        continue;
+      }
+
+      const score = distance + angle * 220;
+      if (score >= bestScore) {
+        continue;
+      }
+
+      bestScore = score;
+      nearest = enemy;
+    }
+
+    if (!nearest) {
+      return null;
+    }
+
+    return new Phaser.Math.Vector2(nearest.sprite.x - this.player.x, nearest.sprite.y - this.player.y).normalize();
+  }
+
   private setExitDoorOpen(open: boolean, label: string): void {
     if (!this.exitDoor) {
       return;
@@ -1436,19 +1570,21 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private createAbilityCard(x: number, y: number, titleText: string, detailText: string): AbilityCard {
-    const frame = this.pin(this.add.rectangle(x, y, 186, 48, 0x17314f, 0.94)
+    const frame = this.pin(this.add.rectangle(x, y, 196, 50, 0x17314f, 0.94)
       .setStrokeStyle(2, 0x6ea2e5, 0.78));
-    const title = this.pin(this.add.text(x - 76, y - 17, titleText, {
+    const title = this.pin(this.add.text(x - 84, y - 18, titleText, {
       fontFamily: "Arial",
-      fontSize: "18px",
+      fontSize: "16px",
       color: "#f5fbff",
       fontStyle: "bold",
     }));
-    const detail = this.pin(this.add.text(x - 76, y + 3, detailText, {
+    const detail = this.pin(this.add.text(x - 84, y + 3, detailText, {
       fontFamily: "Arial",
-      fontSize: "14px",
+      fontSize: "13px",
       color: "#cfe0f7",
     }));
+
+    this.desktopUiObjects.push(frame, title, detail);
 
     return { frame, title, detail };
   }
@@ -1471,6 +1607,65 @@ export class MissionScene extends Phaser.Scene {
     this.stageObjects = [];
     this.hallwayZones = [];
   }
+
+  private syncInputMode(): void {
+    this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
+    const desktopVisible = !this.touchMode;
+
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
+    });
+    this.desktopUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(desktopVisible);
+    });
+
+    this.pulseButton?.setInputEnabled(this.touchMode);
+    this.arcButton?.setInputEnabled(this.touchMode);
+    this.dashButton?.setInputEnabled(this.touchMode);
+
+    if (!this.touchMode) {
+      this.movePointerId = null;
+      this.aimPointerId = null;
+      this.moveVector.set(0, 0);
+      this.resetMoveStick();
+      this.resetAimStick();
+    }
+  }
+
+  private reportDesktopInput(): void {
+    if (!this.touchCapable) {
+      return;
+    }
+
+    gameSession.reportInputMode("desktop", this.touchCapable);
+  }
+
+  private isTouchPointer(pointer: Phaser.Input.Pointer): boolean {
+    const augmentedPointer = pointer as Phaser.Input.Pointer & { wasTouch?: boolean };
+    const event = pointer.event as (PointerEvent & { pointerType?: string }) | undefined;
+    return Boolean(augmentedPointer.wasTouch || event?.pointerType === "touch");
+  }
+
+  getDebugSnapshot(): Record<string, unknown> {
+    return {
+      touchMode: this.touchMode,
+      stageIndex: this.stageIndex,
+      stageName: this.currentStage?.name ?? null,
+      missionComplete: this.missionComplete,
+      playerHp: this.playerHp,
+      player: {
+        x: Math.round(this.player.x),
+        y: Math.round(this.player.y),
+      },
+      enemies: this.enemies.map((enemy) => ({
+        kind: enemy.kind,
+        hp: Math.round(enemy.hp),
+        x: Math.round(enemy.sprite.x),
+        y: Math.round(enemy.sprite.y),
+      })),
+    };
+  }
+
   private pin<T extends Phaser.GameObjects.GameObject>(object: T): T {
     const scrollable = object as T & { setScrollFactor?: (x: number, y?: number) => T };
     scrollable.setScrollFactor?.(0);

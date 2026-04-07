@@ -1,6 +1,46 @@
 import Phaser from "phaser";
 
 export type GraphicsQuality = "High" | "Balanced" | "Performance";
+export type InputModePreference = "Auto" | "Desktop" | "Touch";
+export type ResolvedInputMode = "desktop" | "touch";
+export type GameplayDifficulty = "Novice" | "Knight" | "Legend" | "Mythic";
+
+export type DifficultyProfile = {
+  enemyHp: number;
+  enemyDamage: number;
+  enemySpeed: number;
+  enemyCooldown: number;
+};
+
+export const INPUT_MODE_OPTIONS: InputModePreference[] = ["Auto", "Desktop", "Touch"];
+export const DIFFICULTY_OPTIONS: GameplayDifficulty[] = ["Novice", "Knight", "Legend", "Mythic"];
+
+export const DIFFICULTY_PROFILES: Record<GameplayDifficulty, DifficultyProfile> = {
+  Novice: {
+    enemyHp: 0.82,
+    enemyDamage: 0.78,
+    enemySpeed: 0.92,
+    enemyCooldown: 1.12,
+  },
+  Knight: {
+    enemyHp: 0.9,
+    enemyDamage: 0.9,
+    enemySpeed: 0.96,
+    enemyCooldown: 1.06,
+  },
+  Legend: {
+    enemyHp: 1,
+    enemyDamage: 1,
+    enemySpeed: 1,
+    enemyCooldown: 1,
+  },
+  Mythic: {
+    enemyHp: 1.16,
+    enemyDamage: 1.18,
+    enemySpeed: 1.08,
+    enemyCooldown: 0.9,
+  },
+};
 
 export type GameSettings = {
   graphics: {
@@ -16,9 +56,14 @@ export type GameSettings = {
   };
   controls: {
     move: "WASD / Left Stick";
-    aim: "Mouse / Right Stick";
-    fireMode: "Hold To Fire / Auto Fire On Aim";
+    aim: "Mouse / Aim Stick";
+    attack: "LMB Hold / Aim Stick Auto";
     pause: "Esc / Pause Button";
+    inputMode: InputModePreference;
+    autoAim: boolean;
+  };
+  gameplay: {
+    difficulty: GameplayDifficulty;
   };
 };
 
@@ -77,9 +122,14 @@ const DEFAULT_SETTINGS: GameSettings = {
   },
   controls: {
     move: "WASD / Left Stick",
-    aim: "Mouse / Right Stick",
-    fireMode: "Hold To Fire / Auto Fire On Aim",
+    aim: "Mouse / Aim Stick",
+    attack: "LMB Hold / Aim Stick Auto",
     pause: "Esc / Pause Button",
+    inputMode: "Auto",
+    autoAim: true,
+  },
+  gameplay: {
+    difficulty: "Knight",
   },
 };
 
@@ -155,6 +205,9 @@ export class GameSession extends Phaser.Events.EventEmitter {
   pendingReward: RewardData | null = null;
   private activeSlotIndex = 0;
   private saveSlots: Array<SaveData | null> = createEmptySlots();
+  private hasTouchInput = false;
+  private prefersCoarsePointer = false;
+  private lastInputMode: ResolvedInputMode = "desktop";
 
   bootstrap(): void {
     this.loadSettings();
@@ -183,6 +236,61 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getActiveSlotIndex(): number {
     return this.activeSlotIndex;
+  }
+
+  configureDeviceContext(hasTouchInput: boolean, prefersCoarsePointer: boolean): void {
+    const previousMode = this.getResolvedInputMode();
+    this.hasTouchInput = hasTouchInput;
+    this.prefersCoarsePointer = prefersCoarsePointer;
+
+    if (!hasTouchInput) {
+      this.lastInputMode = "desktop";
+    } else if (this.settings.controls.inputMode === "Auto") {
+      this.lastInputMode = prefersCoarsePointer ? "touch" : this.lastInputMode;
+    }
+
+    const resolvedMode = this.getResolvedInputMode();
+    if (resolvedMode !== previousMode) {
+      this.emit("input-mode-changed", resolvedMode);
+    }
+  }
+
+  getResolvedInputMode(hasTouchInput = this.hasTouchInput): ResolvedInputMode {
+    if (!hasTouchInput) {
+      return "desktop";
+    }
+
+    if (this.settings.controls.inputMode === "Desktop") {
+      return "desktop";
+    }
+
+    if (this.settings.controls.inputMode === "Touch") {
+      return "touch";
+    }
+
+    return this.prefersCoarsePointer ? "touch" : this.lastInputMode;
+  }
+
+  shouldUseTouchUi(hasTouchInput = this.hasTouchInput): boolean {
+    return hasTouchInput && this.getResolvedInputMode(hasTouchInput) === "touch";
+  }
+
+  reportInputMode(mode: ResolvedInputMode, hasTouchInput = this.hasTouchInput): void {
+    if (mode === "touch" && !hasTouchInput) {
+      return;
+    }
+
+    const previousMode = this.getResolvedInputMode(hasTouchInput);
+    this.lastInputMode = mode;
+    const resolvedMode = this.getResolvedInputMode(hasTouchInput);
+
+    if (resolvedMode !== previousMode) {
+      this.emit("input-mode-changed", resolvedMode);
+    }
+  }
+
+  getDifficultyProfile(): DifficultyProfile {
+    return DIFFICULTY_PROFILES[this.settings.gameplay.difficulty];
   }
 
   getPreferredNewGameSlot(): number {
@@ -315,6 +423,27 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.persistSettings();
   }
 
+  setInputMode(value: InputModePreference): void {
+    const previousMode = this.getResolvedInputMode();
+    this.settings.controls.inputMode = value;
+    this.persistSettings();
+
+    const resolvedMode = this.getResolvedInputMode();
+    if (resolvedMode !== previousMode) {
+      this.emit("input-mode-changed", resolvedMode);
+    }
+  }
+
+  setAutoAim(value: boolean): void {
+    this.settings.controls.autoAim = value;
+    this.persistSettings();
+  }
+
+  setDifficulty(value: GameplayDifficulty): void {
+    this.settings.gameplay.difficulty = value;
+    this.persistSettings();
+  }
+
   private loadSaveSlots(): void {
     if (typeof window === "undefined") {
       this.saveSlots = createEmptySlots();
@@ -377,6 +506,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
         graphics: { ...DEFAULT_SETTINGS.graphics, ...parsed.graphics },
         audio: { ...DEFAULT_SETTINGS.audio, ...parsed.audio },
         controls: { ...DEFAULT_SETTINGS.controls, ...parsed.controls },
+        gameplay: { ...DEFAULT_SETTINGS.gameplay, ...parsed.gameplay },
       };
     } catch {
       this.settings = clone(DEFAULT_SETTINGS);

@@ -9,6 +9,12 @@ export class BootScene extends Phaser.Scene {
 
   create(): void {
     gameSession.bootstrap();
+    gameSession.configureDeviceContext(
+      this.sys.game.device.input.touch,
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia("(pointer: coarse)").matches
+        : false,
+    );
     this.input.mouse?.disableContextMenu();
     this.scene.start("main-menu");
   }

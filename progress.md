@@ -1,0 +1,7 @@
+Original prompt: i want to make a game. ive been building it in chatgpt right now and we are still in the early stages. tell me what you need from em to continue. the file i will give you is the general blueprint/idea/scope/style/ etc of the game.
+
+- 2026-04-06: Started a systems pass for versioning, input-mode separation, gameplay settings, and combat feel cleanup.
+- Goal for this chunk: centralize visible version info, add gameplay/options hooks that stay data-driven, and separate desktop/touch presentation so future content drops stay plug-and-play.
+- Implemented: centralized build/version info (`v0.0.11`), input mode preference + auto-detect plumbing, gameplay difficulty presets, desktop-only mission toolbar, desktop free-aim cleanup, and lighter decorative density for hub/mission scenes.
+- Verification: `npm run build` passes. Local Playwright verification reached `hub` from `main-menu` and debug state reported `touchMode: false` on desktop path. Canvas screenshots were black in Playwright even in headed mode, so the structured `render_game_to_text` hook was added as a reliable fallback for future automated checks.
+- TODO next: use the new gameplay/input settings in a broader UI polish pass, and expand automated coverage deeper into the mission flow once the browser client can drive the prototype controls more directly.

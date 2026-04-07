@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { GAME_CODE, GAME_MILESTONE, GAME_VERSION } from "../core/buildInfo";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
@@ -86,13 +87,13 @@ export class MainMenuScene extends Phaser.Scene {
     this.loadButton = buttons[1];
     this.loadButton.setEnabled(gameSession.hasSaveData());
 
-    this.add.text(162, 628, "Current milestone: foundation + first mission slice", {
+    this.add.text(162, 628, `Current milestone: ${GAME_MILESTONE}`, {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#98aed1",
     });
 
-    this.add.text(958, 662, "loe_col_v0.10", {
+    this.add.text(930, 662, `${GAME_CODE} ${GAME_VERSION}`, {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#8aa3c7",
@@ -244,5 +245,14 @@ export class MainMenuScene extends Phaser.Scene {
   private showCredits(visible: boolean): void {
     this.creditsPanel?.setVisible(visible);
     this.creditsCloseButton?.setInputEnabled(visible);
+  }
+
+  getDebugSnapshot(): Record<string, unknown> {
+    return {
+      version: `${GAME_CODE} ${GAME_VERSION}`,
+      milestone: GAME_MILESTONE,
+      hasSaves: gameSession.hasSaveData(),
+      creditsVisible: this.creditsPanel?.visible ?? false,
+    };
   }
 }

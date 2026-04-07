@@ -1,9 +1,16 @@
 import Phaser from "phaser";
 
-import { gameSession, type GraphicsQuality } from "../core/session";
+import {
+  DIFFICULTY_OPTIONS,
+  INPUT_MODE_OPTIONS,
+  gameSession,
+  type GameplayDifficulty,
+  type GraphicsQuality,
+  type InputModePreference,
+} from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
-type SettingsTab = "graphics" | "audio" | "controls";
+type SettingsTab = "graphics" | "audio" | "controls" | "gameplay";
 
 type SettingsOverlayOptions = {
   scene: Phaser.Scene;
@@ -19,6 +26,8 @@ type RowUi = {
 const QUALITY_OPTIONS: GraphicsQuality[] = ["High", "Balanced", "Performance"];
 const BRIGHTNESS_OPTIONS: Array<90 | 100 | 110> = [90, 100, 110];
 const AUDIO_OPTIONS: Array<100 | 80 | 60 | 40 | 20 | 0> = [100, 80, 60, 40, 20, 0];
+const INPUT_OPTIONS: InputModePreference[] = INPUT_MODE_OPTIONS;
+const GAMEPLAY_OPTIONS: GameplayDifficulty[] = DIFFICULTY_OPTIONS;
 
 function cycleValue<T>(values: readonly T[], current: T): T {
   const index = values.indexOf(current);
@@ -47,7 +56,7 @@ export class SettingsOverlay {
       .setDepth(80);
 
     this.panel = scene.add
-      .rectangle(640, 360, 760, 500, 0x091321, 0.98)
+      .rectangle(640, 360, 760, 540, 0x091321, 0.98)
       .setStrokeStyle(3, 0x79abed, 0.85)
       .setDepth(81);
 
@@ -106,9 +115,18 @@ export class SettingsOverlay {
         onClick: () => this.setTab("controls"),
         depth: 82,
       }),
+      gameplay: createMenuButton({
+        scene,
+        x: 876,
+        y: 216,
+        width: 150,
+        label: "Gameplay",
+        onClick: () => this.setTab("gameplay"),
+        depth: 82,
+      }),
     };
 
-    this.rows = Array.from({ length: 4 }, (_, index) => {
+    this.rows = Array.from({ length: 5 }, (_, index) => {
       const y = 290 + index * 58;
       const label = scene.add.text(298, y, "", {
         fontFamily: "Arial",
@@ -139,6 +157,7 @@ export class SettingsOverlay {
       this.tabButtons.graphics.container,
       this.tabButtons.audio.container,
       this.tabButtons.controls.container,
+      this.tabButtons.gameplay.container,
       ...this.rows.flatMap((row) => [row.label, row.valueButton.container]),
     ]).setDepth(80);
 
@@ -172,17 +191,21 @@ export class SettingsOverlay {
     this.tabButtons.graphics.setInputEnabled(enabled);
     this.tabButtons.audio.setInputEnabled(enabled);
     this.tabButtons.controls.setInputEnabled(enabled);
+    this.tabButtons.gameplay.setInputEnabled(enabled);
     this.rows.forEach((row) => row.valueButton.setInputEnabled(enabled));
   }
 
   private refresh(): void {
     const graphics = gameSession.settings.graphics;
     const audio = gameSession.settings.audio;
+    const controls = gameSession.settings.controls;
+    const gameplay = gameSession.settings.gameplay;
 
     const tabAccent = (tab: SettingsTab): void => {
       this.tabButtons.graphics.label.setColor(tab === "graphics" ? "#ffffff" : "#d5e6ff");
       this.tabButtons.audio.label.setColor(tab === "audio" ? "#ffffff" : "#d5e6ff");
       this.tabButtons.controls.label.setColor(tab === "controls" ? "#ffffff" : "#d5e6ff");
+      this.tabButtons.gameplay.label.setColor(tab === "gameplay" ? "#ffffff" : "#d5e6ff");
     };
 
     tabAccent(this.currentTab);
@@ -204,6 +227,7 @@ export class SettingsOverlay {
         gameSession.setHitFlash(!graphics.hitFlash);
         this.refresh();
       }, true);
+      this.setRow(4, "", "", () => undefined, false);
 
       this.info.setText([
         "Browser testing stays responsive to your screen, so this menu focuses on visual quality, brightness, and feedback intensity.",
@@ -226,6 +250,7 @@ export class SettingsOverlay {
         this.refresh();
       }, true);
       this.setRow(3, "Mix Profile", "Combat Focus", () => undefined, false);
+      this.setRow(4, "", "", () => undefined, false);
 
       this.info.setText([
         "Sound sliders are wired into saveable settings now, even though the slice is still light on real audio assets.",
@@ -234,15 +259,55 @@ export class SettingsOverlay {
       return;
     }
 
-    this.setRow(0, "Move", gameSession.settings.controls.move, () => undefined, false);
-    this.setRow(1, "Aim", gameSession.settings.controls.aim, () => undefined, false);
-    this.setRow(2, "Fire", gameSession.settings.controls.fireMode, () => undefined, false);
-    this.setRow(3, "Pause", gameSession.settings.controls.pause, () => undefined, false);
+    if (this.currentTab === "controls") {
+      this.setRow(0, "Input Mode", controls.inputMode, () => {
+        gameSession.setInputMode(cycleValue(INPUT_OPTIONS, controls.inputMode));
+        this.refresh();
+      }, true);
+      this.setRow(1, "Auto Aim", controls.autoAim ? "On" : "Off", () => {
+        gameSession.setAutoAim(!controls.autoAim);
+        this.refresh();
+      }, true);
+      this.setRow(2, "Move", controls.move, () => undefined, false);
+      this.setRow(3, "Aim", controls.aim, () => undefined, false);
+      this.setRow(4, "Attack", controls.attack, () => undefined, false);
+
+      this.info.setText([
+        "Auto switches HUD presentation between desktop and touch based on the last clear input you used.",
+        "You can also lock the game to desktop or touch if you want a fixed control layout while testing.",
+      ]);
+      return;
+    }
+
+    this.setRow(0, "Difficulty", gameplay.difficulty, () => {
+      gameSession.setDifficulty(cycleValue(GAMEPLAY_OPTIONS, gameplay.difficulty));
+      this.refresh();
+    }, true);
+    this.setRow(1, "Current Preset", this.describeDifficulty(gameplay.difficulty), () => undefined, false);
+    this.setRow(2, "Pause / Save", controls.pause, () => undefined, false);
+    this.setRow(3, "Mission Saves", "Disabled", () => undefined, false);
+    this.setRow(4, "Story Hooks", "Data-Driven", () => undefined, false);
 
     this.info.setText([
-      "This slice uses fixed, readable default controls so we can focus on gameplay first.",
-      "Custom rebinding can come later once the combat loop and UI flow settle down.",
+      "Difficulty now adjusts enemy health, damage, speed, and attack cadence instead of living as hardcoded scene values.",
+      "That keeps combat tuning plug-and-play while we keep layering in missions, dialogue, and story logic.",
     ]);
+  }
+
+  private describeDifficulty(value: GameplayDifficulty): string {
+    if (value === "Novice") {
+      return "Easier enemy pressure";
+    }
+
+    if (value === "Knight") {
+      return "Default balanced slice";
+    }
+
+    if (value === "Legend") {
+      return "Original combat pressure";
+    }
+
+    return "High enemy pressure";
   }
 
   private setRow(
@@ -256,6 +321,8 @@ export class SettingsOverlay {
     row.label.setText(label);
     row.valueButton.setLabel(value);
     row.valueButton.setEnabled(enabled);
+    row.label.setAlpha(label ? 1 : 0);
+    row.valueButton.container.setAlpha(label ? 1 : 0);
     row.valueButton.setOnClick(() => {
       if (!enabled) {
         return;

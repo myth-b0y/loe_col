@@ -10,7 +10,7 @@ export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
 
 export function createGame(parent: string): Phaser.Game {
-  return new Phaser.Game({
+  const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent,
     width: GAME_WIDTH,
@@ -34,5 +34,25 @@ export function createGame(parent: string): Phaser.Game {
       },
     },
   });
+
+  if (typeof window !== "undefined") {
+    const debugWindow = window as Window & {
+      __loeGame?: Phaser.Game;
+      render_game_to_text?: () => string;
+    };
+    debugWindow.__loeGame = game;
+    debugWindow.render_game_to_text = () => {
+      const activeScene = game.scene.getScenes(true).at(-1) as
+        | (Phaser.Scene & { getDebugSnapshot?: () => unknown })
+        | undefined;
+
+      return JSON.stringify({
+        activeScene: activeScene?.scene.key ?? null,
+        snapshot: activeScene?.getDebugSnapshot?.() ?? null,
+      });
+    };
+  }
+
+  return game;
 }
 
