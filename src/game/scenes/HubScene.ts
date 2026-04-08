@@ -5,6 +5,7 @@ import {
   STORY_COMPANIONS,
   canCompanionOccupySlot,
   getCompanionDefinition,
+  getCompanionRoleDisplay,
   getFormationSlot,
   type CompanionDefinition,
   type CompanionId,
@@ -306,7 +307,7 @@ export class HubScene extends Phaser.Scene {
           .setDepth(8)
         : undefined;
 
-      const label = this.add.text(anchor.x, anchor.y + 26, `${companion.name}\n${companion.roleLabel}`, {
+      const label = this.add.text(anchor.x, anchor.y + 26, `${companion.name}\n${getCompanionRoleDisplay(companion)}`, {
         fontFamily: "Arial",
         fontSize: "12px",
         color: "#e8f3ff",
@@ -317,7 +318,7 @@ export class HubScene extends Phaser.Scene {
       return {
         id: companion.id,
         name: companion.name,
-        roleLabel: companion.roleLabel,
+        roleLabel: getCompanionRoleDisplay(companion),
         primaryGear: companion.primaryGear,
         supportGear: companion.supportGear,
         anchor,
@@ -654,7 +655,7 @@ export class HubScene extends Phaser.Scene {
         color: "#f7fbff",
         fontStyle: "bold",
       }).setOrigin(0.5).setDepth(45);
-      const detail = this.add.text(0, 92, companion.roleLabel, {
+      const detail = this.add.text(0, 92, getCompanionRoleDisplay(companion), {
         fontFamily: "Arial",
         fontSize: "13px",
         color: "#cfe0f7",
@@ -1195,7 +1196,7 @@ export class HubScene extends Phaser.Scene {
       card.portraitBody.setScale(selected ? 1.03 : hovered ? 1.015 : 1);
       card.title.setColor(selected || hovered || assigned ? "#f7fbff" : "#d5e0f0");
       card.detail.setColor(selected || hovered ? "#dbeaff" : "#b3c7de");
-      card.detail.setText(card.companion.roleLabel);
+      card.detail.setText(getCompanionRoleDisplay(card.companion));
       card.slotText.setColor(selected ? "#f4fbff" : assigned ? "#cfe4ff" : hovered ? "#bdd8f8" : "#7d90a8");
       card.slotText.setText(assigned ? `Assigned: ${slotLabel}` : selected ? "Choose a slot" : "Unassigned");
     });

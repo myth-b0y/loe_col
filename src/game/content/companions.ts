@@ -23,6 +23,7 @@ export type CompanionDefinition = {
   id: CompanionId;
   name: string;
   role: CompanionRole;
+  roleBadge: string;
   roleLabel: string;
   attackStyle: CompanionAttackStyle;
   coreColor: number;
@@ -48,6 +49,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     id: "sera",
     name: "Sera",
     role: "dps",
+    roleBadge: "*",
     roleLabel: "Covering Fire",
     attackStyle: "ranged",
     coreColor: 0xf3cc7a,
@@ -71,6 +73,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     id: "rook",
     name: "Rook",
     role: "tank",
+    roleBadge: "[]",
     roleLabel: "Shield Vanguard",
     attackStyle: "shield",
     coreColor: 0x79d98e,
@@ -94,6 +97,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     id: "vex",
     name: "Vex",
     role: "dps",
+    roleBadge: "*",
     roleLabel: "Rift Skirmisher",
     attackStyle: "melee",
     coreColor: 0xff7979,
@@ -117,6 +121,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     id: "lyra",
     name: "Lyra",
     role: "healer",
+    roleBadge: "+",
     roleLabel: "Tide Medic",
     attackStyle: "healer",
     coreColor: 0x76c6ff,
@@ -139,21 +144,22 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
   {
     id: "orin",
     name: "Orin",
-    role: "dps",
-    roleLabel: "Hex Channeler",
-    attackStyle: "caster",
+    role: "healer",
+    roleBadge: "+",
+    roleLabel: "Astral Weaver",
+    attackStyle: "healer",
     coreColor: 0xb987ff,
     trimColor: 0xf1e1ff,
     projectileColor: 0xd7b4ff,
     radius: 12,
-    maxHp: 46,
-    maxShield: 32,
+    maxHp: 44,
+    maxShield: 30,
     formationSide: 1,
     formationDepth: -34,
     aggroWeight: 0.84,
-    primaryGear: "Gloam Focus",
-    supportGear: "Runed Veil",
-    abilityLabel: "Hex Arc",
+    primaryGear: "Astral Loom",
+    supportGear: "Bloom Veil",
+    abilityLabel: "Astral Mend",
     hubPosition: {
       x: 840,
       y: 554,
@@ -163,6 +169,7 @@ export const STORY_COMPANIONS: readonly CompanionDefinition[] = [
     id: "ember",
     name: "Ember",
     role: "dps",
+    roleBadge: "*",
     roleLabel: "Breach Demolitions",
     attackStyle: "demolition",
     coreColor: 0xffa35c,
@@ -265,4 +272,8 @@ export function canCompanionOccupySlot(companion: CompanionDefinition, slot: For
   }
 
   return true;
+}
+
+export function getCompanionRoleDisplay(companion: CompanionDefinition): string {
+  return `${companion.roleBadge} ${companion.roleLabel}`;
 }

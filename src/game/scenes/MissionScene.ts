@@ -13,7 +13,13 @@ import {
   type MissionStage,
   type RestStage,
 } from "../content/missions";
-import { getFormationSlot, type CompanionAttackStyle, type CompanionId, type FormationSlotId } from "../content/companions";
+import {
+  getCompanionRoleDisplay,
+  getFormationSlot,
+  type CompanionAttackStyle,
+  type CompanionId,
+  type FormationSlotId,
+} from "../content/companions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -262,6 +268,8 @@ export class MissionScene extends Phaser.Scene {
     arc: AbilityCard;
     dash: AbilityCard;
   };
+  private hudRefreshCooldown = 0;
+  private activeTransientEffects = 0;
 
   constructor() {
     super("mission");
@@ -295,17 +303,26 @@ export class MissionScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameSession.off("settings-changed", syncInputMode);
       gameSession.off("input-mode-changed", syncInputMode);
+      this.time.removeAllEvents();
+      this.tweens.killAll();
+      this.clearBullets();
+      this.clearEnemies();
+      this.clearStageObjects();
       this.brightnessLayer?.destroy();
     });
   }
 
   update(_time: number, delta: number): void {
+    const dt = delta / 1000;
     if (this.logbookOverlay?.isVisible()) {
-      this.updateHudState();
+      this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
+      if (this.hudRefreshCooldown <= 0) {
+        this.updateHudState();
+        this.hudRefreshCooldown = 0.05;
+      }
       return;
     }
 
-    const dt = delta / 1000;
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     this.pulseCooldown = Math.max(0, this.pulseCooldown - dt);
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
@@ -327,7 +344,11 @@ export class MissionScene extends Phaser.Scene {
     this.updateEnemies(dt);
     this.updateBullets(dt);
     this.updateStageState();
-    this.updateHudState();
+    this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
+    if (this.hudRefreshCooldown <= 0) {
+      this.updateHudState();
+      this.hudRefreshCooldown = 0.05;
+    }
   }
 
   private resetMissionRuntime(): void {
@@ -386,6 +407,8 @@ export class MissionScene extends Phaser.Scene {
     this.autoAimTarget = null;
     this.moveKeys = undefined;
     this.toolbarCards = undefined;
+    this.hudRefreshCooldown = 0;
+    this.activeTransientEffects = 0;
   }
 
   private createActors(): void {
@@ -441,7 +464,7 @@ export class MissionScene extends Phaser.Scene {
       return {
         id: companion.id,
         name: companion.name,
-        roleLabel: companion.roleLabel,
+        roleLabel: getCompanionRoleDisplay(companion),
         abilityLabel: companion.abilityLabel,
         attackStyle: companion.attackStyle,
         coreColor: companion.coreColor,
@@ -1781,6 +1804,10 @@ export class MissionScene extends Phaser.Scene {
     duration: number,
     width: number,
   ): void {
+    if (!this.reserveTransientEffect()) {
+      return;
+    }
+
     const beam = this.add.rectangle(
       (fromX + toX) / 2,
       (fromY + toY) / 2,
@@ -1796,11 +1823,18 @@ export class MissionScene extends Phaser.Scene {
       alpha: 0,
       scaleY: 1.5,
       duration,
-      onComplete: () => beam.destroy(),
+      onComplete: () => {
+        beam.destroy();
+        this.releaseTransientEffect();
+      },
     });
   }
 
   private spawnCombatLight(x: number, y: number, color: number, scale: number, duration: number): void {
+    if (!this.reserveTransientEffect()) {
+      return;
+    }
+
     const flash = this.add.circle(x, y, 26, color, 0.22).setDepth(13);
     this.tweens.add({
       targets: flash,
@@ -1808,7 +1842,10 @@ export class MissionScene extends Phaser.Scene {
       scaleX: 1 + scale,
       scaleY: 1 + scale,
       duration,
-      onComplete: () => flash.destroy(),
+      onComplete: () => {
+        flash.destroy();
+        this.releaseTransientEffect();
+      },
     });
   }
 
@@ -2477,8 +2514,17 @@ export class MissionScene extends Phaser.Scene {
   private spawnLootBurst(x: number, y: number): void {
     retroSfx.play("loot-burst", { volume: 0.9 });
     const colors = [0xffd67a, 0x8fe8ff, 0xc8a7ff, 0xffb27d];
-    for (let index = 0; index < 9; index += 1) {
-      const angle = (Math.PI * 2 * index) / 9;
+    const shardCount = gameSession.settings.graphics.quality === "Performance"
+      ? 4
+      : gameSession.settings.graphics.quality === "Balanced"
+        ? 6
+        : 9;
+    for (let index = 0; index < shardCount; index += 1) {
+      if (!this.reserveTransientEffect()) {
+        break;
+      }
+
+      const angle = (Math.PI * 2 * index) / Math.max(1, shardCount);
       const shard = this.add.circle(x, y, 6 + (index % 2), colors[index % colors.length], 0.92).setDepth(15);
       this.tweens.add({
         targets: shard,
@@ -2488,8 +2534,15 @@ export class MissionScene extends Phaser.Scene {
         scaleX: 1.45,
         scaleY: 1.45,
         duration: 460,
-        onComplete: () => shard.destroy(),
+        onComplete: () => {
+          shard.destroy();
+          this.releaseTransientEffect();
+        },
       });
+    }
+
+    if (!this.reserveTransientEffect()) {
+      return;
     }
 
     const rewardText = this.add.text(x, y - 26, "Loot Burst", {
@@ -2505,7 +2558,10 @@ export class MissionScene extends Phaser.Scene {
       y: y - 58,
       alpha: 0,
       duration: 520,
-      onComplete: () => rewardText.destroy(),
+      onComplete: () => {
+        rewardText.destroy();
+        this.releaseTransientEffect();
+      },
     });
   }
 
@@ -2659,8 +2715,8 @@ export class MissionScene extends Phaser.Scene {
     const companionsEnabled = gameSession.getModeRules().companionsEnabled;
     this.hpFill.width = PLAYER_BAR_WIDTH * (this.playerHp / this.playerMaxHp);
     this.shieldFill.width = PLAYER_BAR_WIDTH * (this.playerShield / Math.max(1, this.playerMaxShield));
-    this.hpValueText.setText(`${Math.ceil(this.playerHp)} / ${this.playerMaxHp}`);
-    this.shieldValueText.setText(`${Math.ceil(this.playerShield)} / ${this.playerMaxShield}`);
+    this.setTextIfChanged(this.hpValueText, `${Math.ceil(this.playerHp)} / ${this.playerMaxHp}`);
+    this.setTextIfChanged(this.shieldValueText, `${Math.ceil(this.playerShield)} / ${this.playerMaxShield}`);
     this.playerShieldRing.setVisible(this.playerShield > 0.5);
     this.playerShieldRing.setAlpha(this.playerShield > 0 ? 0.84 : 0);
     this.companions.forEach((companion) => {
@@ -2668,18 +2724,17 @@ export class MissionScene extends Phaser.Scene {
       companion.hud.shieldFill.width = companionsEnabled ? COMPANION_BAR_WIDTH * (companion.shield / Math.max(1, companion.maxShield)) : 0;
       companion.hud.hpValueText.setAlpha(companionsEnabled ? 1 : 0.32);
       companion.hud.shieldValueText.setAlpha(companionsEnabled ? 1 : 0.32);
-      companion.hud.hpValueText.setText(companionsEnabled ? `${Math.ceil(companion.hp)} / ${companion.maxHp}` : "--");
-      companion.hud.shieldValueText.setText(companionsEnabled ? `${Math.ceil(companion.shield)} / ${companion.maxShield}` : "--");
+      this.setTextIfChanged(companion.hud.hpValueText, companionsEnabled ? `${Math.ceil(companion.hp)} / ${companion.maxHp}` : "--");
+      this.setTextIfChanged(companion.hud.shieldValueText, companionsEnabled ? `${Math.ceil(companion.shield)} / ${companion.maxShield}` : "--");
       companion.hud.stateText.setAlpha(companionsEnabled ? 1 : 0.32);
-      companion.hud.stateText.setText(
-        !companionsEnabled
-          ? `${companion.name} | Offline`
-          : companion.downed
-            ? this.canReviveCompanion(companion)
-              ? `${companion.name} | Hold ${this.touchMode ? "Revive" : "F"} ${Math.max(0, COMPANION_REVIVE_HOLD_TIME - companion.reviveProgress).toFixed(1)}s`
-              : `${companion.name} | Downed - Move Close`
-            : `${companion.name} | ${companion.abilityLabel} ${companion.cooldown <= 0 ? "Ready" : `${companion.cooldown.toFixed(1)}s`}`,
-      );
+      const stateLabel = !companionsEnabled
+        ? `${companion.name} | Offline`
+        : companion.downed
+          ? this.canReviveCompanion(companion)
+            ? `${companion.name} | Hold ${this.touchMode ? "Revive" : "F"} ${Math.max(0, COMPANION_REVIVE_HOLD_TIME - companion.reviveProgress).toFixed(1)}s`
+            : `${companion.name} | Downed - Move Close`
+          : `${companion.name} | ${companion.abilityLabel} ${companion.cooldown <= 0 ? "Ready" : `${companion.cooldown.toFixed(1)}s`}`;
+      this.setTextIfChanged(companion.hud.stateText, stateLabel);
       companion.shieldRing.setVisible(companion.downed || (this.canCompanionBeTargeted(companion) && companion.shield > 0.5));
     });
 
@@ -2701,10 +2756,10 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (this.toolbarCards) {
-      this.toolbarCards.fire.detail.setText(this.getPrimaryFireDetail(combatLocked));
-      this.toolbarCards.pulse.detail.setText(this.getCooldownDetail("Q", this.pulseCooldown, combatLocked));
-      this.toolbarCards.arc.detail.setText(this.getCooldownDetail("E", this.arcCooldown, combatLocked));
-      this.toolbarCards.dash.detail.setText(this.getCooldownDetail("Shift / RMB", this.dashCooldown, combatLocked));
+      this.setTextIfChanged(this.toolbarCards.fire.detail, this.getPrimaryFireDetail(combatLocked));
+      this.setTextIfChanged(this.toolbarCards.pulse.detail, this.getCooldownDetail("Q", this.pulseCooldown, combatLocked));
+      this.setTextIfChanged(this.toolbarCards.arc.detail, this.getCooldownDetail("E", this.arcCooldown, combatLocked));
+      this.setTextIfChanged(this.toolbarCards.dash.detail, this.getCooldownDetail("Shift / RMB", this.dashCooldown, combatLocked));
       this.setAbilityCardColor(this.toolbarCards.pulse, this.pulseCooldown <= 0 ? 0x144d6a : 0x17314f);
       this.setAbilityCardColor(this.toolbarCards.arc, this.arcCooldown <= 0 ? 0x5a4617 : 0x17314f);
       this.setAbilityCardColor(this.toolbarCards.dash, this.dashCooldown <= 0 ? 0x4a3370 : 0x17314f);
@@ -2783,6 +2838,38 @@ export class MissionScene extends Phaser.Scene {
 
     card.cooldownMask.setVisible(true);
     card.cooldownMask.setDisplaySize(190, Math.max(4, 44 * clamped));
+  }
+
+  private setTextIfChanged(target: Phaser.GameObjects.Text | undefined, value: string): void {
+    if (!target || target.text === value) {
+      return;
+    }
+
+    target.setText(value);
+  }
+
+  private getTransientEffectBudget(): number {
+    switch (gameSession.settings.graphics.quality) {
+      case "Performance":
+        return 10;
+      case "Balanced":
+        return 18;
+      default:
+        return 28;
+    }
+  }
+
+  private reserveTransientEffect(): boolean {
+    if (this.activeTransientEffects >= this.getTransientEffectBudget()) {
+      return false;
+    }
+
+    this.activeTransientEffects += 1;
+    return true;
+  }
+
+  private releaseTransientEffect(): void {
+    this.activeTransientEffects = Math.max(0, this.activeTransientEffects - 1);
   }
 
   private toggleLogbookOverlay(): void {

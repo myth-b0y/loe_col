@@ -94,6 +94,9 @@ export function createMenuButton({
   let pressHandler = onPress;
   let releaseHandler = onRelease;
   let cooldownProgress = 0;
+  let currentLabel = label;
+  let lastEnabled = enabled;
+  let lastInputEnabled = inputEnabled;
 
   background.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
     if (!enabled) {
@@ -124,22 +127,42 @@ export function createMenuButton({
     container: button,
     label: text,
     setEnabled(nextEnabled: boolean) {
+      if (lastEnabled === nextEnabled) {
+        return;
+      }
+
       enabled = nextEnabled;
+      lastEnabled = nextEnabled;
       background.setFillStyle(accentColor, enabled ? 0.88 : 0.32);
       refresh();
     },
     setInputEnabled(nextEnabled: boolean) {
+      if (lastInputEnabled === nextEnabled) {
+        return;
+      }
+
       inputEnabled = nextEnabled;
+      lastInputEnabled = nextEnabled;
       refresh();
     },
     setLabel(nextLabel: string) {
+      if (currentLabel === nextLabel) {
+        return;
+      }
+
+      currentLabel = nextLabel;
       text.setText(nextLabel);
     },
     setOnClick(nextHandler: () => void) {
       clickHandler = nextHandler;
     },
     setCooldownProgress(progress: number) {
-      cooldownProgress = Phaser.Math.Clamp(progress, 0, 1);
+      const nextProgress = Phaser.Math.Clamp(progress, 0, 1);
+      if (Math.abs(nextProgress - cooldownProgress) < 0.01) {
+        return;
+      }
+
+      cooldownProgress = nextProgress;
       if (cooldownProgress <= 0) {
         cooldownOverlay.setVisible(false);
         return;

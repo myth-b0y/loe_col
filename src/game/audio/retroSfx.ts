@@ -52,6 +52,11 @@ type NoiseParams = {
   volume: number;
 };
 
+type OutputNode = {
+  node: AudioNode;
+  cleanup: () => void;
+};
+
 const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "player-fire": 45,
   "enemy-shot": 70,
@@ -81,6 +86,7 @@ class RetroSfxManager {
   private lastPlayed = new Map<SfxCue, number>();
   private noiseBuffer: AudioBuffer | null = null;
   private unlockInstalled = false;
+  private unlockHandler?: () => void;
 
   installAutoUnlock(): void {
     if (this.unlockInstalled || typeof window === "undefined") {
@@ -89,8 +95,13 @@ class RetroSfxManager {
 
     this.unlockInstalled = true;
     const unlock = (): void => {
-      this.resumeContext();
+      void this.resumeContext().finally(() => {
+        if (this.context?.state === "running") {
+          this.removeUnlockListeners();
+        }
+      });
     };
+    this.unlockHandler = unlock;
 
     window.addEventListener("pointerdown", unlock, { passive: true });
     window.addEventListener("touchstart", unlock, { passive: true });
@@ -120,7 +131,7 @@ class RetroSfxManager {
 
     this.lastPlayed.set(cue, nowMs);
     this.debugCounts[cue] = (this.debugCounts[cue] ?? 0) + 1;
-    this.resumeContext();
+    void this.resumeContext();
 
     const volume = this.getSfxVolume(options.volume ?? 1);
     if (volume <= 0.0001) {
@@ -242,13 +253,24 @@ class RetroSfxManager {
     return this.context;
   }
 
-  private resumeContext(): void {
+  private removeUnlockListeners(): void {
+    if (typeof window === "undefined" || !this.unlockHandler) {
+      return;
+    }
+
+    window.removeEventListener("pointerdown", this.unlockHandler);
+    window.removeEventListener("touchstart", this.unlockHandler);
+    window.removeEventListener("keydown", this.unlockHandler);
+    this.unlockHandler = undefined;
+  }
+
+  private async resumeContext(): Promise<void> {
     const context = this.ensureContext();
     if (!context || context.state !== "suspended") {
       return;
     }
 
-    void context.resume().catch(() => undefined);
+    await context.resume().catch(() => undefined);
   }
 
   private getNoiseBuffer(context: AudioContext): AudioBuffer {
@@ -266,16 +288,24 @@ class RetroSfxManager {
     return buffer;
   }
 
-  private createOutputNode(context: AudioContext, pan: number): AudioNode {
+  private createOutputNode(context: AudioContext, pan: number): OutputNode {
     const stereoContext = context as AudioContext & { createStereoPanner?: () => StereoPannerNode };
     if (typeof stereoContext.createStereoPanner === "function") {
       const panner = stereoContext.createStereoPanner();
       panner.pan.value = Math.max(-1, Math.min(1, pan));
       panner.connect(context.destination);
-      return panner;
+      return {
+        node: panner,
+        cleanup: () => {
+          panner.disconnect();
+        },
+      };
     }
 
-    return context.destination;
+    return {
+      node: context.destination,
+      cleanup: () => undefined,
+    };
   }
 
   private getSfxVolume(multiplier: number): number {
@@ -301,9 +331,17 @@ class RetroSfxManager {
     gain.gain.linearRampToValueAtTime(params.volume, startTime + attack);
     gain.gain.exponentialRampToValueAtTime(0.0001, startTime + params.duration);
 
+    const output = this.createOutputNode(context, params.pan ?? 0);
     oscillator.connect(filter);
     filter.connect(gain);
-    gain.connect(this.createOutputNode(context, params.pan ?? 0));
+    gain.connect(output.node);
+
+    oscillator.onended = () => {
+      oscillator.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+      output.cleanup();
+    };
 
     oscillator.start(startTime);
     oscillator.stop(startTime + params.duration + 0.02);
@@ -326,9 +364,17 @@ class RetroSfxManager {
     gain.gain.linearRampToValueAtTime(params.volume, startTime + attack);
     gain.gain.exponentialRampToValueAtTime(0.0001, startTime + params.duration);
 
+    const output = this.createOutputNode(context, params.pan ?? 0);
     source.connect(filter);
     filter.connect(gain);
-    gain.connect(this.createOutputNode(context, params.pan ?? 0));
+    gain.connect(output.node);
+
+    source.onended = () => {
+      source.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+      output.cleanup();
+    };
 
     source.start(startTime);
     source.stop(startTime + params.duration + 0.02);
