@@ -87,6 +87,7 @@ class RetroSfxManager {
   private noiseBuffer: AudioBuffer | null = null;
   private unlockInstalled = false;
   private unlockHandler?: () => void;
+  private activeVoices = 0;
 
   installAutoUnlock(): void {
     if (this.unlockInstalled || typeof window === "undefined") {
@@ -313,7 +314,35 @@ class RetroSfxManager {
     return Math.max(0, Math.min(1, (master / 100) * (sfx / 100) * multiplier));
   }
 
+  private getVoiceBudget(): number {
+    switch (gameSession.settings.graphics.quality) {
+      case "Performance":
+        return 10;
+      case "Balanced":
+        return 14;
+      default:
+        return 18;
+    }
+  }
+
+  private reserveVoice(): boolean {
+    if (this.activeVoices >= this.getVoiceBudget()) {
+      return false;
+    }
+
+    this.activeVoices += 1;
+    return true;
+  }
+
+  private releaseVoice(): void {
+    this.activeVoices = Math.max(0, this.activeVoices - 1);
+  }
+
   private tone(context: AudioContext, params: ToneParams): void {
+    if (!this.reserveVoice()) {
+      return;
+    }
+
     const startTime = context.currentTime + (params.startOffset ?? 0);
     const oscillator = context.createOscillator();
     oscillator.type = params.type;
@@ -341,6 +370,7 @@ class RetroSfxManager {
       filter.disconnect();
       gain.disconnect();
       output.cleanup();
+      this.releaseVoice();
     };
 
     oscillator.start(startTime);
@@ -348,6 +378,10 @@ class RetroSfxManager {
   }
 
   private noise(context: AudioContext, params: NoiseParams): void {
+    if (!this.reserveVoice()) {
+      return;
+    }
+
     const startTime = context.currentTime + (params.startOffset ?? 0);
     const source = context.createBufferSource();
     source.buffer = this.getNoiseBuffer(context);
@@ -374,6 +408,7 @@ class RetroSfxManager {
       filter.disconnect();
       gain.disconnect();
       output.cleanup();
+      this.releaseVoice();
     };
 
     source.start(startTime);

@@ -29,9 +29,6 @@ export class PauseScene extends Phaser.Scene {
     this.returnSceneKey = data.returnSceneKey;
     this.allowSave = data.allowSave;
     const isMissionPause = this.returnSceneKey === "mission";
-    if (typeof document !== "undefined" && document.pointerLockElement) {
-      document.exitPointerLock?.();
-    }
 
     this.add.rectangle(640, 360, 1280, 720, 0x02060b, 0.7);
     this.add.rectangle(640, 360, 520, isMissionPause ? 590 : 520, 0x091321, 0.98).setStrokeStyle(3, 0x79abed, 0.82);
@@ -171,9 +168,6 @@ export class PauseScene extends Phaser.Scene {
     if (this.saveSlotsOverlay) {
       this.saveSlotsOverlay.hide();
     }
-    if (this.returnSceneKey === "mission") {
-      this.requestMissionPointerLock();
-    }
     this.scene.resume(this.returnSceneKey);
     this.scene.stop();
   }
@@ -211,7 +205,7 @@ export class PauseScene extends Phaser.Scene {
       color: "#f5fbff",
       fontStyle: "bold",
     }).setOrigin(0.5);
-    this.fullscreenLabel = this.add.text(554, y - 10, "Fullscreen Mode", {
+    this.fullscreenLabel = this.add.text(554, y - 10, "Focus Mode", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#eef5ff",
@@ -241,7 +235,7 @@ export class PauseScene extends Phaser.Scene {
     this.fullscreenBox?.setFillStyle(active ? 0x215a96 : 0x08111c, active ? 0.98 : 0.98);
     this.fullscreenBox?.setStrokeStyle(2, active ? 0xe7f2ff : 0xaed0ff, active ? 0.94 : 0.8);
     this.fullscreenCheck?.setText(active ? "X" : "");
-    this.fullscreenLabel?.setText(supported ? "Fullscreen Mode" : "Fullscreen Unavailable");
+    this.fullscreenLabel?.setText(supported ? "Focus Mode" : "Focus Mode Unavailable");
   }
 
   private async toggleFullscreen(): Promise<void> {
@@ -253,28 +247,16 @@ export class PauseScene extends Phaser.Scene {
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
-        this.statusText?.setText("Fullscreen disabled.");
+        this.statusText?.setText("Focus mode disabled.");
       } else {
         const host = this.game.canvas.parentElement ?? this.game.canvas;
         await host.requestFullscreen?.();
-        this.statusText?.setText(
-          this.returnSceneKey === "mission"
-            ? "Fullscreen enabled. Resume to lock the mouse into combat."
-            : "Fullscreen enabled.",
-        );
+        this.statusText?.setText("Focus mode enabled. Browser Esc can still exit it.");
       }
     } catch {
-      this.statusText?.setText("Fullscreen request was blocked.");
+      this.statusText?.setText("Focus mode request was blocked.");
     } finally {
       this.refreshFullscreenUi();
     }
-  }
-
-  private requestMissionPointerLock(): void {
-    if (typeof document === "undefined" || !document.fullscreenElement) {
-      return;
-    }
-
-    this.game.canvas.requestPointerLock?.();
   }
 }

@@ -651,6 +651,30 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return true;
   }
 
+  deleteSave(slotIndex = this.activeSlotIndex): boolean {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    const safeSlot = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
+    if (!this.saveSlots[safeSlot]) {
+      return false;
+    }
+
+    try {
+      this.saveSlots[safeSlot] = null;
+      if (this.activeSlotIndex === safeSlot) {
+        const latestSlot = sortByMostRecent(this.saveSlots);
+        this.activeSlotIndex = latestSlot ?? safeSlot;
+      }
+      window.localStorage.setItem(SAVE_SLOTS_KEY, JSON.stringify(this.saveSlots));
+      this.emit("slots-changed", this.getSaveSlots());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   startMission(missionId: string): void {
     this.activeMissionId = missionId;
     this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);

@@ -95,11 +95,13 @@ type AbilityCard = {
 };
 
 type CompanionHud = {
+  nameText: Phaser.GameObjects.Text;
   hpFill: Phaser.GameObjects.Rectangle;
   shieldFill: Phaser.GameObjects.Rectangle;
   hpValueText: Phaser.GameObjects.Text;
   shieldValueText: Phaser.GameObjects.Text;
   stateText: Phaser.GameObjects.Text;
+  effectText: Phaser.GameObjects.Text;
 };
 
 type CompanionState = {
@@ -174,7 +176,9 @@ const PLAYER_SHIELD_REGEN_RATE = 18;
 const COMPANION_SHIELD_REGEN_RATE = 12;
 const COMPANION_REVIVE_HOLD_TIME = 2.4;
 const COMPANION_REVIVE_RANGE = 78;
-const COMPANION_BAR_SPACING = 48;
+const COMPANION_BAR_SPACING = 68;
+const PLAYER_BUFF_ROW_Y = 160;
+const COMPANION_HUD_START_Y = 186;
 
 function cloneRect(rect: Phaser.Geom.Rectangle): Phaser.Geom.Rectangle {
   return new Phaser.Geom.Rectangle(rect.x, rect.y, rect.width, rect.height);
@@ -263,6 +267,7 @@ export class MissionScene extends Phaser.Scene {
   private shieldFill!: Phaser.GameObjects.Rectangle;
   private hpValueText!: Phaser.GameObjects.Text;
   private shieldValueText!: Phaser.GameObjects.Text;
+  private playerEffectText!: Phaser.GameObjects.Text;
   private bossFill!: Phaser.GameObjects.Rectangle;
   private bossFrame!: Phaser.GameObjects.Rectangle;
   private bossTitle!: Phaser.GameObjects.Text;
@@ -310,10 +315,25 @@ export class MissionScene extends Phaser.Scene {
     const syncInputMode = (): void => this.syncInputMode();
     gameSession.on("settings-changed", syncInputMode);
     gameSession.on("input-mode-changed", syncInputMode);
+    const fullscreenListener = (): void => {
+      if (typeof document === "undefined" || document.fullscreenElement || !this.scene.isActive()) {
+        return;
+      }
+
+      if (!this.scene.isPaused() && !this.logbookOverlay?.isVisible()) {
+        this.openPauseMenu();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("fullscreenchange", fullscreenListener);
+    }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameSession.off("settings-changed", syncInputMode);
       gameSession.off("input-mode-changed", syncInputMode);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("fullscreenchange", fullscreenListener);
+      }
       this.time.removeAllEvents();
       this.tweens.killAll();
       this.clearBullets();
@@ -329,7 +349,7 @@ export class MissionScene extends Phaser.Scene {
       this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
       if (this.hudRefreshCooldown <= 0) {
         this.updateHudState();
-        this.hudRefreshCooldown = 0.05;
+        this.hudRefreshCooldown = 0.1;
       }
       return;
     }
@@ -365,7 +385,7 @@ export class MissionScene extends Phaser.Scene {
     this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
     if (this.hudRefreshCooldown <= 0) {
       this.updateHudState();
-      this.hudRefreshCooldown = 0.05;
+      this.hudRefreshCooldown = 0.1;
     }
   }
 
@@ -580,11 +600,24 @@ export class MissionScene extends Phaser.Scene {
       color: "#f5fbff",
       fontStyle: "bold",
     }).setOrigin(0.5));
+    this.playerEffectText = this.pin(this.add.text(86, PLAYER_BUFF_ROW_Y, "Status: Clear", {
+      fontFamily: "Arial",
+      fontSize: "11px",
+      color: "#a8c5e8",
+    }));
 
     this.companions.forEach((companion, index) => {
-      const stateY = 150 + index * COMPANION_BAR_SPACING;
-      const hpY = 166 + index * COMPANION_BAR_SPACING;
-      const shieldY = 182 + index * COMPANION_BAR_SPACING;
+      const nameY = COMPANION_HUD_START_Y + index * COMPANION_BAR_SPACING;
+      const hpY = nameY + 16;
+      const shieldY = nameY + 32;
+      const effectY = nameY + 46;
+
+      const nameText = this.pin(this.add.text(86, nameY, `${companion.name} | ${companion.roleLabel}`, {
+        fontFamily: "Arial",
+        fontSize: "12px",
+        color: Phaser.Display.Color.IntegerToColor(companion.trimColor).rgba,
+        fontStyle: "bold",
+      }));
 
       this.pin(this.add.rectangle(146, hpY, COMPANION_BAR_WIDTH + 8, 12, 0x08111c, 0.96)
         .setStrokeStyle(2, companion.trimColor, 0.66));
@@ -604,19 +637,25 @@ export class MissionScene extends Phaser.Scene {
         color: "#ecfcff",
         fontStyle: "bold",
       }).setOrigin(0.5));
-      const stateText = this.pin(this.add.text(86, stateY, `${companion.name} | ${companion.roleLabel}`, {
+      const stateText = this.pin(this.add.text(86, effectY, "Status: Clear", {
         fontFamily: "Arial",
-        fontSize: "12px",
-        color: Phaser.Display.Color.IntegerToColor(companion.trimColor).rgba,
-        fontStyle: "bold",
+        fontSize: "10px",
+        color: "#a8c5e8",
+      }));
+      const effectText = this.pin(this.add.text(86, effectY + 14, "", {
+        fontFamily: "Arial",
+        fontSize: "10px",
+        color: "#d5e5f8",
       }));
 
       companion.hud = {
+        nameText,
         hpFill,
         shieldFill,
         hpValueText,
         shieldValueText,
         stateText,
+        effectText,
       };
     });
 
@@ -624,17 +663,17 @@ export class MissionScene extends Phaser.Scene {
       this.pin(this.add.circle(774 + index * 24, 56, 7, 0x29425f, 1)),
     );
 
-    this.bossFrame = this.pin(this.add.rectangle(1010, 112, 250, 18, 0x08111c, 0.96)
+    this.bossFrame = this.pin(this.add.rectangle(640, 112, 320, 18, 0x08111c, 0.96)
       .setStrokeStyle(2, 0xc8a7ff, 0.84)
       .setVisible(false));
-    this.bossFill = this.pin(this.add.rectangle(886, 112, 242, 10, 0x9f68ff, 0.95)
+    this.bossFill = this.pin(this.add.rectangle(484, 112, 312, 10, 0x9f68ff, 0.95)
       .setOrigin(0, 0.5)
       .setVisible(false));
-    this.bossTitle = this.pin(this.add.text(886, 94, "Shard Bruiser", {
+    this.bossTitle = this.pin(this.add.text(640, 92, "Shard Bruiser", {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#eadfff",
-    }).setVisible(false));
+    }).setOrigin(0.5).setVisible(false));
 
     this.logbookButton = createMenuButton({
       scene: this,
@@ -894,8 +933,6 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      this.ensurePointerLockForGameplay();
-
       if (pointer.rightButtonDown()) {
         this.reportDesktopInput();
         this.tryDash();
@@ -988,7 +1025,8 @@ export class MissionScene extends Phaser.Scene {
     this.lookPoint.set(this.player.x + forward.x * 180, this.player.y + forward.y * 180);
 
     this.progressDots.forEach((dot, dotIndex) => {
-      dot.setFillStyle(dotIndex < index ? 0x79abed : dotIndex === index ? 0xffd36d : 0x29425f, 1);
+      const stage = this.mission.stages[dotIndex];
+      dot.setFillStyle(this.getStageProgressColor(stage, dotIndex < index ? "completed" : dotIndex === index ? "current" : "upcoming"), 1);
     });
     this.titleText.setText(this.mission.title);
     this.objectiveText.setText(this.mission.objective);
@@ -1003,6 +1041,15 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
+  }
+
+  private getStageProgressColor(stage: MissionStage, state: "upcoming" | "current" | "completed"): number {
+    const palette = stage.type === "rest"
+      ? { upcoming: 0x27523c, current: 0x7fefb2, completed: 0x4fc98a }
+      : stage.type === "boss"
+        ? { upcoming: 0x4d2f5f, current: 0xf29dff, completed: 0xc76cff }
+        : { upcoming: 0x24456b, current: 0xffd36d, completed: 0x79abed };
+    return palette[state];
   }
 
   private configureStageBounds(stage: MissionStage): void {
@@ -1031,10 +1078,10 @@ export class MissionScene extends Phaser.Scene {
     const stars = this.add.graphics().setDepth(-13);
     stars.fillStyle(0xc6ddff, 0.9);
     const density = gameSession.settings.graphics.quality === "Performance"
-      ? 0.48
+      ? 0.34
       : gameSession.settings.graphics.quality === "Balanced"
-        ? 0.68
-        : 0.88;
+        ? 0.52
+        : 0.7;
     const starBudget = flow === "up"
       ? Math.max(18, Math.floor((this.worldBounds.height / 32) * density))
       : Math.max(12, Math.floor((this.worldBounds.width / 28) * density));
@@ -2456,7 +2503,7 @@ export class MissionScene extends Phaser.Scene {
       this.stageCleared = true;
       this.setExitDoorOpen(true, "Door Open");
       this.messageText.setText("Hallway secure. Push through the next door.");
-      this.progressDots[this.stageIndex].setFillStyle(0x79abed, 1);
+      this.progressDots[this.stageIndex].setFillStyle(this.getStageProgressColor(this.currentStage as MissionStage, "completed"), 1);
     }
   }
 
@@ -2519,7 +2566,7 @@ export class MissionScene extends Phaser.Scene {
       this.stageCleared = true;
       this.setExitDoorOpen(true, "Extract");
       this.messageText.setText("Relay heart broken. Move through the extraction door.");
-      this.progressDots[this.stageIndex].setFillStyle(0x79abed, 1);
+      this.progressDots[this.stageIndex].setFillStyle(this.getStageProgressColor(this.currentStage as MissionStage, "completed"), 1);
     }
   }
 
@@ -3073,6 +3120,10 @@ export class MissionScene extends Phaser.Scene {
     this.shieldFill.width = PLAYER_BAR_WIDTH * (this.playerShield / Math.max(1, this.playerMaxShield));
     this.setTextIfChanged(this.hpValueText, `${Math.ceil(this.playerHp)} / ${this.playerMaxHp}`);
     this.setTextIfChanged(this.shieldValueText, `${Math.ceil(this.playerShield)} / ${this.playerMaxShield}`);
+    this.setTextIfChanged(this.playerEffectText, this.getActorEffectLabel({
+      guardBuff: this.playerGuardBuff,
+      focusBuff: this.playerFocusBuff,
+    }));
     this.playerShieldRing.setVisible(this.playerShield > 0.5);
     this.playerShieldRing.setAlpha(this.playerShield > 0 ? 0.84 : 0);
     this.companions.forEach((companion) => {
@@ -3082,17 +3133,19 @@ export class MissionScene extends Phaser.Scene {
       companion.hud.shieldValueText.setAlpha(companionsEnabled ? 1 : 0.32);
       this.setTextIfChanged(companion.hud.hpValueText, companionsEnabled ? `${Math.ceil(companion.hp)} / ${companion.maxHp}` : "--");
       this.setTextIfChanged(companion.hud.shieldValueText, companionsEnabled ? `${Math.ceil(companion.shield)} / ${companion.maxShield}` : "--");
+      companion.hud.nameText.setAlpha(companionsEnabled ? 1 : 0.32);
       companion.hud.stateText.setAlpha(companionsEnabled ? 1 : 0.32);
-      const stateLabel = !companionsEnabled
-        ? `${companion.name} | Offline`
+      companion.hud.effectText.setAlpha(companionsEnabled ? 1 : 0.28);
+      this.setTextIfChanged(companion.hud.nameText, `${companion.name} | ${companion.roleLabel}`);
+      const statusLabel = !companionsEnabled
+        ? "Status: Offline"
         : companion.downed
           ? this.canReviveCompanion(companion)
-            ? `${companion.name} | Hold ${this.touchMode ? "Revive" : "F"} ${Math.max(0, COMPANION_REVIVE_HOLD_TIME - companion.reviveProgress).toFixed(1)}s`
-            : `${companion.name} | Downed - Move Close`
-          : `${companion.name} | ${companion.abilityLabel} ${companion.cooldown <= 0 ? "Ready" : `${companion.cooldown.toFixed(1)}s`}${
-            companion.guardBuff > 0.2 ? " | Guarded" : companion.focusBuff > 0.2 ? " | Focused" : ""
-          }`;
-      this.setTextIfChanged(companion.hud.stateText, stateLabel);
+            ? `Status: Hold ${this.touchMode ? "Revive" : "F"} ${Math.max(0, COMPANION_REVIVE_HOLD_TIME - companion.reviveProgress).toFixed(1)}s`
+            : "Status: Downed - Move Close"
+          : `Status: ${companion.abilityLabel} ${companion.cooldown <= 0 ? "Ready" : `${companion.cooldown.toFixed(1)}s`}`;
+      this.setTextIfChanged(companion.hud.stateText, statusLabel);
+      this.setTextIfChanged(companion.hud.effectText, this.getActorEffectLabel(companion));
       companion.shieldRing.setVisible(companion.downed || (this.canCompanionBeTargeted(companion) && companion.shield > 0.5));
     });
 
@@ -3102,7 +3155,7 @@ export class MissionScene extends Phaser.Scene {
     this.bossFill.setVisible(bossVisible);
     this.bossTitle.setVisible(bossVisible);
     if (boss) {
-      this.bossFill.width = 242 * (boss.hp / boss.maxHp);
+      this.bossFill.width = 312 * (boss.hp / boss.maxHp);
     }
 
     if (this.autoAimTarget) {
@@ -3206,14 +3259,26 @@ export class MissionScene extends Phaser.Scene {
     target.setText(value);
   }
 
+  private getActorEffectLabel(actor: { guardBuff: number; focusBuff: number }): string {
+    const effects: string[] = [];
+    if (actor.guardBuff > 0.2) {
+      effects.push(`Guard ${actor.guardBuff.toFixed(1)}s`);
+    }
+    if (actor.focusBuff > 0.2) {
+      effects.push(`Focus ${actor.focusBuff.toFixed(1)}s`);
+    }
+
+    return effects.length > 0 ? `Buffs: ${effects.join(" | ")}` : "Buffs: None";
+  }
+
   private getTransientEffectBudget(): number {
     switch (gameSession.settings.graphics.quality) {
       case "Performance":
-        return 10;
+        return 8;
       case "Balanced":
-        return 18;
+        return 14;
       default:
-        return 28;
+        return 20;
     }
   }
 
@@ -3255,18 +3320,6 @@ export class MissionScene extends Phaser.Scene {
       allowSave: false,
     });
     this.scene.pause();
-  }
-
-  private ensurePointerLockForGameplay(): void {
-    if (typeof document === "undefined" || this.touchMode || !document.fullscreenElement) {
-      return;
-    }
-
-    if (document.pointerLockElement === this.game.canvas) {
-      return;
-    }
-
-    this.game.canvas.requestPointerLock?.();
   }
 
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
@@ -3590,11 +3643,12 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    const nearest = this.getNearestEnemy(this.player.x, this.player.y, TARGET_LOCK_RANGE);
     const current = this.autoAimTarget && candidates.includes(this.autoAimTarget)
       ? this.autoAimTarget
       : null;
-    if (!current) {
-      this.selectedTarget = candidates[0];
+    if (!current || !nearest) {
+      this.selectedTarget = nearest ?? candidates[0];
       this.autoAimTarget = this.selectedTarget;
       return;
     }
@@ -3618,58 +3672,21 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private getTargetCycleCandidates(): Enemy[] {
-    const baseDirection = this.getBaseAimDirection();
-    const normalized = baseDirection.clone().normalize();
-
     return this.enemies
       .filter((enemy) => this.isAutoAimTargetValid(enemy))
       .sort((left, right) => {
-        const leftVector = new Phaser.Math.Vector2(left.sprite.x - this.player.x, left.sprite.y - this.player.y);
-        const rightVector = new Phaser.Math.Vector2(right.sprite.x - this.player.x, right.sprite.y - this.player.y);
-        const leftDistance = leftVector.length();
-        const rightDistance = rightVector.length();
-        const leftAngle = Math.abs(Phaser.Math.Angle.Wrap(leftVector.normalize().angle() - normalized.angle()));
-        const rightAngle = Math.abs(Phaser.Math.Angle.Wrap(rightVector.normalize().angle() - normalized.angle()));
-        return (leftAngle * 220 + leftDistance) - (rightAngle * 220 + rightDistance);
+        const leftDistance = Phaser.Math.Distance.Between(this.player.x, this.player.y, left.sprite.x, left.sprite.y);
+        const rightDistance = Phaser.Math.Distance.Between(this.player.x, this.player.y, right.sprite.x, right.sprite.y);
+        return leftDistance - rightDistance;
       });
   }
 
-  private getAutoAimTarget(direction: Phaser.Math.Vector2): Enemy | null {
+  private getAutoAimTarget(_direction: Phaser.Math.Vector2): Enemy | null {
     if (!this.selectedTarget && this.autoAimTarget && this.isAutoAimTargetValid(this.autoAimTarget)) {
       return this.autoAimTarget;
     }
 
-    let nearest: Enemy | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-    const normalized = direction.clone().normalize();
-
-    for (const enemy of this.enemies) {
-      const toEnemy = new Phaser.Math.Vector2(enemy.sprite.x - this.player.x, enemy.sprite.y - this.player.y);
-      const distance = toEnemy.length();
-      if (distance <= 0 || distance > TARGET_LOCK_RANGE) {
-        continue;
-      }
-
-      const aimVector = toEnemy.normalize();
-      const angle = Math.abs(Phaser.Math.Angle.Wrap(aimVector.angle() - normalized.angle()));
-      if (angle > 0.52) {
-        continue;
-      }
-
-      const score = distance + angle * 220;
-      if (score >= bestScore) {
-        continue;
-      }
-
-      bestScore = score;
-      nearest = enemy;
-    }
-
-    if (!nearest) {
-      return null;
-    }
-
-    return nearest;
+    return this.getNearestEnemy(this.player.x, this.player.y, TARGET_LOCK_RANGE);
   }
 
   private isAutoAimTargetValid(target: Enemy): boolean {
@@ -3798,7 +3815,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (autoAim && autoFire) {
-      return "Tab Cycle | Seeking Auto Lock";
+      return "Tab Cycle | Nearest Auto Lock";
     }
 
     if (autoAim) {
