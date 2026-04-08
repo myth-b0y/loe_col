@@ -6,6 +6,7 @@ import {
   FIRST_MISSION,
   type BossStage,
   type HallwayStage,
+  type MissionBossKind,
   type MissionDefinition,
   type MissionEnemyKind,
   type MissionFlow,
@@ -42,8 +43,25 @@ type Bullet = {
   splashDamage?: number;
 };
 
+type BossMoveId = "crusher-slam" | "nova-ring" | "shadow-call" | "fan-volley" | "beam-sweep";
+type EnemyMoveState = "idle" | "rusher-windup" | "rusher-lunge" | "boss-slam-windup" | "boss-phase-shift";
+
+type BossArchetype = {
+  id: MissionBossKind;
+  displayName: string;
+  auraColor: number;
+  speed: number;
+  phaseColors: [number, number, number];
+  phaseHp: [number, number, number];
+  phaseShield: [number, number, number];
+  phaseMoves: [BossMoveId[], BossMoveId[], BossMoveId[]];
+};
+
 type Enemy = {
   kind: EnemyKind;
+  displayName: string;
+  moveLabel: string;
+  lastMoveLabel: string;
   sprite: Phaser.GameObjects.Arc;
   aura: Phaser.GameObjects.Arc;
   shieldRing: Phaser.GameObjects.Arc;
@@ -61,9 +79,20 @@ type Enemy = {
   chargeTimer: number;
   damageFlash: number;
   stateTimer: number;
+  moveState: EnemyMoveState;
+  moveTimer: number;
+  moveVector: Phaser.Math.Vector2;
   roleColor: number;
   strafeDir: -1 | 1;
   spawnedAdds: boolean;
+  bossKind?: MissionBossKind;
+  bossPhase: number;
+  phaseCount: number;
+  phaseHpPool: number[];
+  phaseShieldPool: number[];
+  phaseColors: number[];
+  phaseMoves: BossMoveId[][];
+  bossMoveIndex: number;
 };
 
 type HallwayZoneRuntime = {
@@ -179,9 +208,54 @@ const PLAYER_SHIELD_REGEN_RATE = 18;
 const COMPANION_SHIELD_REGEN_RATE = 12;
 const COMPANION_REVIVE_HOLD_TIME = 2.4;
 const COMPANION_REVIVE_RANGE = 78;
-const COMPANION_BAR_SPACING = 82;
+const COMPANION_BAR_SPACING = 92;
 const PLAYER_BUFF_ROW_Y = 160;
-const COMPANION_HUD_START_Y = 198;
+const COMPANION_HUD_START_Y = 204;
+
+const BOSS_ARCHETYPES: Record<MissionBossKind, BossArchetype> = {
+  "shard-bruiser": {
+    id: "shard-bruiser",
+    displayName: "Shard Bruiser",
+    auraColor: 0xba84ff,
+    speed: 92,
+    phaseColors: [0xba84ff, 0xffbf7a, 0xff7db8],
+    phaseHp: [170, 205, 240],
+    phaseShield: [70, 92, 120],
+    phaseMoves: [
+      ["crusher-slam", "nova-ring"],
+      ["crusher-slam", "nova-ring", "shadow-call"],
+      ["crusher-slam", "nova-ring", "shadow-call", "fan-volley"],
+    ],
+  },
+  "relay-seer": {
+    id: "relay-seer",
+    displayName: "Relay Seer",
+    auraColor: 0x6fd9ff,
+    speed: 104,
+    phaseColors: [0x6fd9ff, 0xa48fff, 0xffb56a],
+    phaseHp: [155, 192, 228],
+    phaseShield: [82, 110, 136],
+    phaseMoves: [
+      ["fan-volley", "beam-sweep"],
+      ["fan-volley", "beam-sweep", "shadow-call"],
+      ["fan-volley", "beam-sweep", "shadow-call", "nova-ring"],
+    ],
+  },
+  "nightglass-behemoth": {
+    id: "nightglass-behemoth",
+    displayName: "Nightglass Behemoth",
+    auraColor: 0xff7b9b,
+    speed: 110,
+    phaseColors: [0xff7b9b, 0xc992ff, 0x71d7ff],
+    phaseHp: [190, 228, 272],
+    phaseShield: [96, 124, 152],
+    phaseMoves: [
+      ["beam-sweep", "crusher-slam"],
+      ["beam-sweep", "crusher-slam", "fan-volley"],
+      ["beam-sweep", "crusher-slam", "fan-volley", "shadow-call"],
+    ],
+  },
+};
 
 function cloneRect(rect: Phaser.Geom.Rectangle): Phaser.Geom.Rectangle {
   return new Phaser.Geom.Rectangle(rect.x, rect.y, rect.width, rect.height);
@@ -617,9 +691,9 @@ export class MissionScene extends Phaser.Scene {
 
     this.companions.forEach((companion, index) => {
       const nameY = COMPANION_HUD_START_Y + index * COMPANION_BAR_SPACING;
-      const hpY = nameY + 16;
-      const shieldY = nameY + 32;
-      const effectY = nameY + 46;
+      const hpY = nameY + 22;
+      const shieldY = nameY + 39;
+      const effectY = nameY + 54;
 
       const nameText = this.pin(this.add.text(86, nameY, `${companion.name} | ${companion.roleLabel}`, {
         fontFamily: "Arial",
@@ -2277,14 +2351,219 @@ export class MissionScene extends Phaser.Scene {
     });
   }
 
+  private damageFocusTarget(target: EnemyFocusTarget, amount: number): void {
+    if (target.side === "companion" && target.companion) {
+      this.damageCompanion(target.companion, amount);
+      return;
+    }
+
+    this.damagePlayer(amount);
+  }
+
+  private getBossMoveCooldown(enemy: Enemy): number {
+    const difficultyFactor = this.mission.difficulty === "easy" ? 1.06 : this.mission.difficulty === "medium" ? 0.94 : 0.82;
+    return (2.45 - enemy.bossPhase * 0.24) * difficultyFactor * gameSession.getDifficultyProfile().enemyCooldown;
+  }
+
+  private useBossCrusherSlam(enemy: Enemy, target: EnemyFocusTarget): void {
+    enemy.moveState = "boss-slam-windup";
+    enemy.moveTimer = 0.42 - enemy.bossPhase * 0.04;
+    enemy.moveVector.set(target.x, target.y);
+    enemy.lastMoveLabel = "Crusher Slam";
+    retroSfx.play("boss-slam", { volume: 0.88, pitch: 1 + enemy.bossPhase * 0.04 });
+    this.drawSupportBeam(enemy.sprite.x, enemy.sprite.y, target.x, target.y, enemy.roleColor, 220, 5);
+  }
+
+  private resolveBossCrusherSlam(enemy: Enemy): void {
+    enemy.moveState = "idle";
+    const slamTargetX = Phaser.Math.Clamp(enemy.moveVector.x, this.playArea.x + enemy.radius, this.playArea.right - enemy.radius);
+    const slamTargetY = Phaser.Math.Clamp(enemy.moveVector.y, this.playArea.y + enemy.radius, this.playArea.bottom - enemy.radius);
+    enemy.sprite.setPosition(slamTargetX, slamTargetY);
+    enemy.aura.setPosition(slamTargetX, slamTargetY);
+    enemy.shieldRing.setPosition(slamTargetX, slamTargetY);
+    this.spawnCombatLight(slamTargetX, slamTargetY, enemy.roleColor, 0.84, 260);
+    const ring = this.add.circle(slamTargetX, slamTargetY, 30).setStrokeStyle(6, enemy.roleColor, 0.9).setDepth(14);
+    this.tweens.add({
+      targets: ring,
+      scale: 3.7,
+      alpha: 0,
+      duration: 240,
+      onComplete: () => ring.destroy(),
+    });
+    const slamRadius = 92 + enemy.bossPhase * 14;
+    const damage = Math.round((13 + enemy.bossPhase * 4) * gameSession.getDifficultyProfile().enemyDamage);
+    if (Phaser.Math.Distance.Between(this.player.x, this.player.y, slamTargetX, slamTargetY) <= slamRadius) {
+      this.damagePlayer(damage);
+    }
+    this.companions.forEach((companion) => {
+      if (!this.canCompanionBeTargeted(companion)) {
+        return;
+      }
+
+      if (Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, slamTargetX, slamTargetY) <= slamRadius) {
+        this.damageCompanion(companion, damage);
+      }
+    });
+  }
+
+  private useBossNovaRing(enemy: Enemy): void {
+    enemy.lastMoveLabel = "Nova Ring";
+    retroSfx.play("boss-burst", { volume: 0.9, pitch: 0.98 + enemy.bossPhase * 0.04 });
+    const burstCount = 8 + enemy.bossPhase * 2 + (this.mission.difficulty === "hard" ? 2 : 0);
+    for (let burst = 0; burst < burstCount; burst += 1) {
+      const angle = (Math.PI * 2 * burst) / burstCount;
+      const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
+      this.spawnBullet(
+        enemy.sprite.x,
+        enemy.sprite.y,
+        vector,
+        230 + enemy.bossPhase * 18,
+        Math.round((8 + enemy.bossPhase * 2) * gameSession.getDifficultyProfile().enemyDamage),
+        7,
+        "enemy",
+        enemy.roleColor,
+      );
+    }
+  }
+
+  private useBossFanVolley(enemy: Enemy, target: EnemyFocusTarget): void {
+    enemy.lastMoveLabel = "Fan Volley";
+    retroSfx.play("boss-fan", { volume: 0.88, pitch: 1 + enemy.bossPhase * 0.06 });
+    const direction = new Phaser.Math.Vector2(target.x - enemy.sprite.x, target.y - enemy.sprite.y).normalize();
+    const baseAngle = Math.atan2(direction.y, direction.x);
+    const shots = 5 + enemy.bossPhase + (this.mission.difficulty === "hard" ? 1 : 0);
+    const spread = Phaser.Math.DegToRad(26 + enemy.bossPhase * 6);
+    for (let shot = 0; shot < shots; shot += 1) {
+      const t = shot / Math.max(1, shots - 1);
+      const angle = baseAngle - spread / 2 + spread * t;
+      const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
+      this.spawnBullet(
+        enemy.sprite.x,
+        enemy.sprite.y,
+        vector,
+        290 + enemy.bossPhase * 14,
+        Math.round((8 + enemy.bossPhase * 2) * gameSession.getDifficultyProfile().enemyDamage),
+        6,
+        "enemy",
+        enemy.roleColor,
+      );
+    }
+  }
+
+  private useBossShadowCall(enemy: Enemy): void {
+    enemy.lastMoveLabel = "Shadow Call";
+    retroSfx.play("boss-summon", { volume: 0.86, pitch: 0.96 + enemy.bossPhase * 0.04 });
+    const spawnCount = 1 + enemy.bossPhase + (this.mission.difficulty === "hard" ? 1 : 0);
+    for (let index = 0; index < spawnCount; index += 1) {
+      const angle = (Math.PI * 2 * index) / Math.max(1, spawnCount);
+      const distance = 120 + index * 26;
+      this.spawnEnemy("rusher", enemy.sprite.x + Math.cos(angle) * distance, enemy.sprite.y + Math.sin(angle) * distance);
+      if (index % 2 === 0) {
+        this.spawnEnemy("shooter", enemy.sprite.x - Math.cos(angle) * (distance - 24), enemy.sprite.y - Math.sin(angle) * (distance - 24));
+      }
+    }
+    this.messageText.setText(`${enemy.displayName} tears open fresh shadow pressure.`);
+  }
+
+  private useBossBeamSweep(enemy: Enemy, target: EnemyFocusTarget): void {
+    enemy.lastMoveLabel = "Beam Sweep";
+    retroSfx.play("boss-beam", { volume: 0.92, pitch: 0.94 + enemy.bossPhase * 0.05 });
+    const direction = new Phaser.Math.Vector2(target.x - enemy.sprite.x, target.y - enemy.sprite.y).normalize();
+    const beamLength = 420;
+    const beamWidth = 24 + enemy.bossPhase * 5;
+    this.drawSupportBeam(
+      enemy.sprite.x,
+      enemy.sprite.y,
+      enemy.sprite.x + direction.x * beamLength,
+      enemy.sprite.y + direction.y * beamLength,
+      enemy.roleColor,
+      260,
+      beamWidth,
+    );
+    const damage = Math.round((10 + enemy.bossPhase * 3) * gameSession.getDifficultyProfile().enemyDamage);
+    const hitTarget = (x: number, y: number, radius: number): boolean => {
+      const offsetX = x - enemy.sprite.x;
+      const offsetY = y - enemy.sprite.y;
+      const along = offsetX * direction.x + offsetY * direction.y;
+      const lateral = Math.abs(offsetX * direction.y - offsetY * direction.x);
+      return along >= 0 && along <= beamLength && lateral <= beamWidth + radius;
+    };
+
+    if (hitTarget(this.player.x, this.player.y, 18)) {
+      this.damagePlayer(damage);
+    }
+    this.companions.forEach((companion) => {
+      if (!this.canCompanionBeTargeted(companion)) {
+        return;
+      }
+      if (hitTarget(companion.sprite.x, companion.sprite.y, companion.radius)) {
+        this.damageCompanion(companion, damage);
+      }
+    });
+  }
+
+  private triggerBossMove(enemy: Enemy, target: EnemyFocusTarget): void {
+    const phaseMoves = enemy.phaseMoves[Math.min(enemy.bossPhase, enemy.phaseMoves.length - 1)] ?? [];
+    if (phaseMoves.length === 0) {
+      return;
+    }
+
+    const move = phaseMoves[enemy.bossMoveIndex % phaseMoves.length];
+    enemy.bossMoveIndex += 1;
+
+    switch (move) {
+      case "crusher-slam":
+        this.useBossCrusherSlam(enemy, target);
+        break;
+      case "nova-ring":
+        this.useBossNovaRing(enemy);
+        break;
+      case "shadow-call":
+        this.useBossShadowCall(enemy);
+        break;
+      case "fan-volley":
+        this.useBossFanVolley(enemy, target);
+        break;
+      case "beam-sweep":
+        this.useBossBeamSweep(enemy, target);
+        break;
+      default:
+        break;
+    }
+
+    enemy.specialCooldown = this.getBossMoveCooldown(enemy);
+  }
+
+  private advanceBossPhase(enemy: Enemy): void {
+    enemy.bossPhase += 1;
+    enemy.maxHp = enemy.phaseHpPool[Math.min(enemy.bossPhase, enemy.phaseHpPool.length - 1)] ?? enemy.maxHp;
+    enemy.hp = enemy.maxHp;
+    enemy.maxShield = enemy.phaseShieldPool[Math.min(enemy.bossPhase, enemy.phaseShieldPool.length - 1)] ?? enemy.maxShield;
+    enemy.shield = enemy.maxShield;
+    enemy.roleColor = enemy.phaseColors[Math.min(enemy.bossPhase, enemy.phaseColors.length - 1)] ?? enemy.roleColor;
+    enemy.sprite.setStrokeStyle(4, enemy.roleColor, 0.92);
+    enemy.aura.setFillStyle(enemy.roleColor, 0.28);
+    enemy.shieldRing.setStrokeStyle(3, 0x7ce8ff, 0.78);
+    enemy.moveState = "boss-phase-shift";
+    enemy.moveTimer = 0.8;
+    enemy.attackCooldown = 0.9;
+    enemy.specialCooldown = 1.2;
+    enemy.lastMoveLabel = `Phase ${enemy.bossPhase + 1} Shift`;
+    this.bossFill.setFillStyle(enemy.roleColor, 0.95);
+    this.bossTitle.setText(`${enemy.displayName} | Phase ${enemy.bossPhase + 1}/${enemy.phaseCount}`);
+    retroSfx.play("boss-phase", { volume: 0.94, pitch: 1 + enemy.bossPhase * 0.05 });
+    this.spawnCombatLight(enemy.sprite.x, enemy.sprite.y, enemy.roleColor, 0.96, 320);
+    this.messageText.setText(`${enemy.displayName} shifts into phase ${enemy.bossPhase + 1}.`);
+  }
+
   private updateEnemies(dt: number): void {
     const difficulty = gameSession.getDifficultyProfile();
-    const stageIntensity = 1 + this.stageIndex * 0.08;
 
     this.enemies.forEach((enemy) => {
       enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
       enemy.specialCooldown = Math.max(0, enemy.specialCooldown - dt);
       enemy.chargeTimer = Math.max(0, enemy.chargeTimer - dt);
+      enemy.moveTimer = Math.max(0, enemy.moveTimer - dt);
       enemy.damageFlash = Math.max(0, enemy.damageFlash - dt * 6);
       enemy.shieldRegenDelay = Math.max(0, enemy.shieldRegenDelay - dt);
       enemy.stateTimer += dt;
@@ -2305,7 +2584,7 @@ export class MissionScene extends Phaser.Scene {
 
       enemy.aura.setPosition(enemy.sprite.x, enemy.sprite.y);
       enemy.aura.setScale(enemy.damageFlash > 0 ? 1.22 : 1, enemy.damageFlash > 0 ? 1.22 : 1);
-      enemy.aura.setAlpha(enemy.damageFlash > 0 ? 0.4 : 0.26);
+      enemy.aura.setAlpha(enemy.damageFlash > 0 ? 0.4 : enemy.moveState === "boss-phase-shift" ? 0.42 : 0.26);
       enemy.sprite.setFillStyle(0x050608, enemy.damageFlash > 0 && gameSession.settings.graphics.hitFlash ? 0.5 : 1);
       enemy.shieldRing.setPosition(enemy.sprite.x, enemy.sprite.y);
       enemy.shieldRing.setVisible(enemy.shield > 0.5);
@@ -2318,23 +2597,43 @@ export class MissionScene extends Phaser.Scene {
       const perpendicular = new Phaser.Math.Vector2(-direction.y, direction.x);
 
       if (enemy.kind === "rusher") {
-        if (enemy.specialCooldown <= 0 && distance > 120 && distance < 360) {
-          enemy.specialCooldown = 2.6 * difficulty.enemyCooldown;
-          enemy.chargeTimer = 0.45;
-        }
-
-        const weave = perpendicular.scale(Math.sin(enemy.stateTimer * 5.6) * 0.35);
-        const move = direction.clone().scale(enemy.chargeTimer > 0 ? 1.9 : 1).add(weave).normalize();
-        enemy.sprite.x += move.x * enemy.speed * dt;
-        enemy.sprite.y += move.y * enemy.speed * dt;
-
-        if (distance < enemy.radius + target.radius && enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 0.9 * difficulty.enemyCooldown;
-          if (target.side === "companion" && target.companion) {
-            this.damageCompanion(target.companion, Math.round((11 + Math.floor(this.stageIndex * 1.5)) * difficulty.enemyDamage));
-          } else {
-            this.damagePlayer(Math.round((11 + Math.floor(this.stageIndex * 1.5)) * difficulty.enemyDamage));
+        if (enemy.moveState === "rusher-windup") {
+          enemy.sprite.x -= direction.x * enemy.speed * dt * 0.16;
+          enemy.sprite.y -= direction.y * enemy.speed * dt * 0.16;
+          enemy.aura.setAlpha(0.4);
+          if (enemy.moveTimer <= 0) {
+            enemy.moveState = "rusher-lunge";
+            enemy.moveTimer = 0.24;
+            enemy.chargeTimer = 1;
+            retroSfx.play("enemy-pounce", { volume: 0.72, pitch: 1.02 });
           }
+        } else if (enemy.moveState === "rusher-lunge") {
+          enemy.sprite.x += enemy.moveVector.x * enemy.speed * dt * 2.7;
+          enemy.sprite.y += enemy.moveVector.y * enemy.speed * dt * 2.7;
+          const lungeDistance = Phaser.Math.Distance.Between(enemy.sprite.x, enemy.sprite.y, target.x, target.y);
+          if (enemy.chargeTimer > 0 && lungeDistance < enemy.radius + target.radius + 18) {
+            enemy.chargeTimer = 0;
+            enemy.lastMoveLabel = "Rend Pounce";
+            this.damageFocusTarget(target, Math.round((12 + Math.floor(this.stageIndex * 1.8)) * difficulty.enemyDamage));
+            this.spawnCombatLight(enemy.sprite.x, enemy.sprite.y, enemy.roleColor, 0.44, 160);
+          }
+          if (enemy.moveTimer <= 0) {
+            enemy.moveState = "idle";
+            enemy.attackCooldown = 1.25 * difficulty.enemyCooldown;
+          }
+        } else {
+          if (enemy.attackCooldown <= 0 && distance > 72 && distance < 340) {
+            enemy.moveState = "rusher-windup";
+            enemy.moveTimer = 0.28;
+            enemy.moveVector = direction.clone();
+            enemy.lastMoveLabel = "Rend Pounce";
+            this.drawSupportBeam(enemy.sprite.x, enemy.sprite.y, target.x, target.y, enemy.roleColor, 180, 4);
+          }
+
+          const weave = perpendicular.scale(Math.sin(enemy.stateTimer * 5.1) * 0.28);
+          const move = direction.clone().scale(0.98).add(weave).normalize();
+          enemy.sprite.x += move.x * enemy.speed * dt;
+          enemy.sprite.y += move.y * enemy.speed * dt;
         }
       } else if (enemy.kind === "shooter") {
         const desiredRange = 270;
@@ -2357,55 +2656,60 @@ export class MissionScene extends Phaser.Scene {
         }
 
         if (enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 1.2 * difficulty.enemyCooldown;
-          retroSfx.play("enemy-shot", { volume: 0.5, pitch: 0.96 });
-          this.spawnBullet(
-            enemy.sprite.x,
-            enemy.sprite.y,
-            direction,
-            280 + stageIntensity * 10,
-            Math.round((9 + this.stageIndex) * difficulty.enemyDamage),
-            6,
-            "enemy",
-            enemy.roleColor,
-          );
+          enemy.attackCooldown = 1.42 * difficulty.enemyCooldown;
+          enemy.lastMoveLabel = "Suppressive Volley";
+          retroSfx.play("enemy-volley", { volume: 0.54, pitch: 0.98 });
+          const baseAngle = Math.atan2(direction.y, direction.x);
+          const shotCount = this.mission.difficulty === "hard" ? 4 : 3;
+          const spread = Phaser.Math.DegToRad(18 + this.stageIndex);
+          for (let shot = 0; shot < shotCount; shot += 1) {
+            const t = shot / Math.max(1, shotCount - 1);
+            const angle = baseAngle - spread / 2 + spread * t;
+            const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
+            this.spawnBullet(
+              enemy.sprite.x,
+              enemy.sprite.y,
+              vector,
+              276 + this.stageIndex * 12,
+              Math.round((8 + this.stageIndex) * difficulty.enemyDamage),
+              6,
+              "enemy",
+              enemy.roleColor,
+            );
+          }
         }
       } else {
-        if (!enemy.spawnedAdds && enemy.hp < enemy.maxHp * 0.52) {
-          enemy.spawnedAdds = true;
-          this.spawnEnemy("rusher", enemy.sprite.x - 120, enemy.sprite.y - 40);
-          this.spawnEnemy("rusher", enemy.sprite.x - 120, enemy.sprite.y + 40);
-          this.spawnEnemy("shooter", enemy.sprite.x + 90, enemy.sprite.y);
-          this.messageText.setText("The brute tears open fresh shadow spawn as it weakens.");
-        }
-
-        if (enemy.specialCooldown <= 0) {
-          enemy.specialCooldown = (enemy.hp < enemy.maxHp * 0.5 ? 1.8 : 2.6) * difficulty.enemyCooldown;
-          retroSfx.play("boss-burst", { volume: 0.9, pitch: enemy.hp < enemy.maxHp * 0.5 ? 1.06 : 1 });
-          const burstCount = enemy.hp < enemy.maxHp * 0.5 ? 10 : 8;
-          for (let burst = 0; burst < burstCount; burst += 1) {
-            const angle = (Math.PI * 2 * burst) / burstCount;
-            const vector = new Phaser.Math.Vector2(Math.cos(angle), Math.sin(angle));
-            this.spawnBullet(enemy.sprite.x, enemy.sprite.y, vector, 230, Math.round(9 * difficulty.enemyDamage), 7, "enemy", 0xc8a7ff);
+        if (enemy.moveState === "boss-phase-shift") {
+          enemy.aura.setAlpha(0.46);
+          enemy.aura.setScale(1.2 + Math.sin(enemy.stateTimer * 10) * 0.06);
+          if (enemy.moveTimer <= 0) {
+            enemy.moveState = "idle";
           }
-        }
-
-        if (enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = 1.6 * difficulty.enemyCooldown;
-          enemy.chargeTimer = 0.42;
-        }
-
-        const move = direction.clone().scale(enemy.chargeTimer > 0 ? 1.75 : 0.92).add(perpendicular.scale(Math.sin(enemy.stateTimer * 2.8) * 0.25)).normalize();
-        enemy.sprite.x += move.x * enemy.speed * dt;
-        enemy.sprite.y += move.y * enemy.speed * dt;
-
-        if (distance < enemy.radius + target.radius + 4 && enemy.attackCooldown > 0.9) {
-          if (target.side === "companion" && target.companion) {
-            this.damageCompanion(target.companion, Math.round((17 + this.stageIndex * 2) * difficulty.enemyDamage));
-          } else {
-            this.damagePlayer(Math.round((17 + this.stageIndex * 2) * difficulty.enemyDamage));
+        } else if (enemy.moveState === "boss-slam-windup") {
+          enemy.aura.setAlpha(0.44);
+          enemy.aura.setScale(1.1 + (0.42 - enemy.moveTimer) * 0.5);
+          if (enemy.moveTimer <= 0) {
+            this.resolveBossCrusherSlam(enemy);
           }
-          enemy.attackCooldown = 0.75;
+        } else {
+          if (enemy.specialCooldown <= 0) {
+            this.triggerBossMove(enemy, target);
+          }
+
+          if (enemy.attackCooldown <= 0 && distance < enemy.radius + target.radius + 28) {
+            enemy.attackCooldown = (1.55 - enemy.bossPhase * 0.08) * difficulty.enemyCooldown;
+            enemy.lastMoveLabel = "Crushing Swipe";
+            this.damageFocusTarget(target, Math.round((15 + enemy.bossPhase * 4 + this.stageIndex) * difficulty.enemyDamage));
+            this.spawnCombatLight(enemy.sprite.x, enemy.sprite.y, enemy.roleColor, 0.36, 170);
+          }
+
+          const strafeWeight = enemy.bossKind === "relay-seer" ? 0.5 : enemy.bossKind === "nightglass-behemoth" ? 0.2 : 0.12;
+          const move = direction.clone()
+            .scale(enemy.bossKind === "nightglass-behemoth" ? 1.08 : 0.84)
+            .add(perpendicular.scale(Math.sin(enemy.stateTimer * (enemy.bossKind === "relay-seer" ? 4.2 : 2.7)) * strafeWeight))
+            .normalize();
+          enemy.sprite.x += move.x * enemy.speed * dt;
+          enemy.sprite.y += move.y * enemy.speed * dt;
         }
       }
 
@@ -2776,11 +3080,35 @@ export class MissionScene extends Phaser.Scene {
   private spawnEnemy(kind: EnemyKind, preferredX?: number, preferredY?: number): void {
     const difficulty = gameSession.getDifficultyProfile();
     const stageIntensity = 1 + this.stageIndex * 0.09;
+    const bossArchetype = kind === "boss"
+      ? BOSS_ARCHETYPES[this.currentStage?.type === "boss" ? this.currentStage.boss : "shard-bruiser"]
+      : null;
     const config = kind === "rusher"
-      ? { color: 0xff6b7d, hp: 60, radius: 18, speed: 150 }
+      ? {
+          displayName: "Shadow Pouncer",
+          moveLabel: "Rend Pounce",
+          color: 0xff6b7d,
+          hp: 60,
+          radius: 18,
+          speed: 150,
+        }
       : kind === "shooter"
-        ? { color: 0xffc86d, hp: 46, radius: 16, speed: 118 }
-        : { color: 0xba84ff, hp: 360, radius: 34, speed: 92 };
+        ? {
+            displayName: "Shadow Gunner",
+            moveLabel: "Suppressive Volley",
+            color: 0xffc86d,
+            hp: 46,
+            radius: 16,
+            speed: 118,
+          }
+        : {
+            displayName: bossArchetype?.displayName ?? "Shard Bruiser",
+            moveLabel: "Phase Shift",
+            color: bossArchetype?.phaseColors[0] ?? 0xba84ff,
+            hp: bossArchetype?.phaseHp[0] ?? 360,
+            radius: 34,
+            speed: bossArchetype?.speed ?? 92,
+          };
 
     const spawnX = Phaser.Math.Clamp(
       preferredX ?? Phaser.Math.Between(this.playArea.x + 240, this.playArea.right - 120),
@@ -2793,14 +3121,20 @@ export class MissionScene extends Phaser.Scene {
       this.playArea.bottom - config.radius,
     );
 
+    const phaseHpPool = kind === "boss" && bossArchetype
+      ? bossArchetype.phaseHp.map((value) => Math.round(value * difficulty.enemyHp * Math.min(stageIntensity, 1.34)))
+      : [Math.round(config.hp * stageIntensity * difficulty.enemyHp)];
+    const phaseShieldPool = kind === "boss" && bossArchetype
+      ? bossArchetype.phaseShield.map((value) => Math.round(value * difficulty.enemyHp))
+      : [0];
     const baseShield = kind === "boss"
-      ? 120 + this.stageIndex * 14
+      ? phaseShieldPool[0]
       : kind === "shooter" && this.stageIndex >= 3
         ? 24 + this.stageIndex * 8
         : kind === "rusher" && this.stageIndex >= 4
           ? 18 + this.stageIndex * 6
           : 0;
-    const scaledShield = Math.round(baseShield * difficulty.enemyHp);
+    const scaledShield = kind === "boss" ? baseShield : Math.round(baseShield * difficulty.enemyHp);
 
     const aura = this.add.circle(spawnX, spawnY, config.radius + 8, config.color, 0.26).setDepth(8);
     const shieldRing = this.add.circle(spawnX, spawnY, config.radius + 12)
@@ -2812,11 +3146,14 @@ export class MissionScene extends Phaser.Scene {
 
     this.enemies.push({
       kind,
+      displayName: config.displayName,
+      moveLabel: config.moveLabel,
+      lastMoveLabel: kind === "boss" ? "Phase 1 Online" : "Holding Pattern",
       sprite,
       aura,
       shieldRing,
-      hp: Math.round(config.hp * stageIntensity * difficulty.enemyHp),
-      maxHp: Math.round(config.hp * stageIntensity * difficulty.enemyHp),
+      hp: phaseHpPool[0],
+      maxHp: phaseHpPool[0],
       shield: scaledShield,
       maxShield: scaledShield,
       shieldRegenDelay: 0,
@@ -2829,10 +3166,26 @@ export class MissionScene extends Phaser.Scene {
       chargeTimer: 0,
       damageFlash: 0,
       stateTimer: 0,
+      moveState: "idle",
+      moveTimer: 0,
+      moveVector: new Phaser.Math.Vector2(1, 0),
       roleColor: config.color,
       strafeDir: Phaser.Math.Between(0, 1) === 0 ? -1 : 1,
       spawnedAdds: false,
+      bossKind: bossArchetype?.id,
+      bossPhase: 0,
+      phaseCount: kind === "boss" ? 3 : 1,
+      phaseHpPool,
+      phaseShieldPool,
+      phaseColors: kind === "boss" && bossArchetype ? [...bossArchetype.phaseColors] : [config.color],
+      phaseMoves: kind === "boss" && bossArchetype ? bossArchetype.phaseMoves.map((moves) => [...moves]) : [[]],
+      bossMoveIndex: 0,
     });
+
+    if (kind === "boss") {
+      this.bossFill.setFillStyle(config.color, 0.95);
+      this.bossTitle.setText(`${config.displayName} | Phase 1/3`);
+    }
   }
   private spawnBullet(
     x: number,
@@ -2987,6 +3340,10 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    if (enemy.kind === "boss" && enemy.moveState === "boss-phase-shift") {
+      return;
+    }
+
     const previousShield = enemy.shield;
     const resolved = this.applyShieldDamage(enemy.shield, amount);
     enemy.shield = resolved.shield;
@@ -3009,6 +3366,10 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (enemy.kind === "boss") {
+      if (enemy.bossPhase < enemy.phaseCount - 1) {
+        this.advanceBossPhase(enemy);
+        return;
+      }
       this.spawnLootBurst(enemy.sprite.x, enemy.sprite.y);
     }
     enemy.sprite.destroy();
@@ -3332,6 +3693,8 @@ export class MissionScene extends Phaser.Scene {
     this.bossTitle.setVisible(bossVisible);
     if (boss) {
       this.bossFill.width = 312 * (boss.hp / boss.maxHp);
+      this.bossFill.setFillStyle(boss.roleColor, 0.95);
+      this.setTextIfChanged(this.bossTitle, `${boss.displayName} | Phase ${boss.bossPhase + 1}/${boss.phaseCount}`);
     }
 
     if (this.autoAimTarget) {
@@ -4096,6 +4459,9 @@ export class MissionScene extends Phaser.Scene {
       },
       enemies: this.enemies.map((enemy) => ({
         kind: enemy.kind,
+        name: enemy.displayName,
+        move: enemy.lastMoveLabel,
+        bossPhase: enemy.bossPhase + 1,
         hp: Math.round(enemy.hp),
         shield: Math.round(enemy.shield),
         x: Math.round(enemy.sprite.x),

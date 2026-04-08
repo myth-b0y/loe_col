@@ -3,6 +3,7 @@ import type { RewardData } from "../core/session";
 export type MissionDifficultyTier = "easy" | "medium" | "hard";
 export type MissionEnemyKind = "rusher" | "shooter";
 export type MissionFlow = "right" | "up";
+export type MissionBossKind = "shard-bruiser" | "relay-seer" | "nightglass-behemoth";
 
 export type MissionEnemyGroup = {
   kind: MissionEnemyKind;
@@ -42,7 +43,7 @@ export type BossStage = {
   type: "boss";
   flow: MissionFlow;
   span: number;
-  boss: "shard-bruiser";
+  boss: MissionBossKind;
   triggerProgress: number;
   adds?: MissionEnemyGroup[];
 };
@@ -82,6 +83,11 @@ const HALLWAY_NAMES = {
 
 const REST_NAMES = ["Maintenance Safe Room", "Field Reset Bay", "Support Vault", "Crew Shelter"];
 const BOSS_NAMES = ["Shard Heart", "Anchor Chamber", "Core Rupture", "Dark Relay"];
+const BOSS_VARIANTS_BY_DIFFICULTY: Record<MissionDifficultyTier, readonly MissionBossKind[]> = {
+  easy: ["shard-bruiser"],
+  medium: ["relay-seer"],
+  hard: ["nightglass-behemoth"],
+};
 
 const FLAVOR_BANK = {
   easy: [
@@ -268,6 +274,7 @@ function createRestStage(contract: MissionContractDefinition, index: number, rng
 function createBossStage(contract: MissionContractDefinition, index: number, rng: SeededRandom): BossStage {
   const flow = rng.next() > 0.5 ? "right" : "up";
   const addScale = contract.difficulty === "easy" ? 1 : contract.difficulty === "medium" ? 2 : 3;
+  const bossPool = BOSS_VARIANTS_BY_DIFFICULTY[contract.difficulty];
   return {
     id: `${contract.id}-boss-${index + 1}`,
     name: rng.pick(BOSS_NAMES),
@@ -275,7 +282,7 @@ function createBossStage(contract: MissionContractDefinition, index: number, rng
     type: "boss",
     flow,
     span: flow === "right" ? 1680 : 1540,
-    boss: "shard-bruiser",
+    boss: rng.pick(bossPool),
     triggerProgress: flow === "right" ? 0.44 : 0.38,
     adds: [
       { kind: "rusher", count: addScale + 1 },

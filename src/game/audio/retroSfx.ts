@@ -3,6 +3,8 @@ import { gameSession } from "../core/session";
 export type SfxCue =
   | "player-fire"
   | "enemy-shot"
+  | "enemy-pounce"
+  | "enemy-volley"
   | "pulse"
   | "arc-lance"
   | "dash"
@@ -19,6 +21,11 @@ export type SfxCue =
   | "demolition-shot"
   | "ranged-volley"
   | "boss-burst"
+  | "boss-slam"
+  | "boss-fan"
+  | "boss-summon"
+  | "boss-beam"
+  | "boss-phase"
   | "loot-burst"
   | "companion-revive";
 
@@ -60,6 +67,8 @@ type OutputNode = {
 const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "player-fire": 45,
   "enemy-shot": 70,
+  "enemy-pounce": 90,
+  "enemy-volley": 90,
   "pulse": 120,
   "arc-lance": 120,
   "dash": 110,
@@ -76,6 +85,11 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "demolition-shot": 120,
   "ranged-volley": 90,
   "boss-burst": 180,
+  "boss-slam": 170,
+  "boss-fan": 130,
+  "boss-summon": 180,
+  "boss-beam": 180,
+  "boss-phase": 220,
   "loot-burst": 200,
   "companion-revive": 140,
 };
@@ -152,6 +166,13 @@ class RetroSfxManager {
         this.tone(context, { type: "square", startFreq: 340 * pitch, endFreq: 160 * pitch, duration: 0.08, volume: volume * 0.2, filterFreq: 1800, pan });
         this.noise(context, { duration: 0.026, volume: volume * 0.03, filterFreq: 1500, filterType: "highpass", pan });
         return;
+      case "enemy-pounce":
+        this.noise(context, { duration: 0.06, volume: volume * 0.05, filterFreq: 1100, filterType: "bandpass", pan });
+        this.tone(context, { type: "square", startFreq: 210 * pitch, endFreq: 90 * pitch, duration: 0.12, volume: volume * 0.18, filterFreq: 900, pan });
+        return;
+      case "enemy-volley":
+        this.playArpeggio(context, [320, 360, 410], "square", volume * 0.09, pan, pitch, 0.045, 2000);
+        return;
       case "pulse":
         this.tone(context, { type: "square", startFreq: 280 * pitch, endFreq: 80 * pitch, duration: 0.22, volume: volume * 0.26, filterFreq: 1200, pan });
         this.tone(context, { type: "triangle", startFreq: 180 * pitch, endFreq: 90 * pitch, duration: 0.24, volume: volume * 0.18, filterFreq: 900, pan });
@@ -214,6 +235,26 @@ class RetroSfxManager {
         this.tone(context, { type: "square", startFreq: 170 * pitch, endFreq: 90 * pitch, duration: 0.22, volume: volume * 0.18, filterFreq: 900, pan });
         this.playArpeggio(context, [160, 120, 96], "triangle", volume * 0.08, pan, pitch, 0.08, 1000);
         this.noise(context, { duration: 0.1, volume: volume * 0.04, filterFreq: 800, filterType: "lowpass", pan });
+        return;
+      case "boss-slam":
+        this.noise(context, { duration: 0.1, volume: volume * 0.07, filterFreq: 720, filterType: "lowpass", pan });
+        this.tone(context, { type: "square", startFreq: 130 * pitch, endFreq: 54 * pitch, duration: 0.22, volume: volume * 0.2, filterFreq: 700, pan });
+        return;
+      case "boss-fan":
+        this.playArpeggio(context, [260, 330, 420, 520], "square", volume * 0.09, pan, pitch, 0.04, 2200);
+        this.noise(context, { duration: 0.05, volume: volume * 0.03, filterFreq: 1700, filterType: "highpass", pan });
+        return;
+      case "boss-summon":
+        this.tone(context, { type: "triangle", startFreq: 180 * pitch, endFreq: 70 * pitch, duration: 0.26, volume: volume * 0.16, filterFreq: 950, pan });
+        this.playArpeggio(context, [140, 176, 222], "triangle", volume * 0.06, pan, pitch, 0.08, 1000);
+        return;
+      case "boss-beam":
+        this.tone(context, { type: "sawtooth", startFreq: 540 * pitch, endFreq: 140 * pitch, duration: 0.22, volume: volume * 0.18, filterFreq: 2400, pan });
+        this.tone(context, { type: "square", startFreq: 860 * pitch, endFreq: 320 * pitch, duration: 0.16, volume: volume * 0.08, filterFreq: 3000, pan, startOffset: 0.02 });
+        return;
+      case "boss-phase":
+        this.playArpeggio(context, [196, 247, 330, 392], "triangle", volume * 0.11, pan, pitch, 0.07, 1800);
+        this.noise(context, { duration: 0.08, volume: volume * 0.03, filterFreq: 1300, filterType: "bandpass", pan, startOffset: 0.06 });
         return;
       case "loot-burst":
         this.playArpeggio(context, [392, 494, 659, 784], "square", volume * 0.1, pan, pitch, 0.065, 2600);
