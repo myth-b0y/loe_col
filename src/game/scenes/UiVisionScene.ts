@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { GAME_CODE, GAME_IP, GAME_SERIES, GAME_TITLE, GAME_VERSION } from "../core/buildInfo";
 import {
   createBodyText,
   createEmberAccent,
@@ -152,26 +153,32 @@ export class UiVisionScene extends Phaser.Scene {
   private buildMainMenuPage(): void {
     const container = this.add.container(0, 0).setDepth(4);
 
-    const titlePrefix = this.add.text(110, 188, "Legends of EDEN", {
+    const titlePrefix = this.add.text(284, 178, GAME_IP, {
       fontFamily: UI_FONT_FAMILY,
-      fontSize: "30px",
+      fontSize: "16px",
       color: "#91b7ef",
       fontStyle: "bold",
-    }).setDepth(6);
-    const title = this.add.text(108, 232, "Circle of Light", {
-      fontFamily: "\"Georgia\"",
-      fontSize: "60px",
+    }).setOrigin(0.5, 0).setDepth(6);
+    const title = this.add.text(108, 214, GAME_SERIES, {
+      fontFamily: UI_FONT_FAMILY,
+      fontSize: "58px",
       color: "#f6fbff",
       fontStyle: "bold",
     }).setDepth(6);
+    const subtitle = this.add.text(288, 278, GAME_TITLE, {
+      fontFamily: "\"Georgia\"",
+      fontSize: "34px",
+      color: "#f6fbff",
+      fontStyle: "bold",
+    }).setOrigin(0.5, 0).setDepth(6);
     const titleLine = this.add.graphics().setDepth(6);
     titleLine.lineStyle(2, 0x74bfff, 0.92);
     titleLine.beginPath();
-    titleLine.moveTo(110, 332);
-    titleLine.lineTo(456, 332);
+    titleLine.moveTo(110, 338);
+    titleLine.lineTo(470, 338);
     titleLine.strokePath();
     titleLine.fillStyle(0xf4fbff, 0.94);
-    titleLine.fillCircle(458, 332, 2.5);
+    titleLine.fillCircle(472, 338, 2.5);
 
     const tagline = this.add.text(110, 380, ["Build the crew.", "Launch the mission.", "Return stronger."], {
       fontFamily: UI_FONT_FAMILY,
@@ -231,7 +238,7 @@ export class UiVisionScene extends Phaser.Scene {
       fontSize: "15px",
       color: "#93a8c5",
     }).setDepth(6);
-    const version = this.add.text(1046, 748, "loe_col v0.0.29", {
+    const version = this.add.text(1046, 748, `${GAME_CODE} ${GAME_VERSION}`, {
       fontFamily: UI_FONT_FAMILY,
       fontSize: "14px",
       color: "#90a6c6",
@@ -240,6 +247,7 @@ export class UiVisionScene extends Phaser.Scene {
     container.add([
       titlePrefix,
       title,
+      subtitle,
       titleLine,
       tagline,
       ringFrame,

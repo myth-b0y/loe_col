@@ -108,7 +108,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 4;
+  version: 5;
   meta: {
     lastSavedAt: string | null;
   };
@@ -134,6 +134,7 @@ export type SaveData = {
   };
   progression: {
     completedMissionIds: string[];
+    exhaustedMissionIds: string[];
     unlockedMissionIds: string[];
   };
 };
@@ -179,7 +180,7 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const DEFAULT_SAVE: SaveData = {
-  version: 4,
+  version: 5,
   meta: {
     lastSavedAt: null,
   },
@@ -205,6 +206,7 @@ const DEFAULT_SAVE: SaveData = {
   },
   progression: {
     completedMissionIds: [],
+    exhaustedMissionIds: [],
     unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
   },
 };
@@ -264,7 +266,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 4 as const,
+    version: 5 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
     loadout: {
@@ -291,6 +293,8 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   merged.loadout.companion = summarizeSquadAssignments(normalizedSquad);
   merged.missions.acceptedMissionIds = acceptedMissionIds;
   merged.missions.selectedMissionId = selectedMissionId;
+  merged.progression.completedMissionIds = Array.from(new Set(merged.progression.completedMissionIds ?? []));
+  merged.progression.exhaustedMissionIds = Array.from(new Set(merged.progression.exhaustedMissionIds ?? []));
   return merged;
 }
 
@@ -535,8 +539,12 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return this.saveData.progression.completedMissionIds.includes(missionId);
   }
 
+  isMissionExhausted(missionId: string): boolean {
+    return this.saveData.progression.exhaustedMissionIds.includes(missionId);
+  }
+
   acceptMission(missionId: string): void {
-    if (!this.isMissionUnlocked(missionId) || this.isMissionCompleted(missionId)) {
+    if (!this.isMissionUnlocked(missionId) || this.isMissionExhausted(missionId)) {
       return;
     }
 
@@ -551,7 +559,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   acceptAllMissions(missionIds: string[]): void {
     const accepted = new Set(this.saveData.missions.acceptedMissionIds);
     missionIds.forEach((missionId) => {
-      if (this.isMissionUnlocked(missionId) && !this.isMissionCompleted(missionId)) {
+      if (this.isMissionUnlocked(missionId) && !this.isMissionExhausted(missionId)) {
         accepted.add(missionId);
       }
     });
@@ -692,6 +700,9 @@ export class GameSession extends Phaser.Events.EventEmitter {
     if (!this.saveData.progression.completedMissionIds.includes(missionId)) {
       this.saveData.progression.completedMissionIds.push(missionId);
     }
+    if (!this.saveData.progression.exhaustedMissionIds.includes(missionId)) {
+      this.saveData.progression.exhaustedMissionIds.push(missionId);
+    }
 
     this.saveData.profile.credits += reward.credits;
     this.saveData.profile.xp += reward.xp;
@@ -700,6 +711,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
       this.addItemToCargo(reward.itemId);
     }
 
+    this.emit("save-changed", this.saveData);
+  }
+
+  refreshMissionBoard(): void {
+    this.saveData.progression.exhaustedMissionIds = [];
     this.emit("save-changed", this.saveData);
   }
 

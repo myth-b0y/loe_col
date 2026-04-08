@@ -39,12 +39,15 @@ type Bullet = {
   damage: number;
   radius: number;
   owner: BulletOwner;
+  previousX: number;
+  previousY: number;
+  debuffKind?: "hex";
   splashRadius?: number;
   splashDamage?: number;
 };
 
 type BossMoveId = "crusher-slam" | "nova-ring" | "shadow-call" | "fan-volley" | "beam-sweep";
-type EnemyMoveState = "idle" | "rusher-windup" | "rusher-lunge" | "boss-slam-windup" | "boss-phase-shift";
+type EnemyMoveState = "idle" | "rusher-windup" | "rusher-lunge" | "hexer-cast" | "boss-slam-windup" | "boss-phase-shift";
 
 type BossArchetype = {
   id: MissionBossKind;
@@ -116,6 +119,12 @@ type RestStations = {
   supplyText: Phaser.GameObjects.Text;
 };
 
+type CoverSpot = {
+  bounds: Phaser.Geom.Rectangle;
+  frame: Phaser.GameObjects.Rectangle;
+  fill: Phaser.GameObjects.Rectangle;
+};
+
 type AbilityCard = {
   frame: Phaser.GameObjects.Rectangle;
   cooldownMask: Phaser.GameObjects.Rectangle;
@@ -150,6 +159,7 @@ type CompanionState = {
   maxShield: number;
   shieldDelay: number;
   shieldRechargeStarted: boolean;
+  slowDebuff: number;
   downed: boolean;
   reviveProgress: number;
   reviveHeld: boolean;
@@ -208,9 +218,11 @@ const PLAYER_SHIELD_REGEN_RATE = 18;
 const COMPANION_SHIELD_REGEN_RATE = 12;
 const COMPANION_REVIVE_HOLD_TIME = 2.4;
 const COMPANION_REVIVE_RANGE = 78;
-const COMPANION_BAR_SPACING = 92;
+const COMPANION_BAR_SPACING = 108;
 const PLAYER_BUFF_ROW_Y = 160;
-const COMPANION_HUD_START_Y = 204;
+const COMPANION_HUD_START_Y = 196;
+const HEX_DEBUFF_DURATION = 2.2;
+const COVER_INSET = 4;
 
 const BOSS_ARCHETYPES: Record<MissionBossKind, BossArchetype> = {
   "shard-bruiser": {
@@ -280,6 +292,7 @@ export class MissionScene extends Phaser.Scene {
   private hallwayZones: HallwayZoneRuntime[] = [];
   private restStations?: RestStations;
   private exitDoor?: DoorUi;
+  private coverSpots: CoverSpot[] = [];
   private restHealed = false;
   private supplyHintShown = false;
 
@@ -296,6 +309,7 @@ export class MissionScene extends Phaser.Scene {
   private playerThreat = 18;
   private playerGuardBuff = 0;
   private playerFocusBuff = 0;
+  private playerSlowDebuff = 0;
   private playerInvuln = 0;
   private fireCooldown = 0;
   private pulseCooldown = 0;
@@ -440,6 +454,7 @@ export class MissionScene extends Phaser.Scene {
     this.playerInvuln = Math.max(0, this.playerInvuln - dt);
     this.playerGuardBuff = Math.max(0, this.playerGuardBuff - dt);
     this.playerFocusBuff = Math.max(0, this.playerFocusBuff - dt);
+    this.playerSlowDebuff = Math.max(0, this.playerSlowDebuff - dt);
     this.playerShieldDelay = Math.max(0, this.playerShieldDelay - dt);
     this.decayThreatState(dt);
     this.companions.forEach((companion) => {
@@ -448,6 +463,7 @@ export class MissionScene extends Phaser.Scene {
       companion.shieldDelay = Math.max(0, companion.shieldDelay - dt);
       companion.guardBuff = Math.max(0, companion.guardBuff - dt);
       companion.focusBuff = Math.max(0, companion.focusBuff - dt);
+      companion.slowDebuff = Math.max(0, companion.slowDebuff - dt);
     });
 
     this.updateKeyboardVector();
@@ -458,6 +474,7 @@ export class MissionScene extends Phaser.Scene {
     this.updateCompanions(dt);
     this.updateEnemies(dt);
     this.applySoftActorSeparation();
+    this.applyCoverCollisions();
     this.updateFacing();
     this.updateBullets(dt);
     this.updateStageState();
@@ -481,6 +498,7 @@ export class MissionScene extends Phaser.Scene {
     this.hallwayZones = [];
     this.restStations = undefined;
     this.exitDoor = undefined;
+    this.coverSpots = [];
     this.restHealed = false;
     this.supplyHintShown = false;
 
@@ -493,6 +511,7 @@ export class MissionScene extends Phaser.Scene {
     this.playerThreat = 18;
     this.playerGuardBuff = 0;
     this.playerFocusBuff = 0;
+    this.playerSlowDebuff = 0;
     this.playerInvuln = 0;
     this.fireCooldown = 0;
     this.pulseCooldown = 0;
@@ -598,6 +617,7 @@ export class MissionScene extends Phaser.Scene {
         maxShield: companion.maxShield,
         shieldDelay: 0,
         shieldRechargeStarted: false,
+        slowDebuff: 0,
         downed: false,
         reviveProgress: 0,
         reviveHeld: false,
@@ -683,7 +703,7 @@ export class MissionScene extends Phaser.Scene {
       color: "#f5fbff",
       fontStyle: "bold",
     }).setOrigin(0.5));
-    this.playerEffectText = this.pin(this.add.text(86, PLAYER_BUFF_ROW_Y, "Status: Clear", {
+    this.playerEffectText = this.pin(this.add.text(86, PLAYER_BUFF_ROW_Y, "Effects: None", {
       fontFamily: "Arial",
       fontSize: "11px",
       color: "#a8c5e8",
@@ -691,9 +711,9 @@ export class MissionScene extends Phaser.Scene {
 
     this.companions.forEach((companion, index) => {
       const nameY = COMPANION_HUD_START_Y + index * COMPANION_BAR_SPACING;
-      const hpY = nameY + 22;
-      const shieldY = nameY + 39;
-      const effectY = nameY + 54;
+      const hpY = nameY + 28;
+      const shieldY = nameY + 46;
+      const effectY = nameY + 62;
 
       const nameText = this.pin(this.add.text(86, nameY, `${companion.name} | ${companion.roleLabel}`, {
         fontFamily: "Arial",
@@ -1093,11 +1113,13 @@ export class MissionScene extends Phaser.Scene {
     const entryPoint = this.getStageEntryPoint(this.currentStage);
     const forward = flowDirection(this.getStageFlow(this.currentStage));
     this.player.setPosition(entryPoint.x, entryPoint.y);
+    this.resolveCircleAgainstCover(this.player, 18);
     this.player.setAlpha(1);
     this.playerShieldRing.setPosition(this.player.x, this.player.y);
     this.companions.forEach((companion) => {
       const spawnAnchor = this.getCompanionDesiredAnchor(companion, forward, null, new Phaser.Math.Vector2(0, 0));
       companion.sprite.setPosition(spawnAnchor.x, spawnAnchor.y);
+      this.resolveCircleAgainstCover(companion.sprite, companion.radius);
       companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
       companion.sprite.setVisible(gameSession.getModeRules().companionsEnabled);
       companion.shieldRing.setVisible(gameSession.getModeRules().companionsEnabled && companion.shield > 0.5);
@@ -1297,6 +1319,7 @@ export class MissionScene extends Phaser.Scene {
     };
 
     this.setExitDoorOpen(stage.type === "rest", stage.type === "rest" ? "Ready" : "Locked");
+    this.buildCoverLayout(stage);
   }
 
   private setupHallway(stage: HallwayStage): void {
@@ -1414,6 +1437,68 @@ export class MissionScene extends Phaser.Scene {
       this.playArea.centerY + Phaser.Math.Between(-110, 110),
     );
   }
+
+  private buildCoverLayout(stage: MissionStage): void {
+    this.coverSpots = [];
+    if (stage.type === "rest") {
+      return;
+    }
+
+    const flow = this.getStageFlow(stage);
+    const count = stage.type === "boss"
+      ? flow === "up" ? 4 : 3
+      : flow === "up"
+        ? 3
+        : 2 + (this.stageIndex >= 3 ? 1 : 0);
+    const startT = flow === "up" ? 0.22 : 0.26;
+    const endT = flow === "up" ? 0.76 : 0.72;
+
+    for (let index = 0; index < count; index += 1) {
+      const t = Phaser.Math.Linear(startT, endT, count === 1 ? 0.5 : index / (count - 1));
+      const center = this.getWorldPointAlongFlow(flow, t);
+      const lateralSign = index % 2 === 0 ? -1 : 1;
+      const isWall = (index + this.stageIndex) % 2 === 0;
+
+      if (flow === "up") {
+        const width = isWall ? 150 : 96;
+        const height = isWall ? 34 : 54;
+        this.addCoverSpot(
+          center.x + lateralSign * (isWall ? 126 : 148),
+          center.y,
+          width,
+          height,
+          isWall ? 0x26364b : 0x2c3d54,
+        );
+      } else {
+        const width = isWall ? 54 : 70;
+        const height = isWall ? 150 : 102;
+        this.addCoverSpot(
+          center.x,
+          center.y + lateralSign * (isWall ? 118 : 132),
+          width,
+          height,
+          isWall ? 0x26364b : 0x2c3d54,
+        );
+      }
+    }
+  }
+
+  private addCoverSpot(x: number, y: number, width: number, height: number, color: number): void {
+    const clampedX = Phaser.Math.Clamp(x, this.playArea.x + width / 2 + 24, this.playArea.right - width / 2 - 24);
+    const clampedY = Phaser.Math.Clamp(y, this.playArea.y + height / 2 + 24, this.playArea.bottom - height / 2 - 24);
+    const fill = this.add.rectangle(clampedX, clampedY, width, height, color, 0.96)
+      .setDepth(-4);
+    const frame = this.add.rectangle(clampedX, clampedY, width, height, 0x000000, 0)
+      .setStrokeStyle(3, 0x8ab7ed, 0.72)
+      .setDepth(-3);
+
+    this.stageObjects.push(fill, frame);
+    this.coverSpots.push({
+      bounds: new Phaser.Geom.Rectangle(clampedX - width / 2, clampedY - height / 2, width, height),
+      frame,
+      fill,
+    });
+  }
   private updateKeyboardVector(): void {
     this.keyboardVector.set(0, 0);
     if (!this.moveKeys || this.missionComplete || this.transitioningStage) {
@@ -1445,8 +1530,9 @@ export class MissionScene extends Phaser.Scene {
     }
 
     const movement = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
-    this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * MOVE_SPEED * dt, this.playArea.x + 20, this.playArea.right - 20);
-    this.player.y = Phaser.Math.Clamp(this.player.y + movement.y * MOVE_SPEED * dt, this.playArea.y + 20, this.playArea.bottom - 20);
+    const slowMultiplier = this.playerSlowDebuff > 0 ? 0.72 : 1;
+    this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * MOVE_SPEED * slowMultiplier * dt, this.playArea.x + 20, this.playArea.right - 20);
+    this.player.y = Phaser.Math.Clamp(this.player.y + movement.y * MOVE_SPEED * slowMultiplier * dt, this.playArea.y + 20, this.playArea.bottom - 20);
     this.player.setAlpha(this.playerInvuln > 0 ? 0.6 : 1);
     this.playerShieldRing.setPosition(this.player.x, this.player.y);
     this.applyHumanoidStride(this.player, movement.length(), 0, this.getBaseAimDirection());
@@ -1595,7 +1681,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const followDirection = this.getBaseAimDirection();
+    const followDirection = this.getFormationPressureDirection();
     this.companions.forEach((companion, index) => {
       if (companion.downed) {
         companion.sprite.setVisible(true);
@@ -1623,7 +1709,7 @@ export class MissionScene extends Phaser.Scene {
             : companion.attackStyle === "melee"
               ? 10.4
               : 9.7
-      ));
+      ) * (companion.slowDebuff > 0 ? 0.72 : 1));
       companion.sprite.x = Phaser.Math.Linear(companion.sprite.x, desiredX, smoothing);
       companion.sprite.y = Phaser.Math.Linear(companion.sprite.y, desiredY, smoothing);
       companion.sprite.x = Phaser.Math.Clamp(companion.sprite.x, this.playArea.x + companion.radius, this.playArea.right - companion.radius);
@@ -1753,11 +1839,37 @@ export class MissionScene extends Phaser.Scene {
         continue;
       }
 
-      const weight = enemy.kind === "boss" ? 1.8 : enemy.kind === "rusher" ? 1.15 : 0.9;
+      const weight = enemy.kind === "boss" ? 1.8 : enemy.kind === "rusher" ? 1.15 : enemy.kind === "hexer" ? 1.05 : 0.9;
       pressure += weight * (1 - distance / radius);
     }
 
     return pressure;
+  }
+
+  private getFormationPressureDirection(): Phaser.Math.Vector2 {
+    if (this.enemies.length === 0) {
+      return this.currentStage ? flowDirection(this.getStageFlow(this.currentStage)) : this.getBaseAimDirection();
+    }
+
+    const pressure = new Phaser.Math.Vector2(0, 0);
+    this.enemies.forEach((enemy) => {
+      const toEnemy = new Phaser.Math.Vector2(enemy.sprite.x - this.player.x, enemy.sprite.y - this.player.y);
+      const distance = Math.max(1, toEnemy.length());
+      const weight = enemy.kind === "boss"
+        ? 2.8
+        : enemy.kind === "hexer"
+          ? 1.35
+          : enemy.kind === "rusher"
+            ? 1.55
+            : 1.15;
+      pressure.add(toEnemy.normalize().scale(weight / Math.max(0.42, distance / 280)));
+    });
+
+    if (pressure.lengthSq() <= 0.001) {
+      return this.currentStage ? flowDirection(this.getStageFlow(this.currentStage)) : this.getBaseAimDirection();
+    }
+
+    return pressure.normalize();
   }
 
   private getAllyPressure(
@@ -1845,17 +1957,17 @@ export class MissionScene extends Phaser.Scene {
     companion: CompanionState,
     anchorTarget: { side: ActorSide; companion?: CompanionState; x: number; y: number; score: number },
   ): boolean {
-    companion.cooldown = 3.1;
+    companion.cooldown = 4.35;
     retroSfx.play("heal-cast", { volume: 0.72, pitch: 1.06 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.44, 220);
     this.drawSupportBeam(companion.sprite.x, companion.sprite.y, anchorTarget.x, anchorTarget.y, companion.projectileColor, 220, 6);
     this.addCompanionThreat(companion, 9);
     this.applyCompanionHeal(anchorTarget, 6);
-    this.applyFocusBuff(anchorTarget, 3.6);
+    this.applyFocusBuff(anchorTarget, 2.35);
     this.getAlliedSupportTargetsNearPoint(anchorTarget.x, anchorTarget.y, 154, anchorTarget)
       .forEach((ally) => {
         this.applyCompanionHeal(ally, 3);
-        this.applyFocusBuff(ally, 2.9);
+        this.applyFocusBuff(ally, 1.8);
       });
     return true;
   }
@@ -1864,9 +1976,9 @@ export class MissionScene extends Phaser.Scene {
     const distanceToTarget = Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, target.sprite.x, target.sprite.y);
 
     if (frontGuardReady) {
-      companion.cooldown = 3.2;
-      companion.tauntTimer = 3.2;
-      companion.aegisTimer = 2.3;
+      companion.cooldown = 4.15;
+      companion.tauntTimer = 2.2;
+      companion.aegisTimer = 1.7;
       companion.threat = Math.max(companion.threat, 140);
       retroSfx.play("guard-pulse", { volume: 0.84 });
       const guardPulse = this.add.circle(companion.sprite.x, companion.sprite.y, 24)
@@ -1879,7 +1991,7 @@ export class MissionScene extends Phaser.Scene {
         duration: 220,
         onComplete: () => guardPulse.destroy(),
       });
-      this.applyGuardBuff({ side: "player" }, 2.2);
+      this.applyGuardBuff({ side: "player" }, 1.8);
       this.companions.forEach((ally) => {
         if (ally.downed || ally === companion) {
           return;
@@ -1887,7 +1999,7 @@ export class MissionScene extends Phaser.Scene {
         if (Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, ally.sprite.x, ally.sprite.y) > 164) {
           return;
         }
-        this.applyGuardBuff({ side: "companion", companion: ally }, 2.2);
+        this.applyGuardBuff({ side: "companion", companion: ally }, 1.8);
       });
       this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.56, 220);
       return;
@@ -1937,7 +2049,7 @@ export class MissionScene extends Phaser.Scene {
       direction.set(1, 0);
     }
 
-    companion.cooldown = slamReady ? 2.15 : 1.15;
+    companion.cooldown = slamReady ? 3.05 : 1.2;
     const advanceDistance = distanceToTarget > 72 ? Math.min(62, distanceToTarget - 52) : 0;
     companion.sprite.x = Phaser.Math.Clamp(
       companion.sprite.x + direction.x * advanceDistance,
@@ -1960,7 +2072,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    companion.tauntTimer = Math.max(companion.tauntTimer, 1.9);
+    companion.tauntTimer = Math.max(companion.tauntTimer, 1.75);
     companion.threat = Math.max(companion.threat, 120);
     retroSfx.play("shield-bash", { volume: 0.8, pitch: 0.92 });
     this.addCompanionThreat(companion, 12);
@@ -1985,7 +2097,7 @@ export class MissionScene extends Phaser.Scene {
       }
     });
 
-    this.applyGuardBuff({ side: "player" }, 2.35);
+    this.applyGuardBuff({ side: "player" }, 1.9);
     this.companions.forEach((ally) => {
       if (ally.downed || ally === companion) {
         return;
@@ -1995,7 +2107,7 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      this.applyGuardBuff({ side: "companion", companion: ally }, 2.35);
+      this.applyGuardBuff({ side: "companion", companion: ally }, 1.9);
     });
   }
 
@@ -2295,6 +2407,21 @@ export class MissionScene extends Phaser.Scene {
 
     target.companion.focusBuff = Math.max(target.companion.focusBuff, duration);
     this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0xc4a7ff, 0.24, 150);
+  }
+
+  private applyHexDebuff(target: { side: ActorSide; companion?: CompanionState }): void {
+    if (target.side === "player") {
+      this.playerSlowDebuff = Math.max(this.playerSlowDebuff, HEX_DEBUFF_DURATION);
+      this.spawnCombatLight(this.player.x, this.player.y, 0xd58fff, 0.24, 150);
+      return;
+    }
+
+    if (!target.companion) {
+      return;
+    }
+
+    target.companion.slowDebuff = Math.max(target.companion.slowDebuff, HEX_DEBUFF_DURATION);
+    this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0xd58fff, 0.24, 150);
   }
 
   private drawSupportBeam(
@@ -2678,6 +2805,55 @@ export class MissionScene extends Phaser.Scene {
             );
           }
         }
+      } else if (enemy.kind === "hexer") {
+        const desiredRange = 348;
+        if (enemy.moveState === "hexer-cast") {
+          enemy.aura.setAlpha(0.42);
+          if (enemy.moveTimer <= 0) {
+            enemy.moveState = "idle";
+          }
+        }
+        if (enemy.stateTimer > 1.7) {
+          enemy.stateTimer = 0;
+          enemy.strafeDir = enemy.strafeDir === 1 ? -1 : 1;
+        }
+
+        const retreatWeight = distance < desiredRange - 70
+          ? -1
+          : distance > desiredRange + 42
+            ? 1
+            : 0;
+        const rangeMove = direction.clone().scale(retreatWeight);
+        const strafe = perpendicular.scale(enemy.strafeDir * 0.75);
+        const move = rangeMove.add(strafe);
+        if (move.lengthSq() > 0.001) {
+          move.normalize();
+          enemy.sprite.x += move.x * enemy.speed * dt;
+          enemy.sprite.y += move.y * enemy.speed * dt;
+        }
+
+        if (enemy.attackCooldown <= 0) {
+          enemy.attackCooldown = 1.95 * difficulty.enemyCooldown;
+          enemy.lastMoveLabel = "Dread Hex";
+          enemy.moveState = "hexer-cast";
+          enemy.moveTimer = 0.24;
+          retroSfx.play("enemy-hex", { volume: 0.56, pitch: 0.98 });
+          this.drawSupportBeam(enemy.sprite.x, enemy.sprite.y, target.x, target.y, enemy.roleColor, 180, 4);
+          const hexDirection = new Phaser.Math.Vector2(target.x - enemy.sprite.x, target.y - enemy.sprite.y).normalize();
+          this.spawnBullet(
+            enemy.sprite.x,
+            enemy.sprite.y,
+            hexDirection,
+            248 + this.stageIndex * 10,
+            Math.round((7 + this.stageIndex * 0.8) * difficulty.enemyDamage),
+            7,
+            "enemy",
+            enemy.roleColor,
+            0,
+            0,
+            "hex",
+          );
+        }
       } else {
         if (enemy.moveState === "boss-phase-shift") {
           enemy.aura.setAlpha(0.46);
@@ -2729,10 +2905,19 @@ export class MissionScene extends Phaser.Scene {
     for (let index = this.bullets.length - 1; index >= 0; index -= 1) {
       const bullet = this.bullets[index];
       bullet.life -= dt;
+      bullet.previousX = bullet.sprite.x;
+      bullet.previousY = bullet.sprite.y;
       bullet.sprite.x += bullet.velocity.x * dt;
       bullet.sprite.y += bullet.velocity.y * dt;
 
       if (!this.playArea.contains(bullet.sprite.x, bullet.sprite.y) || bullet.life <= 0) {
+        bullet.sprite.destroy();
+        this.bullets.splice(index, 1);
+        continue;
+      }
+
+      if (this.doesBulletHitCover(bullet)) {
+        this.spawnCombatLight(bullet.sprite.x, bullet.sprite.y, 0x9bc5ee, 0.2, 120);
         bullet.sprite.destroy();
         this.bullets.splice(index, 1);
         continue;
@@ -2754,6 +2939,9 @@ export class MissionScene extends Phaser.Scene {
         const hitPlayer = Phaser.Math.Distance.Between(bullet.sprite.x, bullet.sprite.y, this.player.x, this.player.y) <= bullet.radius + 18;
         if (hitCompanion) {
           this.damageCompanion(hitCompanion, bullet.damage);
+          if (bullet.debuffKind === "hex") {
+            this.applyHexDebuff({ side: "companion", companion: hitCompanion });
+          }
           this.spawnCombatLight(bullet.sprite.x, bullet.sprite.y, 0xff9bb0, 0.34, 160);
           bullet.sprite.destroy();
           this.bullets.splice(index, 1);
@@ -2762,6 +2950,9 @@ export class MissionScene extends Phaser.Scene {
 
         if (hitPlayer) {
           this.damagePlayer(bullet.damage);
+          if (bullet.debuffKind === "hex") {
+            this.applyHexDebuff({ side: "player" });
+          }
           this.spawnCombatLight(bullet.sprite.x, bullet.sprite.y, 0xff9bb0, 0.4, 180);
           bullet.sprite.destroy();
           this.bullets.splice(index, 1);
@@ -2849,6 +3040,86 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.syncActorAttachmentsAfterSeparation();
+  }
+
+  private applyCoverCollisions(): void {
+    if (this.coverSpots.length === 0) {
+      return;
+    }
+
+    this.resolveCircleAgainstCover(this.player, 18);
+    this.playerShieldRing.setPosition(this.player.x, this.player.y);
+    this.companions.forEach((companion) => {
+      this.resolveCircleAgainstCover(companion.sprite, companion.radius);
+      companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
+      companion.revivePromptText.setPosition(companion.sprite.x, companion.sprite.y - 38);
+      this.updateCompanionGuardPlate(companion);
+    });
+    this.enemies.forEach((enemy) => {
+      this.resolveCircleAgainstCover(enemy.sprite, enemy.radius);
+      enemy.aura.setPosition(enemy.sprite.x, enemy.sprite.y);
+      enemy.shieldRing.setPosition(enemy.sprite.x, enemy.sprite.y);
+    });
+  }
+
+  private resolveCircleAgainstCover(sprite: Phaser.GameObjects.Arc, radius: number): void {
+    this.coverSpots.forEach((cover) => {
+      const closestX = Phaser.Math.Clamp(sprite.x, cover.bounds.left, cover.bounds.right);
+      const closestY = Phaser.Math.Clamp(sprite.y, cover.bounds.top, cover.bounds.bottom);
+      let dx = sprite.x - closestX;
+      let dy = sprite.y - closestY;
+      const distanceSq = dx * dx + dy * dy;
+
+      if (distanceSq >= radius * radius) {
+        return;
+      }
+
+      if (distanceSq < 0.001) {
+        const distances = [
+          { axis: "left" as const, value: Math.abs(sprite.x - cover.bounds.left) },
+          { axis: "right" as const, value: Math.abs(cover.bounds.right - sprite.x) },
+          { axis: "top" as const, value: Math.abs(sprite.y - cover.bounds.top) },
+          { axis: "bottom" as const, value: Math.abs(cover.bounds.bottom - sprite.y) },
+        ].sort((left, right) => left.value - right.value);
+        const nearest = distances[0];
+        if (nearest.axis === "left") {
+          dx = -1;
+          dy = 0;
+        } else if (nearest.axis === "right") {
+          dx = 1;
+          dy = 0;
+        } else if (nearest.axis === "top") {
+          dx = 0;
+          dy = -1;
+        } else {
+          dx = 0;
+          dy = 1;
+        }
+      }
+
+      const distance = Math.max(0.001, Math.sqrt(dx * dx + dy * dy));
+      const push = radius - distance + COVER_INSET;
+      sprite.x = Phaser.Math.Clamp(sprite.x + (dx / distance) * push, this.playArea.x + radius, this.playArea.right - radius);
+      sprite.y = Phaser.Math.Clamp(sprite.y + (dy / distance) * push, this.playArea.y + radius, this.playArea.bottom - radius);
+    });
+  }
+
+  private doesBulletHitCover(bullet: Bullet): boolean {
+    if (this.coverSpots.length === 0) {
+      return false;
+    }
+
+    return this.coverSpots.some((cover) => {
+      const expanded = new Phaser.Geom.Rectangle(
+        cover.bounds.x - bullet.radius,
+        cover.bounds.y - bullet.radius,
+        cover.bounds.width + bullet.radius * 2,
+        cover.bounds.height + bullet.radius * 2,
+      );
+      const travelLine = new Phaser.Geom.Line(bullet.previousX, bullet.previousY, bullet.sprite.x, bullet.sprite.y);
+      return Phaser.Geom.Intersects.LineToRectangle(travelLine, expanded)
+        || expanded.contains(bullet.sprite.x, bullet.sprite.y);
+    });
   }
 
   private getSeparationActorPosition(actor: SeparationActor): { x: number; y: number } {
@@ -3088,7 +3359,7 @@ export class MissionScene extends Phaser.Scene {
           displayName: "Shadow Pouncer",
           moveLabel: "Rend Pounce",
           color: 0xff6b7d,
-          hp: 60,
+          hp: 52,
           radius: 18,
           speed: 150,
         }
@@ -3097,10 +3368,19 @@ export class MissionScene extends Phaser.Scene {
             displayName: "Shadow Gunner",
             moveLabel: "Suppressive Volley",
             color: 0xffc86d,
-            hp: 46,
+            hp: 40,
             radius: 16,
             speed: 118,
           }
+        : kind === "hexer"
+          ? {
+              displayName: "Shadow Hexer",
+              moveLabel: "Dread Hex",
+              color: 0xc890ff,
+              hp: 36,
+              radius: 15,
+              speed: 108,
+            }
         : {
             displayName: bossArchetype?.displayName ?? "Shard Bruiser",
             moveLabel: "Phase Shift",
@@ -3129,6 +3409,8 @@ export class MissionScene extends Phaser.Scene {
       : [0];
     const baseShield = kind === "boss"
       ? phaseShieldPool[0]
+      : kind === "hexer" && this.stageIndex >= 2
+        ? 18 + this.stageIndex * 5
       : kind === "shooter" && this.stageIndex >= 3
         ? 24 + this.stageIndex * 8
         : kind === "rusher" && this.stageIndex >= 4
@@ -3182,6 +3464,10 @@ export class MissionScene extends Phaser.Scene {
       bossMoveIndex: 0,
     });
 
+    this.resolveCircleAgainstCover(sprite, config.radius);
+    aura.setPosition(sprite.x, sprite.y);
+    shieldRing.setPosition(sprite.x, sprite.y);
+
     if (kind === "boss") {
       this.bossFill.setFillStyle(config.color, 0.95);
       this.bossTitle.setText(`${config.displayName} | Phase 1/3`);
@@ -3198,6 +3484,7 @@ export class MissionScene extends Phaser.Scene {
     color: number,
     splashRadius = 0,
     splashDamage = 0,
+    debuffKind?: "hex",
   ): void {
     const bullet = this.add.circle(x, y, radius, color, 0.96).setDepth(9);
     bullet.setStrokeStyle(2, color, 0.84);
@@ -3209,6 +3496,9 @@ export class MissionScene extends Phaser.Scene {
       damage,
       radius,
       owner,
+      previousX: x,
+      previousY: y,
+      debuffKind,
       splashRadius: splashRadius > 0 ? splashRadius : undefined,
       splashDamage: splashDamage > 0 ? splashDamage : undefined,
     });
@@ -3658,6 +3948,7 @@ export class MissionScene extends Phaser.Scene {
     this.setTextIfChanged(this.playerEffectText, this.getActorEffectLabel({
       guardBuff: this.playerGuardBuff,
       focusBuff: this.playerFocusBuff,
+      slowDebuff: this.playerSlowDebuff,
     }));
     this.playerShieldRing.setVisible(this.playerShield > 0.5);
     this.playerShieldRing.setAlpha(this.playerShield > 0 ? 0.84 : 0);
@@ -3799,7 +4090,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private getActorEffectLabel(
-    actor: { guardBuff: number; focusBuff: number; tauntTimer?: number; aegisTimer?: number },
+    actor: { guardBuff: number; focusBuff: number; slowDebuff?: number; tauntTimer?: number; aegisTimer?: number },
   ): string {
     const effects: string[] = [];
     if (actor.guardBuff > 0.2) {
@@ -3814,8 +4105,11 @@ export class MissionScene extends Phaser.Scene {
     if ((actor.aegisTimer ?? 0) > 0.2) {
       effects.push(`Aegis ${(actor.aegisTimer ?? 0).toFixed(1)}s`);
     }
+    if ((actor.slowDebuff ?? 0) > 0.2) {
+      effects.push(`Hex ${(actor.slowDebuff ?? 0).toFixed(1)}s`);
+    }
 
-    return effects.length > 0 ? `Buffs: ${effects.join(" | ")}` : "Buffs: None";
+    return effects.length > 0 ? `Effects: ${effects.join(" | ")}` : "Effects: None";
   }
 
   private getTransientEffectBudget(): number {
@@ -4326,6 +4620,7 @@ export class MissionScene extends Phaser.Scene {
     this.stageObjects.forEach((object) => object.destroy());
     this.stageObjects = [];
     this.hallwayZones = [];
+    this.coverSpots = [];
   }
 
   private syncInputMode(): void {

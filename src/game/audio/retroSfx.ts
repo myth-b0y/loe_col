@@ -5,6 +5,7 @@ export type SfxCue =
   | "enemy-shot"
   | "enemy-pounce"
   | "enemy-volley"
+  | "enemy-hex"
   | "pulse"
   | "arc-lance"
   | "dash"
@@ -69,6 +70,7 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "enemy-shot": 70,
   "enemy-pounce": 90,
   "enemy-volley": 90,
+  "enemy-hex": 110,
   "pulse": 120,
   "arc-lance": 120,
   "dash": 110,
@@ -158,9 +160,9 @@ class RetroSfxManager {
 
     switch (cue) {
       case "player-fire":
-        this.tone(context, { type: "square", startFreq: 980 * pitch, endFreq: 410 * pitch, duration: 0.06, volume: volume * 0.3, filterFreq: 2800, pan });
-        this.tone(context, { type: "triangle", startFreq: 520 * pitch, endFreq: 290 * pitch, duration: 0.075, volume: volume * 0.14, filterFreq: 1600, pan });
-        this.noise(context, { duration: 0.024, volume: volume * 0.04, filterFreq: 2600, filterType: "highpass", pan });
+        this.tone(context, { type: "triangle", startFreq: 860 * pitch, endFreq: 430 * pitch, duration: 0.068, volume: volume * 0.18, filterFreq: 1800, pan });
+        this.tone(context, { type: "sine", startFreq: 520 * pitch, endFreq: 310 * pitch, duration: 0.08, volume: volume * 0.09, filterFreq: 1200, pan });
+        this.noise(context, { duration: 0.02, volume: volume * 0.02, filterFreq: 2200, filterType: "highpass", pan });
         return;
       case "enemy-shot":
         this.tone(context, { type: "square", startFreq: 340 * pitch, endFreq: 160 * pitch, duration: 0.08, volume: volume * 0.2, filterFreq: 1800, pan });
@@ -172,6 +174,11 @@ class RetroSfxManager {
         return;
       case "enemy-volley":
         this.playArpeggio(context, [320, 360, 410], "square", volume * 0.09, pan, pitch, 0.045, 2000);
+        return;
+      case "enemy-hex":
+        this.tone(context, { type: "sawtooth", startFreq: 420 * pitch, endFreq: 180 * pitch, duration: 0.14, volume: volume * 0.15, filterFreq: 1700, pan });
+        this.playArpeggio(context, [260, 220, 180], "triangle", volume * 0.05, pan, pitch, 0.05, 1100);
+        this.noise(context, { duration: 0.04, volume: volume * 0.025, filterFreq: 1250, filterType: "bandpass", pan });
         return;
       case "pulse":
         this.tone(context, { type: "square", startFreq: 280 * pitch, endFreq: 80 * pitch, duration: 0.22, volume: volume * 0.26, filterFreq: 1200, pan });

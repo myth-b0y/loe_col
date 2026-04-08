@@ -1,7 +1,7 @@
 import type { RewardData } from "../core/session";
 
 export type MissionDifficultyTier = "easy" | "medium" | "hard";
-export type MissionEnemyKind = "rusher" | "shooter";
+export type MissionEnemyKind = "rusher" | "shooter" | "hexer";
 export type MissionFlow = "right" | "up";
 export type MissionBossKind = "shard-bruiser" | "relay-seer" | "nightglass-behemoth";
 
@@ -217,16 +217,27 @@ function hashSeed(value: string): number {
 }
 
 function buildEnemyGroups(difficulty: MissionDifficultyTier, stageNumber: number, zoneIndex: number, rng: SeededRandom): MissionEnemyGroup[] {
-  const baseRushers = difficulty === "easy" ? 2 : difficulty === "medium" ? 3 : 4;
-  const baseShooters = difficulty === "easy" ? 1 : difficulty === "medium" ? 2 : 2;
+  const baseRushers = difficulty === "easy" ? 3 : difficulty === "medium" ? 4 : 5;
+  const baseShooters = difficulty === "easy" ? 1 : difficulty === "medium" ? 2 : 3;
   const stagePressure = Math.floor(stageNumber / 2);
   const rushers = baseRushers + stagePressure + rng.int(0, difficulty === "hard" ? 2 : 1);
   const shooters = baseShooters + Math.floor(zoneIndex / 2) + rng.int(0, difficulty === "easy" ? 1 : 2);
-
-  return [
+  const groups: MissionEnemyGroup[] = [
     { kind: "rusher", count: rushers },
     { kind: "shooter", count: shooters },
   ];
+
+  const shouldAddHexer = difficulty !== "easy" && (stageNumber >= 2 || zoneIndex >= 1);
+  if (shouldAddHexer) {
+    groups.push({
+      kind: "hexer",
+      count: difficulty === "hard"
+        ? 1 + (stageNumber >= 4 ? 1 : 0)
+        : 1,
+    });
+  }
+
+  return groups;
 }
 
 function createHallwayStage(
@@ -287,6 +298,7 @@ function createBossStage(contract: MissionContractDefinition, index: number, rng
     adds: [
       { kind: "rusher", count: addScale + 1 },
       { kind: "shooter", count: addScale },
+      ...(contract.difficulty === "easy" ? [] : [{ kind: "hexer" as const, count: contract.difficulty === "hard" ? 2 : 1 }]),
     ],
   };
 }

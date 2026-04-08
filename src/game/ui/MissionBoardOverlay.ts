@@ -41,6 +41,7 @@ export class MissionBoardOverlay {
   private readonly detailBody: Phaser.GameObjects.Text;
   private readonly detailReward: Phaser.GameObjects.Text;
   private readonly acceptAllButton: MenuButton;
+  private readonly refreshButton: MenuButton;
   private readonly closeButton: MenuButton;
   private readonly cards: MissionCard[];
   private selectedMissionId: string;
@@ -179,6 +180,21 @@ export class MissionBoardOverlay {
       accentColor: 0x205c8c,
     });
 
+    this.refreshButton = createMenuButton({
+      scene,
+      x: 414,
+      y: 588,
+      width: 190,
+      label: "Refresh Routes",
+      onClick: () => {
+        gameSession.refreshMissionBoard();
+        this.selectedMissionId = getMissionContracts()[0]?.id ?? "";
+        this.refresh();
+      },
+      depth: 62,
+      accentColor: 0x355c2f,
+    });
+
     this.closeButton = createMenuButton({
       scene,
       x: 982,
@@ -203,6 +219,7 @@ export class MissionBoardOverlay {
       this.detailBody,
       this.detailReward,
       this.acceptAllButton.container,
+      this.refreshButton.container,
       this.closeButton.container,
       ...this.cards.flatMap((card) => [
         card.frame,
@@ -243,7 +260,7 @@ export class MissionBoardOverlay {
 
   private getAvailableContracts(): MissionContractDefinition[] {
     return getMissionContracts().filter((contract) =>
-      gameSession.isMissionUnlocked(contract.id) && !gameSession.isMissionCompleted(contract.id),
+      gameSession.isMissionUnlocked(contract.id) && !gameSession.isMissionExhausted(contract.id),
     );
   }
 
@@ -272,11 +289,12 @@ export class MissionBoardOverlay {
     this.subtitle.setText("Review the current contracts, accept one or all of them, then use the Data Pad to choose which queued route becomes your active deployment.");
     this.statusText.setText(
       contracts.length === 0
-        ? "All current story contracts have been cleared. Check the Data Pad archive while we line up the next routes."
+        ? "All current story contracts have been cleared. Refresh the board for a fresh contract cycle or review past clears in the Data Pad archive."
         : acceptedMissionIds.length > 0
           ? `${acceptedMissionIds.length} contract${acceptedMissionIds.length === 1 ? "" : "s"} queued. Active contract: ${selectedContract?.title ?? "none selected yet"}.`
           : "No contracts queued yet. Accept a route to make it available in the Data Pad and at the deploy door.",
     );
+    this.refreshButton.container.setVisible(contracts.length === 0);
 
     this.cards.forEach((card) => {
       const contract = contracts.find((entry) => entry.id === card.contractId);
@@ -323,11 +341,12 @@ export class MissionBoardOverlay {
       this.detailTitle.setText(contracts.length === 0 ? "Terminal Clear" : "No Contract Selected");
       this.detailBody.setText(
         contracts.length === 0
-          ? "Every currently unlocked story contract has been cleared. Completed routes now live in the Data Pad archive instead of staying on the terminal."
+          ? "Every current route in this contract cycle has been cleared. Use Refresh Routes to repopulate the board, or leave it exhausted while you review your Data Pad archive."
           : "Pick a contract card from the left rail.",
       );
       this.detailReward.setText("");
       this.acceptAllButton.setEnabled(false);
+      this.refreshButton.setEnabled(contracts.length === 0);
       return;
     }
 
@@ -350,6 +369,7 @@ export class MissionBoardOverlay {
     ]);
 
     this.acceptAllButton.setEnabled(contracts.some((contract) => !acceptedMissionIds.includes(contract.id)));
+    this.refreshButton.setEnabled(false);
   }
 
   private setInputEnabled(enabled: boolean): void {
@@ -358,6 +378,7 @@ export class MissionBoardOverlay {
     }
 
     this.acceptAllButton.setInputEnabled(enabled);
+    this.refreshButton.setInputEnabled(enabled);
     this.closeButton.setInputEnabled(enabled);
     this.cards.forEach((card) => {
       card.action.setInputEnabled(enabled && card.action.container.visible);

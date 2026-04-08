@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 
-import { GAME_CODE, GAME_MILESTONE, GAME_VERSION } from "../core/buildInfo";
+import { GAME_CODE, GAME_IP, GAME_MILESTONE, GAME_SERIES, GAME_TITLE, GAME_VERSION } from "../core/buildInfo";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
@@ -24,19 +24,25 @@ export class MainMenuScene extends Phaser.Scene {
     this.drawBackdrop();
     this.brightnessLayer = createBrightnessLayer(this);
 
-    this.add.text(160, 108, "Legends of EDEN", {
+    this.add.text(270, 102, GAME_IP, {
       fontFamily: "Arial",
-      fontSize: "28px",
+      fontSize: "16px",
       color: "#9fc6ff",
       fontStyle: "bold",
-    });
+    }).setOrigin(0.5, 0);
 
-    this.add.text(160, 144, "Circle of Light", {
+    this.add.text(160, 132, GAME_SERIES, {
       fontFamily: "Arial",
-      fontSize: "58px",
+      fontSize: "54px",
       color: "#f6fbff",
       fontStyle: "bold",
     });
+    this.add.text(272, 194, GAME_TITLE, {
+      fontFamily: "Arial",
+      fontSize: "32px",
+      color: "#d8eaff",
+      fontStyle: "bold",
+    }).setOrigin(0.5, 0);
 
     this.add.text(164, 220, "Age of Legends tactical action RPG prototype", {
       fontFamily: "Arial",
