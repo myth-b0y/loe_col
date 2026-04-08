@@ -452,6 +452,7 @@ export class MissionScene extends Phaser.Scene {
   };
   private hudRefreshCooldown = 0;
   private activeTransientEffects = 0;
+  private readonly transientVisuals = new Set<Phaser.GameObjects.GameObject>();
 
   constructor() {
     super("mission");
@@ -467,10 +468,10 @@ export class MissionScene extends Phaser.Scene {
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.cameras.main.setBackgroundColor("#050911");
     this.brightnessLayer = createBrightnessLayer(this, {
-      ambientAlpha: 0.16,
-      tintColor: 0x020913,
-      tintAlpha: 0.18,
-      edgeShadeAlpha: 0.18,
+      ambientAlpha: 0.2,
+      tintColor: 0x01060f,
+      tintAlpha: 0.24,
+      edgeShadeAlpha: 0.24,
       edgeThickness: 88,
     });
     this.lightingRig = createLightingRig(this, {
@@ -478,8 +479,8 @@ export class MissionScene extends Phaser.Scene {
       y: this.playArea.y,
       width: this.playArea.width,
       height: this.playArea.height,
-      ambientAlpha: 0.34,
-      darkColor: 0x01040a,
+      ambientAlpha: 0.44,
+      darkColor: 0x010308,
       veilDepth: 10,
       shadowDepth: 10.35,
       lightDepth: 10.8,
@@ -522,6 +523,7 @@ export class MissionScene extends Phaser.Scene {
       this.clearBullets();
       this.clearEnemies();
       this.clearStageObjects();
+      this.clearTransientVisuals();
       this.brightnessLayer?.destroy();
       this.playerLight?.destroy();
       this.stageLights.forEach((light) => light.destroy());
@@ -665,7 +667,7 @@ export class MissionScene extends Phaser.Scene {
     this.playerShadow = this.add.ellipse(210, 352, 34, 16, 0x000000, 0.28).setDepth(7);
     this.player = this.add.circle(210, 342, 18, PLAYER_CORE_COLOR).setDepth(10);
     this.player.setStrokeStyle(4, PLAYER_TRIM_COLOR, 1);
-    this.playerLight = this.lightingRig?.createPointLight(this.player.x, this.player.y, PLAYER_TRIM_COLOR, 120, 0.84, 0.07);
+    this.playerLight = this.lightingRig?.createPointLight(this.player.x, this.player.y, PLAYER_TRIM_COLOR, 92, 0.58, 0.1);
     this.playerShieldRing = this.add.circle(this.player.x, this.player.y, 26)
       .setStrokeStyle(4, 0x65d8ff, 0.82)
       .setDepth(9);
@@ -696,9 +698,9 @@ export class MissionScene extends Phaser.Scene {
         sprite.x,
         sprite.y,
         companion.projectileColor,
-        companion.attackStyle === "healer" ? 94 : companion.attackStyle === "shield" ? 88 : 82,
-        companion.attackStyle === "healer" ? 0.52 : 0.42,
-        0.085,
+        companion.attackStyle === "healer" ? 74 : companion.attackStyle === "shield" ? 70 : 64,
+        companion.attackStyle === "healer" ? 0.38 : 0.3,
+        0.1,
       );
 
       const shieldRing = this.add.circle(sprite.x, sprite.y, companion.radius + 7)
@@ -1400,7 +1402,7 @@ export class MissionScene extends Phaser.Scene {
         flow === "up" ? 10 : 104,
         flow === "up" ? 54 : 10,
         ambientColor,
-        0.18,
+        0.1,
       )
         .setDepth(7)
         .setBlendMode(Phaser.BlendModes.ADD);
@@ -1409,9 +1411,9 @@ export class MissionScene extends Phaser.Scene {
         fixture.x,
         fixture.y,
         ambientColor,
-        stage.type === "boss" ? 220 : stage.type === "rest" ? 180 : 200,
-        stage.type === "boss" ? 0.9 : stage.type === "rest" ? 0.62 : 0.76,
-        0.075,
+        stage.type === "boss" ? 154 : stage.type === "rest" ? 124 : 138,
+        stage.type === "boss" ? 0.5 : stage.type === "rest" ? 0.34 : 0.4,
+        0.09,
       );
       if (light) {
         this.stageLights.push(light);
@@ -1743,6 +1745,33 @@ export class MissionScene extends Phaser.Scene {
         );
       }
     }
+  }
+
+  private getMissionShadowCasters(): Phaser.Geom.Rectangle[] {
+    const casters = this.coverSpots.map((cover) => new Phaser.Geom.Rectangle(
+      cover.bounds.x,
+      cover.bounds.y,
+      cover.bounds.width,
+      cover.bounds.height,
+    ));
+    if (!this.currentStage) {
+      return casters;
+    }
+
+    const flow = this.getStageFlow(this.currentStage);
+    if (flow === "up") {
+      casters.push(
+        new Phaser.Geom.Rectangle(this.playArea.x - 10, this.playArea.y - 6, 18, this.playArea.height + 12),
+        new Phaser.Geom.Rectangle(this.playArea.right - 8, this.playArea.y - 6, 18, this.playArea.height + 12),
+      );
+    } else {
+      casters.push(
+        new Phaser.Geom.Rectangle(this.playArea.x - 6, this.playArea.y - 10, this.playArea.width + 12, 18),
+        new Phaser.Geom.Rectangle(this.playArea.x - 6, this.playArea.bottom - 8, this.playArea.width + 12, 18),
+      );
+    }
+
+    return casters;
   }
 
   private addCoverSpot(x: number, y: number, width: number, height: number, color: number): void {
@@ -2740,27 +2769,28 @@ export class MissionScene extends Phaser.Scene {
       lineLength,
       width,
       color,
-      0.46,
+      0.24,
     ).setDepth(12);
     beam.setBlendMode(Phaser.BlendModes.ADD);
     beam.setRotation(lineAngle);
-    beam.setStrokeStyle(2, color, 0.92);
-    const beamCore = this.add.rectangle((fromX + toX) / 2, (fromY + toY) / 2, lineLength, Math.max(2, width * 0.38), 0xffffff, 0.3)
+    beam.setStrokeStyle(1, color, 0.72);
+    const beamCore = this.add.rectangle((fromX + toX) / 2, (fromY + toY) / 2, lineLength, Math.max(2, width * 0.24), 0xffffff, 0.18)
       .setDepth(13)
       .setBlendMode(Phaser.BlendModes.ADD)
       .setRotation(lineAngle);
-    const flash = this.lightingRig?.createPointLight((fromX + toX) / 2, (fromY + toY) / 2, color, Math.max(140, lineLength * 0.42), 0.86, 0.08)
-      ?? this.add.circle((fromX + toX) / 2, (fromY + toY) / 2, 18, color, 0.22).setDepth(13).setBlendMode(Phaser.BlendModes.ADD);
-    this.spawnEnergyParticles((fromX + toX) / 2, (fromY + toY) / 2, color, 8, 150, 220, 4, true);
+    const flash = this.lightingRig?.createPointLight((fromX + toX) / 2, (fromY + toY) / 2, color, Math.max(88, lineLength * 0.26), 0.52, 0.1)
+      ?? this.add.circle((fromX + toX) / 2, (fromY + toY) / 2, 12, color, 0.14).setDepth(13).setBlendMode(Phaser.BlendModes.ADD);
+    this.trackTransientVisual(beam);
+    this.trackTransientVisual(beamCore);
+    this.trackTransientVisual(flash);
+    this.spawnEnergyParticles((fromX + toX) / 2, (fromY + toY) / 2, color, 5, 110, 170, 3, true);
     this.tweens.add({
       targets: [beam, beamCore, flash],
       alpha: 0,
-      scaleY: 1.7,
+      scaleY: 1.35,
       duration,
       onComplete: () => {
-        beam.destroy();
-        beamCore.destroy();
-        flash.destroy();
+        this.destroyTransientVisuals(beam, beamCore, flash);
         this.releaseTransientEffect();
       },
     });
@@ -2772,24 +2802,25 @@ export class MissionScene extends Phaser.Scene {
     }
 
     const burst = this.add.graphics().setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
-    burst.fillStyle(color, 0.22);
-    burst.lineStyle(2, color, 0.88);
-    burst.fillTriangle(x - 9, y, x + 16, y - 6, x + 16, y + 6);
-    burst.strokeTriangle(x - 5, y - 10, x + 20, y, x - 5, y + 10);
-    const core = this.add.circle(x, y, 12, color, 0.26).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
-    const flash = this.lightingRig?.createPointLight(x, y, color, 112 + scale * 68, 0.86 + scale * 0.18, 0.08)
-      ?? this.add.circle(x, y, 16, color, 0.22).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
-    this.spawnEnergyParticles(x, y, color, 10, 120, 210, 4 + Math.round(scale * 4));
+    burst.fillStyle(color, 0.16);
+    burst.lineStyle(2, color, 0.68);
+    burst.fillTriangle(x - 6, y, x + 14, y - 4, x + 14, y + 4);
+    burst.strokeTriangle(x - 3, y - 8, x + 16, y, x - 3, y + 8);
+    const core = this.add.circle(x, y, 8, color, 0.18).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
+    const flash = this.lightingRig?.createPointLight(x, y, color, 72 + scale * 34, 0.5 + scale * 0.12, 0.1)
+      ?? this.add.circle(x, y, 10, color, 0.14).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
+    this.trackTransientVisual(burst);
+    this.trackTransientVisual(core);
+    this.trackTransientVisual(flash);
+    this.spawnEnergyParticles(x, y, color, 5, 90, 150, 2 + Math.round(scale * 2));
     this.tweens.add({
       targets: [burst, core, flash],
       alpha: 0,
-      scaleX: 1 + scale * 1.22,
-      scaleY: 1 + scale * 1.22,
-      duration,
+      scaleX: 1 + scale * 0.72,
+      scaleY: 1 + scale * 0.72,
+      duration: Math.max(90, duration - 40),
       onComplete: () => {
-        burst.destroy();
-        core.destroy();
-        flash.destroy();
+        this.destroyTransientVisuals(burst, core, flash);
         this.releaseTransientEffect();
       },
     });
@@ -2800,9 +2831,11 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const glow = this.add.circle(x, y, 18, color, 0.14).setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
+    const glow = this.add.circle(x, y, 14, color, 0.1).setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
     const graphics = this.add.graphics().setDepth(15);
     graphics.lineStyle(3, color, 0.92);
+    this.trackTransientVisual(glow);
+    this.trackTransientVisual(graphics);
 
     if (kind === "heal") {
       graphics.lineBetween(x - 8, y, x + 8, y);
@@ -2832,10 +2865,9 @@ export class MissionScene extends Phaser.Scene {
       targets: [graphics, glow],
       alpha: 0,
       y: y - 10,
-      duration: 260,
+      duration: 220,
       onComplete: () => {
-        graphics.destroy();
-        glow.destroy();
+        this.destroyTransientVisuals(graphics, glow);
         this.releaseTransientEffect();
       },
     });
@@ -2846,31 +2878,32 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const glow = this.add.circle(x, y, 22, color, 0.16 + strength * 0.14)
+    const glow = this.add.circle(x, y, 18, color, 0.12 + strength * 0.08)
       .setDepth(14)
       .setBlendMode(Phaser.BlendModes.ADD);
     const ring = this.add.circle(x, y, 20)
-      .setStrokeStyle(4, color, 0.92)
+      .setStrokeStyle(3, color, 0.78)
       .setDepth(15)
       .setBlendMode(Phaser.BlendModes.ADD);
     const secondaryRing = this.add.circle(x, y, 14)
-      .setStrokeStyle(2, color, 0.74)
+      .setStrokeStyle(2, color, 0.56)
       .setDepth(15)
       .setBlendMode(Phaser.BlendModes.ADD);
-    const flash = this.lightingRig?.createPointLight(x, y, color, 112 + strength * 60, 0.94 + strength * 0.22, 0.08)
-      ?? this.add.circle(x, y, 18, color, 0.22).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
-    this.spawnEnergyParticles(x, y, color, 12, 120, 240, 5 + Math.round(strength * 3));
+    const flash = this.lightingRig?.createPointLight(x, y, color, 74 + strength * 36, 0.54 + strength * 0.12, 0.1)
+      ?? this.add.circle(x, y, 12, color, 0.14).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
+    this.trackTransientVisual(glow);
+    this.trackTransientVisual(ring);
+    this.trackTransientVisual(secondaryRing);
+    this.trackTransientVisual(flash);
+    this.spawnEnergyParticles(x, y, color, 7, 100, 190, 3 + Math.round(strength * 2));
     this.tweens.add({
       targets: [glow, ring, secondaryRing, flash],
-      scaleX: 1.6 + strength,
-      scaleY: 1.6 + strength,
+      scaleX: 1.35 + strength * 0.6,
+      scaleY: 1.35 + strength * 0.6,
       alpha: 0,
-      duration: 220,
+      duration: 190,
       onComplete: () => {
-        glow.destroy();
-        ring.destroy();
-        secondaryRing.destroy();
-        flash.destroy();
+        this.destroyTransientVisuals(glow, ring, secondaryRing, flash);
         this.releaseTransientEffect();
       },
     });
@@ -2888,27 +2921,28 @@ export class MissionScene extends Phaser.Scene {
     }
 
     const angle = direction.angle();
-    const burst = this.add.triangle(x, y, -8, -6, 18, 0, -8, 6, color, 0.34)
+    const burst = this.add.triangle(x, y, -6, -4, 18, 0, -6, 4, color, 0.24)
       .setDepth(14)
       .setRotation(angle)
       .setBlendMode(Phaser.BlendModes.ADD);
-    const beam = this.add.rectangle(x + direction.x * 12, y + direction.y * 12, 28, 6, color, 0.28)
+    const beam = this.add.rectangle(x + direction.x * 12, y + direction.y * 12, 22, 4, color, 0.18)
       .setDepth(13)
       .setRotation(angle)
       .setBlendMode(Phaser.BlendModes.ADD);
-    const flash = this.lightingRig?.createPointLight(x, y, color, 132, 1.02 * strength, 0.08)
-      ?? this.add.circle(x, y, 16, color, 0.2).setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
-    this.spawnEnergyParticles(x, y, color, 9, 120, 220, 5, true, direction);
+    const flash = this.lightingRig?.createPointLight(x, y, color, 76, 0.52 * strength, 0.1)
+      ?? this.add.circle(x, y, 10, color, 0.14).setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
+    this.trackTransientVisual(burst);
+    this.trackTransientVisual(beam);
+    this.trackTransientVisual(flash);
+    this.spawnEnergyParticles(x, y, color, 4, 90, 150, 3, true, direction);
     this.tweens.add({
       targets: [burst, beam, flash],
       alpha: 0,
       x: `+=${direction.x * 18}`,
       y: `+=${direction.y * 18}`,
-      duration: 110,
+      duration: 90,
       onComplete: () => {
-        burst.destroy();
-        beam.destroy();
-        flash.destroy();
+        this.destroyTransientVisuals(burst, beam, flash);
         this.releaseTransientEffect();
       },
     });
@@ -2925,6 +2959,7 @@ export class MissionScene extends Phaser.Scene {
     radial = false,
     direction?: Phaser.Math.Vector2,
   ): void {
+    const tunedQuantity = Math.max(2, Math.round(quantity * 0.6));
     const particles = this.add.particles(x, y, "__WHITE", {
       speed: { min: minSpeed, max: maxSpeed },
       angle: radial || !direction
@@ -2933,15 +2968,16 @@ export class MissionScene extends Phaser.Scene {
             min: Phaser.Math.RadToDeg(direction.angle()) - 14,
             max: Phaser.Math.RadToDeg(direction.angle()) + 14,
           },
-      scale: { start: 0.8 + lifespanScale * 0.03, end: 0 },
-      lifespan: { min: 110 + lifespanScale * 12, max: 220 + lifespanScale * 24 },
-      quantity,
+      scale: { start: 0.42 + lifespanScale * 0.03, end: 0 },
+      lifespan: { min: 90 + lifespanScale * 10, max: 170 + lifespanScale * 18 },
+      quantity: tunedQuantity,
       tint: color,
       blendMode: Phaser.BlendModes.ADD,
       emitting: false,
     }).setDepth(15);
-    particles.explode(quantity, x, y);
-    this.time.delayedCall(320 + lifespanScale * 20, () => particles.destroy());
+    this.trackTransientVisual(particles);
+    particles.explode(tunedQuantity, x, y);
+    this.time.delayedCall(250 + lifespanScale * 18, () => this.destroyTransientVisuals(particles));
   }
 
   private damageFocusTarget(target: EnemyFocusTarget, amount: number): void {
@@ -2975,13 +3011,15 @@ export class MissionScene extends Phaser.Scene {
     enemy.aura.setPosition(slamTargetX, slamTargetY);
     enemy.shieldRing.setPosition(slamTargetX, slamTargetY);
     this.spawnCombatLight(slamTargetX, slamTargetY, enemy.roleColor, 0.84, 260);
-    const ring = this.add.circle(slamTargetX, slamTargetY, 30).setStrokeStyle(6, enemy.roleColor, 0.9).setDepth(14);
+    const ring = this.trackTransientVisual(
+      this.add.circle(slamTargetX, slamTargetY, 30).setStrokeStyle(4, enemy.roleColor, 0.78).setDepth(14),
+    );
     this.tweens.add({
       targets: ring,
-      scale: 3.7,
+      scale: 2.9,
       alpha: 0,
-      duration: 240,
-      onComplete: () => ring.destroy(),
+      duration: 220,
+      onComplete: () => this.destroyTransientVisuals(ring),
     });
     const slamRadius = 92 + enemy.bossPhase * 14;
     const damage = Math.round((13 + enemy.bossPhase * 4) * gameSession.getDifficultyProfile().enemyDamage);
@@ -3998,11 +4036,11 @@ export class MissionScene extends Phaser.Scene {
   ): void {
     const bullet = this.add.circle(x, y, radius, color, 0.96).setDepth(9);
     bullet.setStrokeStyle(2, color, 0.84);
-    const glow = this.add.circle(x, y, Math.max(radius * 2.8, 12), color, 0.16)
+    const glow = this.add.circle(x, y, Math.max(radius * 1.9, 8), color, 0.1)
       .setDepth(10)
       .setBlendMode(Phaser.BlendModes.ADD);
-    const light = this.lightingRig?.createPointLight(x, y, color, Math.max(60, radius * 10), 0.74, 0.08)
-      ?? this.add.circle(x, y, Math.max(8, radius * 1.8), color, 0.22).setDepth(11).setBlendMode(Phaser.BlendModes.ADD);
+    const light = this.lightingRig?.createPointLight(x, y, color, Math.max(34, radius * 6), 0.42, 0.1)
+      ?? this.add.circle(x, y, Math.max(6, radius * 1.4), color, 0.12).setDepth(11).setBlendMode(Phaser.BlendModes.ADD);
     this.spawnProjectileBurst(x, y, direction, color, owner === "player" ? 1 : 0.72);
     this.bullets.push({
       sprite: bullet,
@@ -4034,13 +4072,15 @@ export class MissionScene extends Phaser.Scene {
     }
     this.spawnCombatLight(this.player.x, this.player.y, 0x7fe3ff, 0.64, 220);
 
-    const ring = this.add.circle(this.player.x, this.player.y, 24).setStrokeStyle(6, 0x7fe3ff, 0.95).setDepth(15);
+    const ring = this.trackTransientVisual(
+      this.add.circle(this.player.x, this.player.y, 24).setStrokeStyle(4, 0x7fe3ff, 0.78).setDepth(15),
+    );
     this.tweens.add({
       targets: ring,
-      scale: 5.6,
+      scale: 4.4,
       alpha: 0,
-      duration: 220,
-      onComplete: () => ring.destroy(),
+      duration: 180,
+      onComplete: () => this.destroyTransientVisuals(ring),
     });
 
     this.enemies.slice().forEach((enemy) => {
@@ -4061,13 +4101,15 @@ export class MissionScene extends Phaser.Scene {
     retroSfx.play("arc-lance", { volume: 0.96 });
     const direction = this.getCombatAimDirection();
     this.spawnCombatLight(this.player.x, this.player.y, 0xffd16a, 0.52, 180);
-    const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
+    const beam = this.trackTransientVisual(
+      this.add.rectangle(this.player.x, this.player.y, 240, 8, 0xffd16a, 0.34).setOrigin(0, 0.5).setDepth(13),
+    );
     beam.setRotation(direction.angle());
     this.tweens.add({
       targets: beam,
       alpha: 0,
-      duration: 180,
-      onComplete: () => beam.destroy(),
+      duration: 150,
+      onComplete: () => this.destroyTransientVisuals(beam),
     });
 
     this.enemies.slice().forEach((enemy) => {
@@ -4256,32 +4298,36 @@ export class MissionScene extends Phaser.Scene {
       }
 
       const angle = (Math.PI * 2 * index) / Math.max(1, shardCount);
-      const shard = this.add.circle(x, y, 6 + (index % 2), colors[index % colors.length], 0.92).setDepth(15);
+      const shard = this.trackTransientVisual(
+        this.add.circle(x, y, 5 + (index % 2), colors[index % colors.length], 0.78).setDepth(15),
+      );
       this.tweens.add({
         targets: shard,
         x: x + Math.cos(angle) * Phaser.Math.Between(54, 108),
         y: y + Math.sin(angle) * Phaser.Math.Between(54, 108),
         alpha: 0,
-        scaleX: 1.45,
-        scaleY: 1.45,
-        duration: 460,
+        scaleX: 1.22,
+        scaleY: 1.22,
+        duration: 380,
         onComplete: () => {
-          shard.destroy();
+          this.destroyTransientVisuals(shard);
           this.releaseTransientEffect();
         },
       });
     }
 
     if (this.reserveTransientEffect()) {
-      const shockwave = this.add.circle(x, y, 28).setStrokeStyle(7, 0xffd67a, 0.9).setDepth(16);
+      const shockwave = this.trackTransientVisual(
+        this.add.circle(x, y, 28).setStrokeStyle(4, 0xffd67a, 0.74).setDepth(16),
+      );
       this.tweens.add({
         targets: shockwave,
-        scaleX: 4.8,
-        scaleY: 4.8,
+        scaleX: 3.6,
+        scaleY: 3.6,
         alpha: 0,
-        duration: 360,
+        duration: 280,
         onComplete: () => {
-          shockwave.destroy();
+          this.destroyTransientVisuals(shockwave);
           this.releaseTransientEffect();
         },
       });
@@ -4291,21 +4337,21 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const rewardText = this.add.text(x, y - 26, "Loot Burst", {
+    const rewardText = this.trackTransientVisual(this.add.text(x, y - 26, "Loot Burst", {
       fontFamily: "Arial",
       fontSize: "16px",
       color: "#fff4ca",
       fontStyle: "bold",
       backgroundColor: "#0c1522cc",
       padding: { x: 8, y: 4 },
-    }).setOrigin(0.5).setDepth(16);
+    }).setOrigin(0.5).setDepth(16));
     this.tweens.add({
       targets: rewardText,
       y: y - 58,
       alpha: 0,
-      duration: 520,
+      duration: 420,
       onComplete: () => {
-        rewardText.destroy();
+        this.destroyTransientVisuals(rewardText);
         this.releaseTransientEffect();
       },
     });
@@ -4383,18 +4429,18 @@ export class MissionScene extends Phaser.Scene {
     item?: InventoryItem;
   }): void {
     const shadow = this.add.ellipse(options.x, options.y + 18, 34, 16, 0x000000, 0.26).setDepth(6);
-    const halo = this.add.circle(options.x, options.y, options.shape === "item" ? 26 : options.shape === "junk" ? 24 : 22, options.color, 0.28)
+    const halo = this.add.circle(options.x, options.y, options.shape === "item" ? 18 : options.shape === "junk" ? 16 : 14, options.color, 0.18)
       .setDepth(11)
       .setBlendMode(Phaser.BlendModes.ADD)
-      .setStrokeStyle(options.rarity === "Legendary" || options.rarity === "Mythic" ? 3 : 2, options.color, 0.78);
+      .setStrokeStyle(options.rarity === "Legendary" || options.rarity === "Mythic" ? 2 : 1, options.color, 0.68);
     const light = this.lightingRig?.createPointLight(
       options.x,
       options.y,
       options.color,
-      options.shape === "credits" ? 74 : options.shape === "junk" ? 90 : 118,
-      options.rarity === "Legendary" || options.rarity === "Mythic" ? 0.92 : options.shape === "junk" ? 0.62 : 0.7,
-      0.085,
-    ) ?? this.add.circle(options.x, options.y, options.shape === "credits" ? 10 : 14, options.color, 0.22).setDepth(11).setBlendMode(Phaser.BlendModes.ADD);
+      options.shape === "credits" ? 52 : options.shape === "junk" ? 64 : 82,
+      options.rarity === "Legendary" || options.rarity === "Mythic" ? 0.62 : options.shape === "junk" ? 0.42 : 0.5,
+      0.095,
+    ) ?? this.add.circle(options.x, options.y, options.shape === "credits" ? 8 : 11, options.color, 0.16).setDepth(11).setBlendMode(Phaser.BlendModes.ADD);
     const sprite = options.shape === "credits"
       ? this.add.circle(options.x, options.y, 9, 0xfff4bf, 0.96).setDepth(12)
       : this.add.rectangle(
@@ -4462,22 +4508,21 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const flash = this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 18 : 24, pickup.color, 0.32)
+    const flash = this.trackTransientVisual(this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 14 : 18, pickup.color, 0.2)
       .setDepth(15)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    const ring = this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 10 : 16)
+      .setBlendMode(Phaser.BlendModes.ADD));
+    const ring = this.trackTransientVisual(this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 8 : 12)
       .setDepth(15)
       .setBlendMode(Phaser.BlendModes.ADD)
-      .setStrokeStyle(3, pickup.color, 0.9);
+      .setStrokeStyle(2, pickup.color, 0.74));
     this.tweens.add({
       targets: [flash, ring],
-      scaleX: 2.8,
-      scaleY: 2.8,
+      scaleX: 2.1,
+      scaleY: 2.1,
       alpha: 0,
-      duration: 240,
+      duration: 180,
       onComplete: () => {
-        flash.destroy();
-        ring.destroy();
+        this.destroyTransientVisuals(flash, ring);
         this.releaseTransientEffect();
       },
     });
@@ -4932,6 +4977,38 @@ export class MissionScene extends Phaser.Scene {
     this.activeTransientEffects = Math.max(0, this.activeTransientEffects - 1);
   }
 
+  private trackTransientVisual<T extends Phaser.GameObjects.GameObject>(object: T): T {
+    this.transientVisuals.add(object);
+    object.once(Phaser.GameObjects.Events.DESTROY, () => {
+      this.transientVisuals.delete(object);
+    });
+    return object;
+  }
+
+  private destroyTransientVisuals(...objects: Array<Phaser.GameObjects.GameObject | null | undefined>): void {
+    objects.forEach((object) => {
+      if (!object) {
+        return;
+      }
+      this.tweens.killTweensOf(object);
+      this.transientVisuals.delete(object);
+      if (object.active) {
+        object.destroy();
+      }
+    });
+  }
+
+  private clearTransientVisuals(): void {
+    this.transientVisuals.forEach((object) => {
+      this.tweens.killTweensOf(object);
+      if (object.active) {
+        object.destroy();
+      }
+    });
+    this.transientVisuals.clear();
+    this.activeTransientEffects = 0;
+  }
+
   private isMenuOverlayVisible(): boolean {
     return Boolean(this.logbookOverlay?.isVisible() || this.inventoryOverlay?.isVisible());
   }
@@ -5198,7 +5275,7 @@ export class MissionScene extends Phaser.Scene {
       pickup.halo.setPosition(pickup.baseX, pickup.baseY + bob);
       pickup.promptText.setPosition(pickup.baseX, pickup.baseY - 34 + bob);
       pickup.promptText.setVisible(!pickup.autoPickup && pickup === nearestInteractPickup);
-      pickup.halo.setAlpha(pickup === nearestInteractPickup ? 0.46 : pickup.autoPickup ? 0.26 : 0.34);
+      pickup.halo.setAlpha(pickup === nearestInteractPickup ? 0.28 : pickup.autoPickup ? 0.14 : 0.18);
       pickup.shadow.setScale(1, pickup === nearestInteractPickup ? 1.08 : 1);
 
       if (pickup.autoPickup) {
@@ -5220,14 +5297,14 @@ export class MissionScene extends Phaser.Scene {
     if (this.playerLight) {
       setAnyLightPosition(this.playerLight, this.player.x, this.player.y);
       setAnyLightColor(this.playerLight, this.playerSlowDebuff > 0 ? 0xd58fff : this.playerShield > 0 ? 0x7fcfff : PLAYER_TRIM_COLOR);
-      setAnyLightRadius(this.playerLight, this.playerShield > 0 ? 120 : 96);
-      setAnyLightIntensity(this.playerLight, this.playerShield > 0 ? 0.84 : 0.62);
+      setAnyLightRadius(this.playerLight, this.playerShield > 0 ? 92 : 76);
+      setAnyLightIntensity(this.playerLight, this.playerShield > 0 ? 0.58 : 0.42);
       setAnyLightVisible(this.playerLight, true);
       this.missionShadowSources.push({
         x: this.player.x,
         y: this.player.y,
-        radius: this.playerShield > 0 ? 120 : 96,
-        intensity: this.playerShield > 0 ? 1 : 0.72,
+        radius: this.playerShield > 0 ? 92 : 76,
+        intensity: this.playerShield > 0 ? 0.84 : 0.62,
       });
     }
 
@@ -5237,21 +5314,21 @@ export class MissionScene extends Phaser.Scene {
       setAnyLightRadius(
         companion.light,
         companion.downed
-          ? 42
+          ? 34
           : companion.attackStyle === "healer"
-            ? 98
+            ? 74
             : companion.attackStyle === "shield"
-              ? 90
-              : 82,
+              ? 70
+              : 64,
       );
-      setAnyLightIntensity(companion.light, companion.downed ? 0.16 : companion.aegisTimer > 0 ? 1.2 : companion.focusBuff > 0 || companion.guardBuff > 0 ? 0.76 : 0.42);
+      setAnyLightIntensity(companion.light, companion.downed ? 0.12 : companion.aegisTimer > 0 ? 0.8 : companion.focusBuff > 0 || companion.guardBuff > 0 ? 0.48 : 0.28);
       setAnyLightVisible(companion.light, companion.sprite.visible);
       if (companion.sprite.visible) {
         this.missionShadowSources.push({
           x: companion.sprite.x,
           y: companion.sprite.y,
-          radius: companion.downed ? 42 : companion.attackStyle === "healer" ? 98 : 86,
-          intensity: companion.downed ? 0.14 : companion.aegisTimer > 0 ? 1 : 0.5,
+          radius: companion.downed ? 34 : companion.attackStyle === "healer" ? 74 : 68,
+          intensity: companion.downed ? 0.12 : companion.aegisTimer > 0 ? 0.78 : 0.36,
         });
       }
     });
@@ -5259,14 +5336,14 @@ export class MissionScene extends Phaser.Scene {
     this.enemies.forEach((enemy) => {
       setAnyLightPosition(enemy.light, enemy.sprite.x, enemy.sprite.y);
       setAnyLightColor(enemy.light, enemy.phaseColors[enemy.bossPhase] ?? enemy.roleColor);
-      setAnyLightRadius(enemy.light, enemy.kind === "boss" ? 168 : enemy.kind === "hexer" ? 96 : 84);
-      setAnyLightIntensity(enemy.light, enemy.kind === "boss" ? 1 + enemy.damageFlash * 0.8 : 0.4 + enemy.damageFlash * 0.6);
+      setAnyLightRadius(enemy.light, enemy.kind === "boss" ? 126 : enemy.kind === "hexer" ? 76 : 62);
+      setAnyLightIntensity(enemy.light, enemy.kind === "boss" ? 0.64 + enemy.damageFlash * 0.5 : 0.24 + enemy.damageFlash * 0.36);
       setAnyLightVisible(enemy.light, true);
       this.missionShadowSources.push({
         x: enemy.sprite.x,
         y: enemy.sprite.y,
-        radius: enemy.kind === "boss" ? 168 : enemy.kind === "hexer" ? 96 : 84,
-        intensity: enemy.kind === "boss" ? 0.95 : 0.42,
+        radius: enemy.kind === "boss" ? 126 : enemy.kind === "hexer" ? 76 : 62,
+        intensity: enemy.kind === "boss" ? 0.74 : 0.3,
       });
     });
 
@@ -5274,29 +5351,29 @@ export class MissionScene extends Phaser.Scene {
       bullet.glow.setPosition(bullet.sprite.x, bullet.sprite.y);
       setAnyLightPosition(bullet.light, bullet.sprite.x, bullet.sprite.y);
       setAnyLightColor(bullet.light, bullet.sprite.fillColor ?? 0x7ee1ff);
-      setAnyLightRadius(bullet.light, Math.max(56, bullet.radius * 10));
-      setAnyLightIntensity(bullet.light, bullet.owner === "player" ? 0.82 : 0.7);
+      setAnyLightRadius(bullet.light, Math.max(34, bullet.radius * 6));
+      setAnyLightIntensity(bullet.light, bullet.owner === "player" ? 0.42 : 0.34);
       setAnyLightVisible(bullet.light, true);
       this.missionShadowSources.push({
         x: bullet.sprite.x,
         y: bullet.sprite.y,
-        radius: Math.max(56, bullet.radius * 10),
-        intensity: bullet.owner === "player" ? 0.68 : 0.56,
+        radius: Math.max(34, bullet.radius * 6),
+        intensity: bullet.owner === "player" ? 0.42 : 0.34,
       });
     });
 
     this.worldPickups.forEach((pickup) => {
       setAnyLightPosition(pickup.light, pickup.sprite.x, pickup.sprite.y);
       setAnyLightColor(pickup.light, pickup.color);
-      setAnyLightRadius(pickup.light, pickup.kind === "credits" ? 72 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 128 : pickup.item?.kind === "junk" ? 92 : 110);
-      setAnyLightIntensity(pickup.light, pickup.kind === "credits" ? 0.62 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 1 : pickup.item?.kind === "junk" ? 0.58 : 0.72);
+      setAnyLightRadius(pickup.light, pickup.kind === "credits" ? 52 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 84 : pickup.item?.kind === "junk" ? 64 : 72);
+      setAnyLightIntensity(pickup.light, pickup.kind === "credits" ? 0.34 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 0.58 : pickup.item?.kind === "junk" ? 0.3 : 0.38);
       setAnyLightVisible(pickup.light, !pickup.collected);
       if (!pickup.collected) {
         this.missionShadowSources.push({
           x: pickup.sprite.x,
           y: pickup.sprite.y,
-          radius: pickup.kind === "credits" ? 72 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 128 : pickup.item?.kind === "junk" ? 92 : 110,
-          intensity: pickup.kind === "credits" ? 0.58 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 1 : 0.66,
+          radius: pickup.kind === "credits" ? 52 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 84 : pickup.item?.kind === "junk" ? 64 : 72,
+          intensity: pickup.kind === "credits" ? 0.3 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 0.62 : 0.34,
         });
       }
     });
@@ -5316,7 +5393,7 @@ export class MissionScene extends Phaser.Scene {
       });
     });
 
-    const casters = this.coverSpots.map((cover) => cover.bounds);
+    const casters = this.getMissionShadowCasters();
     this.lightingRig.refreshShadows(this.missionShadowSources, casters, this.currentStage?.type === "boss" ? 500 : 380);
   }
 
@@ -5681,6 +5758,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private clearStageObjects(): void {
+    this.clearTransientVisuals();
     this.worldPickups.forEach((pickup) => {
       pickup.shadow.destroy();
       pickup.halo.destroy();

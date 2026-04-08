@@ -84,6 +84,7 @@ export class InventoryOverlay {
   private readonly actionTertiary: MenuButton;
   private selectedEntry: InventorySelection | null = null;
   private currentSnapshot!: InventoryOverlaySnapshot;
+  private readonly panelBounds = new Phaser.Geom.Rectangle(80, 25, 1120, 670);
 
   constructor({ scene, onClose, getSnapshot }: InventoryOverlayOptions) {
     this.onClose = onClose;
@@ -545,7 +546,23 @@ export class InventoryOverlay {
     }
 
     this.actionMenu.setVisible(true);
-    this.actionMenu.setPosition(Phaser.Math.Clamp(x, 660, 1040), Phaser.Math.Clamp(y, 246, 574));
+    this.root.bringToTop(this.actionMenu);
+    const menuHalfWidth = 114;
+    const menuHalfHeight = 103;
+    let desiredX = x + 136;
+    let desiredY = y;
+    if (x + menuHalfWidth + 154 > this.panelBounds.right - 18) {
+      desiredX = x - 136;
+    }
+    if (y + menuHalfHeight > this.panelBounds.bottom - 56) {
+      desiredY = y - 118;
+    } else if (y - menuHalfHeight < this.panelBounds.top + 62) {
+      desiredY = y + 104;
+    }
+    this.actionMenu.setPosition(
+      Phaser.Math.Clamp(desiredX, this.panelBounds.left + menuHalfWidth + 10, this.panelBounds.right - menuHalfWidth - 10),
+      Phaser.Math.Clamp(desiredY, this.panelBounds.top + menuHalfHeight + 10, this.panelBounds.bottom - menuHalfHeight - 10),
+    );
     this.actionTitle.setText(getItemName(item));
     this.actionBody.setText(describeInventoryItem(item).slice(0, 2).join("\n"));
 
