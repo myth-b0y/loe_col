@@ -285,7 +285,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const acceptedMissionIds = Array.from(new Set((merged.missions.acceptedMissionIds ?? []).filter(Boolean)));
   const selectedMissionId = merged.missions.selectedMissionId && acceptedMissionIds.includes(merged.missions.selectedMissionId)
     ? merged.missions.selectedMissionId
-    : acceptedMissionIds[0] ?? null;
+    : null;
 
   merged.loadout.squad = normalizedSquad;
   merged.loadout.companion = summarizeSquadAssignments(normalizedSquad);
@@ -539,9 +539,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
     const accepted = new Set(this.saveData.missions.acceptedMissionIds);
     accepted.add(missionId);
     this.saveData.missions.acceptedMissionIds = [...accepted];
-    if (!this.saveData.missions.selectedMissionId) {
-      this.saveData.missions.selectedMissionId = missionId;
-    }
 
     this.emit("save-changed", this.saveData);
     this.emit("mission-accepted", missionId);
@@ -556,17 +553,13 @@ export class GameSession extends Phaser.Events.EventEmitter {
     });
 
     this.saveData.missions.acceptedMissionIds = [...accepted];
-    if (!this.saveData.missions.selectedMissionId) {
-      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
-    }
-
     this.emit("save-changed", this.saveData);
-    this.emit("mission-accepted", this.getSelectedMissionId());
+    this.emit("mission-accepted", null);
   }
 
   setSelectedMission(missionId: string | null): boolean {
     if (missionId === null) {
-      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+      this.saveData.missions.selectedMissionId = null;
       this.emit("save-changed", this.saveData);
       return true;
     }
@@ -587,7 +580,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
     this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);
     if (this.saveData.missions.selectedMissionId === missionId) {
-      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+      this.saveData.missions.selectedMissionId = null;
     }
     this.emit("save-changed", this.saveData);
     return true;
@@ -658,7 +651,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.activeMissionId = missionId;
     this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);
     if (this.saveData.missions.selectedMissionId === missionId) {
-      this.saveData.missions.selectedMissionId = this.saveData.missions.acceptedMissionIds[0] ?? null;
+      this.saveData.missions.selectedMissionId = null;
     }
     this.emit("save-changed", this.saveData);
     this.emit("mission-started", missionId);

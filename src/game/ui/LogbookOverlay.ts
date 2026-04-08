@@ -218,6 +218,7 @@ export class LogbookOverlay {
   show(): void {
     this.root.setVisible(true);
     this.setInputEnabled(true);
+    this.syncSelection();
     this.refresh();
   }
 
@@ -231,8 +232,21 @@ export class LogbookOverlay {
     return this.root.visible;
   }
 
+  private syncSelection(): void {
+    const contracts = getMissionContracts();
+    if (contracts.some((contract) => contract.id === this.selectedMissionId)) {
+      return;
+    }
+
+    this.selectedMissionId = gameSession.getSelectedMissionId()
+      ?? gameSession.getAcceptedMissionIds()[0]
+      ?? contracts[0]?.id
+      ?? "";
+  }
+
   private refresh(): void {
     const contracts = getMissionContracts();
+    this.syncSelection();
     const selected = contracts.find((contract) => contract.id === this.selectedMissionId) ?? contracts[0];
     const acceptedMissionIds = gameSession.getAcceptedMissionIds();
     const completedMissionIds = gameSession.getCompletedMissionIds();
@@ -243,7 +257,7 @@ export class LogbookOverlay {
     this.subtitle.setText("Your datapad tracks queued contracts, the active deployment route, and the missions you have already cleared.");
     this.queueSummary.setText(
       acceptedMissionIds.length > 0
-        ? `Queued routes: ${acceptedMissionIds.length} | Active: ${activeMission?.title ?? "none"}`
+        ? `Queued routes: ${acceptedMissionIds.length} | Active: ${activeMission?.title ?? "none selected"}`
         : "No queued routes yet. Accept contracts at the mission terminal first.",
     );
 

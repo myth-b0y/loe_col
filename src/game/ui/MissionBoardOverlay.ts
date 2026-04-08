@@ -221,6 +221,7 @@ export class MissionBoardOverlay {
   show(): void {
     this.root.setVisible(true);
     this.setInputEnabled(true);
+    this.syncSelection();
     this.refresh();
   }
 
@@ -240,8 +241,21 @@ export class MissionBoardOverlay {
     this.refresh();
   }
 
+  private syncSelection(): void {
+    const contracts = getMissionContracts();
+    if (contracts.some((contract) => contract.id === this.selectedMissionId)) {
+      return;
+    }
+
+    this.selectedMissionId = gameSession.getSelectedMissionId()
+      ?? gameSession.getAcceptedMissionIds()[0]
+      ?? contracts[0]?.id
+      ?? "";
+  }
+
   private refresh(): void {
     const contracts = getMissionContracts();
+    this.syncSelection();
     const selected = contracts.find((contract) => contract.id === this.selectedMissionId) ?? contracts[0];
     const acceptedMissionIds = gameSession.getAcceptedMissionIds();
     const selectedMissionId = gameSession.getSelectedMissionId();
@@ -252,7 +266,7 @@ export class MissionBoardOverlay {
     this.subtitle.setText("Review the current contracts, accept one or all of them, then use the Data Pad to choose which queued route becomes your active deployment.");
     this.statusText.setText(
       acceptedMissionIds.length > 0
-        ? `${acceptedMissionIds.length} contract${acceptedMissionIds.length === 1 ? "" : "s"} queued. Active contract: ${selectedContract?.title ?? "none selected"}.`
+        ? `${acceptedMissionIds.length} contract${acceptedMissionIds.length === 1 ? "" : "s"} queued. Active contract: ${selectedContract?.title ?? "none selected yet"}.`
         : "No contracts queued yet. Accept a route to make it available in the Data Pad and at the deploy door.",
     );
 
