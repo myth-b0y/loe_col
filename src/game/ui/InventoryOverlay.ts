@@ -8,15 +8,29 @@ import {
   getItemColor,
   getItemName,
   getItemShortLabel,
+  type CraftingMaterials,
+  type EquipmentLoadout,
   type EquipmentSlotId,
   type InventoryItem,
 } from "../content/items";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
+export type InventoryOverlaySnapshot = {
+  title?: string;
+  subtitle?: string;
+  emptyStatusText?: string;
+  allowEquip?: boolean;
+  equipment: EquipmentLoadout;
+  cargo: Array<InventoryItem | null>;
+  materials: CraftingMaterials;
+  currencyLines?: string[];
+};
+
 type InventoryOverlayOptions = {
   scene: Phaser.Scene;
   onClose: () => void;
+  getSnapshot?: () => InventoryOverlaySnapshot;
 };
 
 type CargoCellUi = {
@@ -44,6 +58,7 @@ const VALID_COLOR = 0x73c2ff;
 
 export class InventoryOverlay {
   private readonly onClose: () => void;
+  private readonly getSnapshot: () => InventoryOverlaySnapshot;
   private readonly root: Phaser.GameObjects.Container;
   private readonly backdrop: Phaser.GameObjects.Rectangle;
   private readonly title: Phaser.GameObjects.Text;
@@ -56,9 +71,11 @@ export class InventoryOverlay {
   private readonly cargoCells: CargoCellUi[];
   private readonly closeButton: MenuButton;
   private selectedCargoIndex: number | null = null;
+  private currentSnapshot!: InventoryOverlaySnapshot;
 
-  constructor({ scene, onClose }: InventoryOverlayOptions) {
+  constructor({ scene, onClose, getSnapshot }: InventoryOverlayOptions) {
     this.onClose = onClose;
+    this.getSnapshot = getSnapshot ?? (() => this.getDefaultSnapshot());
 
     this.backdrop = scene.add.rectangle(640, 360, 1280, 720, 0x02060c, 0.9)
       .setDepth(PANEL_DEPTH)
@@ -77,7 +94,7 @@ export class InventoryOverlay {
     const cargoSection = scene.add.rectangle(640, 555, 1040, 168, SECTION_FILL, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setStrokeStyle(2, FRAME_COLOR, 0.66);
-    const footerBar = scene.add.rectangle(640, 663, 1040, 40, 0x091724, 0.98)
+    const footerBar = scene.add.rectangle(640, 651, 1040, 64, 0x091724, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setStrokeStyle(2, FRAME_COLOR, 0.54);
 
@@ -214,18 +231,20 @@ export class InventoryOverlay {
       return { index, frame, itemLabel, hotkeyLabel };
     });
 
-    this.statusText = scene.add.text(120, 664, "No item selected.", {
+    this.statusText = scene.add.text(120, 632, "No item selected.", {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#9eb7d7",
-      wordWrap: { width: 760 },
+      wordWrap: { width: 640 },
     }).setDepth(PANEL_DEPTH + 2);
 
-    this.currencyText = scene.add.text(1080, 664, "", {
+    this.currencyText = scene.add.text(1080, 630, "", {
       fontFamily: "Arial",
-      fontSize: "16px",
+      fontSize: "15px",
       color: "#d9e9fb",
       fontStyle: "bold",
+      align: "right",
+      lineSpacing: 2,
     }).setOrigin(1, 0).setDepth(PANEL_DEPTH + 2);
 
     this.root = scene.add.container(0, 0, [
@@ -248,14 +267,18 @@ export class InventoryOverlay {
       characterTorso,
       this.characterRing,
       cargoHeader,
-      this.statusText,
-      this.currencyText,
       ...this.equipmentSlots.flatMap((slot) => [slot.frame, slot.slotLabel, slot.itemLabel]),
       ...this.cargoCells.flatMap((cell) => [cell.frame, cell.itemLabel, cell.hotkeyLabel]),
+      this.statusText,
+      this.currencyText,
     ]).setDepth(PANEL_DEPTH);
+    this.root.iterate((child: Phaser.GameObjects.GameObject) => {
+      (child as Phaser.GameObjects.GameObject & { setScrollFactor?: (x: number, y?: number) => void }).setScrollFactor?.(0, 0);
+    });
 
     this.root.setVisible(false);
     this.setInputEnabled(false);
+    this.currentSnapshot = this.getSnapshot();
   }
 
   show(): void {
@@ -277,24 +300,28 @@ export class InventoryOverlay {
   }
 
   refresh(): void {
-    const equipment = gameSession.getEquipmentLoadout();
-    const cargo = gameSession.getCargoSlots();
-    const materials = gameSession.getCraftingMaterials();
+    this.currentSnapshot = this.getSnapshot();
+    const { equipment, cargo, materials } = this.currentSnapshot;
     const selectedItem = this.getSelectedCargoItem();
     const validSlots = selectedItem ? new Set(getCompatibleEquipmentSlots(selectedItem).map((slot) => slot.id)) : new Set<EquipmentSlotId>();
+    const allowEquip = this.currentSnapshot.allowEquip ?? true;
+    const titleText = this.currentSnapshot.title ?? "Inventory";
+    const subtitleText = this.currentSnapshot.subtitle ?? "Select cargo, then click a valid equipment slot.";
 
     const materialSummary = describeCraftingMaterials(materials);
-    this.currencyText.setText([
+    this.title.setText(titleText);
+    this.subtitle.setText(subtitleText);
+    this.currencyText.setText((this.currentSnapshot.currencyLines ?? [
       `Credits: ${gameSession.saveData.profile.credits}`,
       materialSummary.length > 0 ? materialSummary.join(" | ") : "No crafting salvage",
-    ]);
+    ]).join("\n"));
 
     this.equipmentSlots.forEach((slot) => {
       const item = equipment[slot.slotId];
       slot.itemLabel.setText(item ? getItemShortLabel(item) : "Empty");
       slot.itemLabel.setColor(item ? "#f5fbff" : "#6f88a7");
 
-      const isValid = selectedItem ? validSlots.has(slot.slotId) : false;
+      const isValid = allowEquip && selectedItem ? validSlots.has(slot.slotId) : false;
       const borderColor = isValid ? VALID_COLOR : item ? getItemColor(item) : FRAME_COLOR;
       const borderAlpha = isValid ? 0.96 : item ? 0.84 : 0.7;
       slot.frame.setStrokeStyle(2, borderColor, borderAlpha);
@@ -312,7 +339,12 @@ export class InventoryOverlay {
     });
 
     if (!selectedItem) {
-      this.statusText.setText("No item selected. Gear starts empty now, and boss drops will fill this board as you progress.");
+      this.statusText.setText(this.currentSnapshot.emptyStatusText ?? "No item selected. Gear starts empty now, and boss drops will fill this board as you progress.");
+      return;
+    }
+
+    if (!allowEquip) {
+      this.statusText.setText([`${getItemName(selectedItem)} | Mission View`, ...describeInventoryItem(selectedItem)].join("\n"));
       return;
     }
 
@@ -328,7 +360,7 @@ export class InventoryOverlay {
   }
 
   private onCargoCellClicked(index: number): void {
-    const cargo = gameSession.getCargoSlots();
+    const cargo = this.currentSnapshot.cargo;
     const item = cargo[index];
 
     if (!item) {
@@ -343,6 +375,14 @@ export class InventoryOverlay {
   }
 
   private onEquipmentSlotClicked(slotId: EquipmentSlotId): void {
+    if ((this.currentSnapshot.allowEquip ?? true) === false) {
+      const item = this.currentSnapshot.equipment[slotId];
+      this.statusText.setText(item
+        ? [`${getItemName(item)} equipped in ${this.getSlotLabel(slotId)}.`, ...describeInventoryItem(item)].join("\n")
+        : `${this.getSlotLabel(slotId)} is empty.`);
+      return;
+    }
+
     if (this.selectedCargoIndex === null) {
       const item = gameSession.getEquipmentLoadout()[slotId];
       this.statusText.setText(item
@@ -368,12 +408,20 @@ export class InventoryOverlay {
       return null;
     }
 
-    const cargo = gameSession.getCargoSlots();
-    return cargo[this.selectedCargoIndex];
+    return this.currentSnapshot.cargo[this.selectedCargoIndex];
   }
 
   private getSlotLabel(slotId: EquipmentSlotId): string {
     return EQUIPMENT_SLOTS.find((slot) => slot.id === slotId)?.label ?? slotId;
+  }
+
+  private getDefaultSnapshot(): InventoryOverlaySnapshot {
+    return {
+      equipment: gameSession.getEquipmentLoadout(),
+      cargo: gameSession.getCargoSlots(),
+      materials: gameSession.getCraftingMaterials(),
+      allowEquip: true,
+    };
   }
 
   private setInputEnabled(enabled: boolean): void {

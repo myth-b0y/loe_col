@@ -23,10 +23,11 @@ import {
   type CompanionKitId,
   type FormationSlotId,
 } from "../content/companions";
-import { type CraftingMaterials, type InventoryItem, type ItemRarity } from "../content/items";
+import { cloneInventoryItem, type CraftingMaterials, type InventoryItem, type ItemRarity } from "../content/items";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
+import { InventoryOverlay, type InventoryOverlaySnapshot } from "../ui/InventoryOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
@@ -368,6 +369,7 @@ export class MissionScene extends Phaser.Scene {
     arc: Phaser.Input.Keyboard.Key;
     dash: Phaser.Input.Keyboard.Key;
     revive: Phaser.Input.Keyboard.Key;
+    inventory: Phaser.Input.Keyboard.Key;
     logbook: Phaser.Input.Keyboard.Key;
   };
   private keyboardVector = new Phaser.Math.Vector2();
@@ -384,8 +386,10 @@ export class MissionScene extends Phaser.Scene {
   private pulseButton?: MenuButton;
   private dashButton?: MenuButton;
   private arcButton?: MenuButton;
+  private inventoryButton?: MenuButton;
   private logbookButton?: MenuButton;
   private pauseButton?: MenuButton;
+  private inventoryOverlay?: InventoryOverlay;
   private logbookOverlay?: LogbookOverlay;
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
   private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
@@ -456,7 +460,7 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      if (!this.scene.isPaused() && !this.logbookOverlay?.isVisible()) {
+      if (!this.scene.isPaused() && !this.isMenuOverlayVisible()) {
         this.openPauseMenu();
       }
     };
@@ -481,7 +485,7 @@ export class MissionScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
-    if (this.logbookOverlay?.isVisible()) {
+    if (this.isMenuOverlayVisible()) {
       this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
       if (this.hudRefreshCooldown <= 0) {
         this.updateHudState();
@@ -590,8 +594,10 @@ export class MissionScene extends Phaser.Scene {
     this.pulseButton = undefined;
     this.dashButton = undefined;
     this.arcButton = undefined;
+    this.inventoryButton = undefined;
     this.logbookButton = undefined;
     this.pauseButton = undefined;
+    this.inventoryOverlay = undefined;
     this.logbookOverlay = undefined;
     this.touchUiObjects = [];
     this.desktopUiObjects = [];
@@ -841,6 +847,19 @@ export class MissionScene extends Phaser.Scene {
       color: "#eadfff",
     }).setOrigin(0.5).setVisible(false));
 
+    this.inventoryButton = createMenuButton({
+      scene: this,
+      x: 858,
+      y: 56,
+      width: 126,
+      height: 38,
+      label: "Inventory",
+      onClick: () => this.toggleInventoryOverlay(),
+      depth: 12,
+      accentColor: 0x2d4c3d,
+    });
+    this.inventoryButton.container.setScrollFactor(0);
+
     this.logbookButton = createMenuButton({
       scene: this,
       x: 1000,
@@ -881,6 +900,13 @@ export class MissionScene extends Phaser.Scene {
       onClose: () => {
         this.fireHeld = false;
       },
+    });
+    this.inventoryOverlay = new InventoryOverlay({
+      scene: this,
+      onClose: () => {
+        this.fireHeld = false;
+      },
+      getSnapshot: () => this.getMissionInventorySnapshot(),
     });
   }
 
@@ -1018,19 +1044,20 @@ export class MissionScene extends Phaser.Scene {
       arc: Phaser.Input.Keyboard.KeyCodes.E,
       dash: Phaser.Input.Keyboard.KeyCodes.SHIFT,
       revive: Phaser.Input.Keyboard.KeyCodes.F,
+      inventory: Phaser.Input.Keyboard.KeyCodes.I,
       logbook: Phaser.Input.Keyboard.KeyCodes.L,
     }) as typeof this.moveKeys;
 
     keyboard.on("keydown-Q", () => {
       this.reportDesktopInput();
-      if (this.logbookOverlay?.isVisible()) {
+      if (this.isMenuOverlayVisible()) {
         return;
       }
       this.castPulse();
     });
     keyboard.on("keydown-E", () => {
       this.reportDesktopInput();
-      if (this.logbookOverlay?.isVisible()) {
+      if (this.isMenuOverlayVisible()) {
         return;
       }
       this.castArcLance();
@@ -1038,21 +1065,21 @@ export class MissionScene extends Phaser.Scene {
     keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
       event.preventDefault();
       this.reportDesktopInput();
-      if (this.logbookOverlay?.isVisible()) {
+      if (this.isMenuOverlayVisible()) {
         return;
       }
       this.cycleTargetLock();
     });
     keyboard.on("keydown-SHIFT", () => {
       this.reportDesktopInput();
-      if (this.logbookOverlay?.isVisible()) {
+      if (this.isMenuOverlayVisible()) {
         return;
       }
       this.tryDash();
     });
     keyboard.on("keydown-F", () => {
       this.reportDesktopInput();
-      if (this.logbookOverlay?.isVisible()) {
+      if (this.isMenuOverlayVisible()) {
         return;
       }
       this.tryMissionInteract();
@@ -1066,7 +1093,15 @@ export class MissionScene extends Phaser.Scene {
         this.logbookOverlay.hide();
         return;
       }
+      if (this.inventoryOverlay?.isVisible()) {
+        this.inventoryOverlay.hide();
+        return;
+      }
       this.openPauseMenu();
+    });
+    keyboard.on("keydown-I", () => {
+      this.reportDesktopInput();
+      this.toggleInventoryOverlay();
     });
     keyboard.on("keydown-L", () => {
       this.reportDesktopInput();
@@ -1081,13 +1116,14 @@ export class MissionScene extends Phaser.Scene {
       keyboard.removeAllListeners("keydown-F");
       keyboard.removeAllListeners("keyup-F");
       keyboard.removeAllListeners("keydown-ESC");
+      keyboard.removeAllListeners("keydown-I");
       keyboard.removeAllListeners("keydown-L");
     });
   }
 
   private bindPointers(): void {
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      if (this.missionComplete || this.transitioningStage) {
+      if (this.missionComplete || this.transitioningStage || this.isMenuOverlayVisible()) {
         return;
       }
 
@@ -1125,6 +1161,10 @@ export class MissionScene extends Phaser.Scene {
     });
 
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      if (this.isMenuOverlayVisible()) {
+        return;
+      }
+
       const touchLike = this.isTouchPointer(pointer);
       if (this.touchCapable) {
         gameSession.reportInputMode(touchLike ? "touch" : "desktop", this.touchCapable);
@@ -4396,6 +4436,7 @@ export class MissionScene extends Phaser.Scene {
 
   private updateHudState(): void {
     const combatLocked = this.isCombatLocked();
+    const menuOverlayVisible = this.isMenuOverlayVisible();
     const companionsEnabled = gameSession.getModeRules().companionsEnabled;
     this.hpFill.width = PLAYER_BAR_WIDTH * (this.playerHp / this.playerMaxHp);
     this.shieldFill.width = PLAYER_BAR_WIDTH * (this.playerShield / Math.max(1, this.playerMaxShield));
@@ -4467,12 +4508,22 @@ export class MissionScene extends Phaser.Scene {
     }
 
     const reviveTarget = this.getReviveTarget();
+    const interactPickup = this.getInteractPickup();
     if (reviveTarget) {
       this.attackButton?.setLabel(reviveTarget.reviveHeld
         ? `Revive\n${Math.max(0, COMPANION_REVIVE_HOLD_TIME - reviveTarget.reviveProgress).toFixed(1)}s`
         : `Revive\n${reviveTarget.name}`);
       this.attackButton?.setCooldownProgress(reviveTarget.reviveHeld ? 1 - (reviveTarget.reviveProgress / COMPANION_REVIVE_HOLD_TIME) : 0);
       this.attackButton?.setInputEnabled(this.touchMode && !combatLocked);
+    } else if (interactPickup) {
+      const pickupLabel = interactPickup.kind === "item" && interactPickup.item
+        ? `Pick Up\n${interactPickup.item.shortLabel}`
+        : interactPickup.kind === "material" && interactPickup.amount
+          ? `Pick Up\nx${interactPickup.amount}`
+          : "Pick Up";
+      this.attackButton?.setLabel(pickupLabel);
+      this.attackButton?.setCooldownProgress(0);
+      this.attackButton?.setInputEnabled(this.touchMode && !menuOverlayVisible && !this.missionComplete && !this.transitioningStage);
     } else {
       this.attackButton?.setLabel(combatLocked ? "Safe\nRoom" : "Attack");
       this.attackButton?.setCooldownProgress(combatLocked ? 1 : 0);
@@ -4483,18 +4534,11 @@ export class MissionScene extends Phaser.Scene {
     this.targetButton?.setCooldownProgress(0);
     this.targetButton?.setInputEnabled(this.touchMode && !combatLocked && this.enemies.length > 0);
 
-    const interactPickup = this.getInteractPickup();
     if (this.interactButton) {
-      this.interactButton.container.setVisible(this.touchMode && Boolean(interactPickup));
-      this.interactButton.setLabel(interactPickup
-        ? interactPickup.kind === "item" && interactPickup.item
-          ? `Pick Up\n${interactPickup.item.shortLabel}`
-          : interactPickup.kind === "material" && interactPickup.amount
-            ? `Pick Up\nx${interactPickup.amount}`
-            : "Use"
-        : "Use");
+      this.interactButton.container.setVisible(false);
+      this.interactButton.setLabel("Use");
       this.interactButton.setCooldownProgress(0);
-      this.interactButton.setInputEnabled(this.touchMode && !combatLocked && Boolean(interactPickup));
+      this.interactButton.setInputEnabled(false);
     }
 
     this.pulseButton?.setLabel(this.getTouchCooldownLabel("Pulse", this.pulseCooldown, combatLocked));
@@ -4506,8 +4550,9 @@ export class MissionScene extends Phaser.Scene {
     this.pulseButton?.setInputEnabled(this.touchMode && !combatLocked && this.pulseCooldown <= 0);
     this.arcButton?.setInputEnabled(this.touchMode && !combatLocked && this.arcCooldown <= 0);
     this.dashButton?.setInputEnabled(this.touchMode && !combatLocked && this.dashCooldown <= 0);
-    this.logbookButton?.container.setAlpha(this.logbookOverlay?.isVisible() ? 0.55 : 1);
-    this.pauseButton?.container.setAlpha(this.logbookOverlay?.isVisible() ? 0.4 : 1);
+    this.inventoryButton?.container.setAlpha(this.inventoryOverlay?.isVisible() ? 0.55 : menuOverlayVisible ? 0.4 : 1);
+    this.logbookButton?.container.setAlpha(this.logbookOverlay?.isVisible() ? 0.55 : menuOverlayVisible ? 0.4 : 1);
+    this.pauseButton?.container.setAlpha(menuOverlayVisible ? 0.4 : 1);
   }
 
   private drawTargetBracket(target: Enemy): void {
@@ -4606,6 +4651,44 @@ export class MissionScene extends Phaser.Scene {
     this.activeTransientEffects = Math.max(0, this.activeTransientEffects - 1);
   }
 
+  private isMenuOverlayVisible(): boolean {
+    return Boolean(this.logbookOverlay?.isVisible() || this.inventoryOverlay?.isVisible());
+  }
+
+  private getMissionInventorySnapshot(): InventoryOverlaySnapshot {
+    const equipment = gameSession.getEquipmentLoadout();
+    const cargo = gameSession.getCargoSlots();
+    const materials = gameSession.getCraftingMaterials();
+    let insertIndex = cargo.findIndex((slot) => slot === null);
+
+    this.missionItemsEarned.forEach((item) => {
+      if (insertIndex < 0) {
+        return;
+      }
+
+      cargo[insertIndex] = cloneInventoryItem(item);
+      insertIndex = cargo.findIndex((slot, index) => slot === null && index > insertIndex);
+    });
+
+    materials.alloy += this.missionMaterialsEarned.alloy;
+    materials.shardDust += this.missionMaterialsEarned.shardDust;
+    materials.filament += this.missionMaterialsEarned.filament;
+
+    return {
+      title: "Inventory",
+      subtitle: "Mission view. Banked gear stays in place while recovered run loot is mirrored into cargo.",
+      emptyStatusText: "Mission inventory open. Select gear or cargo to inspect what you are carrying on this run.",
+      allowEquip: false,
+      equipment,
+      cargo,
+      materials,
+      currencyLines: [
+        `Credits: ${gameSession.saveData.profile.credits} | Run +${this.missionCreditsEarned}`,
+        `Recovered gear: ${this.missionItemsEarned.length} | Salvage cache updated live`,
+      ],
+    };
+  }
+
   private toggleLogbookOverlay(): void {
     this.fireHeld = false;
     this.releaseMissionControls();
@@ -4614,12 +4697,28 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    this.inventoryOverlay?.hide();
     this.logbookOverlay?.show();
+  }
+
+  private toggleInventoryOverlay(): void {
+    this.fireHeld = false;
+    this.releaseMissionControls();
+    if (this.inventoryOverlay?.isVisible()) {
+      this.inventoryOverlay.hide();
+      return;
+    }
+
+    this.logbookOverlay?.hide();
+    this.inventoryOverlay?.show();
   }
 
   private openPauseMenu(): void {
     if (this.logbookOverlay?.isVisible()) {
       this.logbookOverlay.hide();
+    }
+    if (this.inventoryOverlay?.isVisible()) {
+      this.inventoryOverlay.hide();
     }
 
     if (typeof document !== "undefined" && document.pointerLockElement) {
@@ -4636,6 +4735,7 @@ export class MissionScene extends Phaser.Scene {
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
     return Boolean(
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || this.inventoryButton?.container.getBounds().contains(pointer.x, pointer.y)
       || this.logbookButton?.container.getBounds().contains(pointer.x, pointer.y)
       || (this.attackButton?.container.visible && this.attackButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.interactButton?.container.visible && this.interactButton.container.getBounds().contains(pointer.x, pointer.y))
@@ -4713,6 +4813,12 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    const pickup = this.getInteractPickup();
+    if (pickup) {
+      this.collectWorldPickup(pickup);
+      return;
+    }
+
     this.beginTouchAttack(pointer);
   }
 
@@ -4772,7 +4878,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private tryMissionInteract(): void {
-    if (this.missionComplete || this.transitioningStage || this.logbookOverlay?.isVisible()) {
+    if (this.missionComplete || this.transitioningStage || this.isMenuOverlayVisible()) {
       return;
     }
 
@@ -5234,7 +5340,7 @@ export class MissionScene extends Phaser.Scene {
     return this.missionComplete
       || this.transitioningStage
       || this.currentStage?.type === "rest"
-      || this.logbookOverlay?.isVisible() === true;
+      || this.isMenuOverlayVisible();
   }
 
   private getCooldownDetail(hotkey: string, cooldown: number, combatLocked: boolean): string {
@@ -5317,6 +5423,7 @@ export class MissionScene extends Phaser.Scene {
       selectedTarget: this.selectedTarget?.kind ?? null,
       sfx: retroSfx.getDebugState(),
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
+      inventoryVisible: this.inventoryOverlay?.isVisible() ?? false,
       touchAttackHeld: this.attackPointerId !== null,
       pickupCounts: {
         world: this.worldPickups.length,
