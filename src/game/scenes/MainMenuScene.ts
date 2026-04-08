@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 
-import { GAME_CODE, GAME_IP, GAME_MILESTONE, GAME_SERIES, GAME_TITLE, GAME_VERSION } from "../core/buildInfo";
+import { GAME_BUILD, GAME_IP, GAME_MILESTONE, GAME_SERIES, GAME_TITLE } from "../core/buildInfo";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
@@ -33,24 +33,24 @@ export class MainMenuScene extends Phaser.Scene {
 
     this.add.text(324, 126, GAME_SERIES, {
       fontFamily: "Arial",
-      fontSize: "54px",
+      fontSize: "50px",
       color: "#f6fbff",
       fontStyle: "bold",
     }).setOrigin(0.5, 0);
-    this.add.text(324, 204, GAME_TITLE, {
+    this.add.text(324, 216, GAME_TITLE, {
       fontFamily: "Arial",
       fontSize: "32px",
       color: "#d8eaff",
       fontStyle: "bold",
     }).setOrigin(0.5, 0);
 
-    this.add.text(324, 258, "Age of Legends tactical action RPG prototype", {
+    this.add.text(324, 274, "Age of Legends tactical action RPG prototype", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#d2e5ff",
     }).setOrigin(0.5, 0);
 
-    this.add.text(324, 302, "Build the crew. Launch the mission. Clear the outpost. Return stronger.", {
+    this.add.text(324, 318, "Build the crew. Launch the mission. Clear the outpost. Return stronger.", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#b4cbed",
@@ -109,7 +109,7 @@ export class MainMenuScene extends Phaser.Scene {
       color: "#98aed1",
     });
 
-    this.add.text(930, 662, `${GAME_CODE} ${GAME_VERSION}`, {
+    this.add.text(930, 662, GAME_BUILD, {
       fontFamily: "Arial",
       fontSize: "14px",
       color: "#8aa3c7",
@@ -267,7 +267,7 @@ export class MainMenuScene extends Phaser.Scene {
 
   getDebugSnapshot(): Record<string, unknown> {
     return {
-      version: `${GAME_CODE} ${GAME_VERSION}`,
+      version: GAME_BUILD,
       milestone: GAME_MILESTONE,
       run: gameSession.getRunConfig(),
       hasSaves: gameSession.hasSaveData(),

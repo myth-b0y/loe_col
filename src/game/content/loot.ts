@@ -1,6 +1,7 @@
 import {
   DEFAULT_CRAFTING_MATERIALS,
   addCraftingMaterials,
+  cloneInventoryItem,
   createLegendarySetPiece,
   createProceduralBossGear,
   describeCraftingMaterials,
@@ -25,6 +26,11 @@ export type MissionRewardBundle = {
 export type EnemyDropBundle = {
   credits: number;
   materials: CraftingMaterials;
+};
+
+export type BossLootBundle = {
+  items: InventoryItem[];
+  dropLines: string[];
 };
 
 type MissionBossLootPlan = {
@@ -95,20 +101,43 @@ export function buildMissionRewardBundle(options: {
   xp: number;
   credits: number;
   materials: CraftingMaterials;
+  items?: InventoryItem[];
   seed: number;
 }): MissionRewardBundle {
-  const plan = BOSS_LOOT_PLANS[options.missionId] ?? BOSS_LOOT_PLANS["ember-watch"];
-
-  const items: InventoryItem[] = [
-    createLegendarySetPiece(plan.legendaryPiece, options.raceId, options.seed ^ 0x5a11a7),
-    createProceduralBossGear(plan.bonusSlot, options.raceId, options.difficulty, options.seed ^ 0x1c77b9),
-  ];
+  const items = options.items
+    ? options.items
+      .map((item) => cloneInventoryItem(item))
+      .filter((item): item is InventoryItem => item !== null)
+    : buildBossLootBundle({
+    missionId: options.missionId,
+    difficulty: options.difficulty,
+    raceId: options.raceId,
+    seed: options.seed,
+  }).items;
 
   return {
     credits: options.credits,
     xp: options.xp,
     materials: { ...DEFAULT_CRAFTING_MATERIALS, ...options.materials },
     items,
+  };
+}
+
+export function buildBossLootBundle(options: {
+  missionId: string;
+  difficulty: "easy" | "medium" | "hard";
+  raceId: RaceId;
+  seed: number;
+}): BossLootBundle {
+  const plan = BOSS_LOOT_PLANS[options.missionId] ?? BOSS_LOOT_PLANS["ember-watch"];
+  const items: InventoryItem[] = [
+    createLegendarySetPiece(plan.legendaryPiece, options.raceId, options.seed ^ 0x5a11a7),
+    createProceduralBossGear(plan.bonusSlot, options.raceId, options.difficulty, options.seed ^ 0x1c77b9),
+  ];
+
+  return {
+    items,
+    dropLines: items.map((item) => item.name),
   };
 }
 

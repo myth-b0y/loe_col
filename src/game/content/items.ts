@@ -169,12 +169,12 @@ const RACE_LABELS: Record<RaceId, string> = {
   aaruian: "Aaruian",
 };
 
-const RARITY_COLORS: Record<ItemRarity, number> = {
-  Common: 0x9fb6d0,
+export const RARITY_COLORS: Record<ItemRarity, number> = {
+  Common: 0x63d77b,
   Rare: 0x70c4ff,
-  Epic: 0xc49bff,
+  Epic: 0xbe8dff,
   Legendary: 0xffcc74,
-  Mythic: 0xff6fd3,
+  Mythic: 0x9f6fff,
 };
 
 const PROCEDURAL_TEMPLATES: Record<"belt" | "weapon" | "back", GearTemplate[]> = {

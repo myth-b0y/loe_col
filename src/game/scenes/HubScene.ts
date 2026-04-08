@@ -26,6 +26,8 @@ type InteractionTargetKind = "station" | "airlock";
 
 type Station = {
   id: StationId;
+  shadow: Phaser.GameObjects.Ellipse;
+  glow: Phaser.GameObjects.Ellipse;
   zone: Phaser.GameObjects.Rectangle;
   label: Phaser.GameObjects.Text;
   hint: Phaser.GameObjects.Text;
@@ -47,6 +49,7 @@ type HubCompanionActor = {
   primaryGear: string;
   supportGear: string;
   anchor: Phaser.Math.Vector2;
+  shadow: Phaser.GameObjects.Ellipse;
   sprite: Phaser.GameObjects.Arc;
   shieldPlate?: Phaser.GameObjects.Rectangle;
   label: Phaser.GameObjects.Text;
@@ -124,6 +127,7 @@ function getBoardFormationLabel(slotId: FormationSlotId): string {
 
 export class HubScene extends Phaser.Scene {
   private brightnessLayer?: BrightnessLayer;
+  private playerShadow!: Phaser.GameObjects.Ellipse;
   private player!: Phaser.GameObjects.Arc;
   private crew: HubCompanionActor[] = [];
   private buddyPulse = 0;
@@ -300,11 +304,14 @@ export class HubScene extends Phaser.Scene {
   }
 
   private createActors(): void {
+    this.playerShadow = this.add.ellipse(304, HUB_ROOM.centerY + 14, 38, 16, 0x000000, 0.28).setDepth(6);
     this.player = this.add.circle(304, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
 
     this.crew = STORY_COMPANIONS.map((companion, index) => {
       const anchor = new Phaser.Math.Vector2(companion.hubPosition.x, companion.hubPosition.y);
+      const shadow = this.add.ellipse(anchor.x, anchor.y + companion.radius * 0.72, companion.radius * 1.9, companion.radius * 0.9, 0x000000, 0.24)
+        .setDepth(6);
       const sprite = this.add.circle(anchor.x, anchor.y, companion.radius, companion.coreColor).setDepth(7);
       sprite.setStrokeStyle(3, companion.trimColor, 1);
 
@@ -329,6 +336,7 @@ export class HubScene extends Phaser.Scene {
         primaryGear: companion.primaryGear,
         supportGear: companion.supportGear,
         anchor,
+        shadow,
         sprite,
         shieldPlate,
         label,
@@ -359,6 +367,8 @@ export class HubScene extends Phaser.Scene {
       : id === "loadout"
         ? 0xffd36d
         : 0x8dc8ff;
+    const glow = this.add.ellipse(x, y + height * 0.1, width * 0.92, height * 0.5, accent, 0.08).setDepth(4);
+    const shadow = this.add.ellipse(x, y + height * 0.34, width * 0.9, 18, 0x000000, 0.24).setDepth(4);
     const zone = this.add.rectangle(x, y, width, height, 0x17314f, 0.84)
       .setStrokeStyle(3, accent, 0.72)
       .setDepth(5)
@@ -382,6 +392,8 @@ export class HubScene extends Phaser.Scene {
 
     const station: Station = {
       id,
+      shadow,
+      glow,
       zone,
       label: title,
       hint,
@@ -1077,6 +1089,7 @@ export class HubScene extends Phaser.Scene {
     const move = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
     this.player.x = Phaser.Math.Clamp(this.player.x + move.x * HUB_SPEED * dt, HUB_ROOM.x + 22, HUB_ROOM.right - 22);
     this.player.y = Phaser.Math.Clamp(this.player.y + move.y * HUB_SPEED * dt, HUB_ROOM.y + 22, HUB_ROOM.bottom - 22);
+    this.playerShadow.setPosition(this.player.x, this.player.y + 14);
   }
 
   private updateCrew(dt: number): void {
@@ -1084,6 +1097,7 @@ export class HubScene extends Phaser.Scene {
     this.crew.forEach((companion) => {
       companion.sprite.x = companion.anchor.x + Math.sin(this.buddyPulse * 1.3 + companion.pulseOffset) * 5;
       companion.sprite.y = companion.anchor.y + Math.cos(this.buddyPulse * 1.7 + companion.pulseOffset) * 3;
+      companion.shadow.setPosition(companion.sprite.x, companion.sprite.y + companion.sprite.radius * 0.72);
       if (companion.shieldPlate) {
         companion.shieldPlate.setPosition(companion.sprite.x + companion.sprite.radius + 8, companion.sprite.y);
       }
@@ -1099,6 +1113,7 @@ export class HubScene extends Phaser.Scene {
       const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, station.zone.x, station.zone.y);
       const closeEnough = distance <= station.interactionRadius;
       station.zone.setFillStyle(closeEnough ? 0x21486f : 0x17314f, closeEnough ? 0.96 : 0.84);
+      station.glow.setAlpha(closeEnough ? 0.18 : 0.08);
       station.hint.setColor(closeEnough ? "#f5fbff" : "#bed4f1");
 
       if (distance < nearestDistance) {

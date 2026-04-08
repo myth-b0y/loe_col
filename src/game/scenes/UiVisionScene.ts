@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 
-import { GAME_CODE, GAME_IP, GAME_SERIES, GAME_TITLE, GAME_VERSION } from "../core/buildInfo";
+import { GAME_BUILD, GAME_IP, GAME_SERIES, GAME_TITLE } from "../core/buildInfo";
 import {
   createBodyText,
   createEmberAccent,
@@ -238,7 +238,7 @@ export class UiVisionScene extends Phaser.Scene {
       fontSize: "15px",
       color: "#93a8c5",
     }).setDepth(6);
-    const version = this.add.text(1046, 748, `${GAME_CODE} ${GAME_VERSION}`, {
+    const version = this.add.text(1046, 748, GAME_BUILD, {
       fontFamily: UI_FONT_FAMILY,
       fontSize: "14px",
       color: "#90a6c6",

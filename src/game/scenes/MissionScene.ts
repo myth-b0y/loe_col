@@ -14,7 +14,7 @@ import {
   type MissionStage,
   type RestStage,
 } from "../content/missions";
-import { buildEnemyDropBundle, buildMissionRewardBundle } from "../content/loot";
+import { buildBossLootBundle, buildEnemyDropBundle, buildMissionRewardBundle } from "../content/loot";
 import {
   getCompanionRoleDisplay,
   getFormationSlot,
@@ -23,6 +23,7 @@ import {
   type CompanionKitId,
   type FormationSlotId,
 } from "../content/companions";
+import { type CraftingMaterials, type InventoryItem, type ItemRarity } from "../content/items";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -68,6 +69,7 @@ type Enemy = {
   lastMoveLabel: string;
   sprite: Phaser.GameObjects.Arc;
   aura: Phaser.GameObjects.Arc;
+  shadow: Phaser.GameObjects.Ellipse;
   shieldRing: Phaser.GameObjects.Arc;
   hp: number;
   maxHp: number;
@@ -126,6 +128,30 @@ type CoverSpot = {
   fill: Phaser.GameObjects.Rectangle;
 };
 
+type MaterialPickupKind = keyof CraftingMaterials;
+
+type PickupVisualRarity = Extract<ItemRarity, "Common" | "Rare" | "Legendary" | "Mythic">;
+
+type WorldPickup = {
+  id: string;
+  kind: "credits" | "material" | "item";
+  rarity: PickupVisualRarity;
+  color: number;
+  autoPickup: boolean;
+  baseX: number;
+  baseY: number;
+  amount?: number;
+  materialKind?: MaterialPickupKind;
+  item?: InventoryItem;
+  sprite: Phaser.GameObjects.Shape;
+  halo: Phaser.GameObjects.Arc;
+  shadow: Phaser.GameObjects.Ellipse;
+  promptText: Phaser.GameObjects.Text;
+  bobOffset: number;
+  bobSpeed: number;
+  collected: boolean;
+};
+
 type AbilityCard = {
   frame: Phaser.GameObjects.Rectangle;
   cooldownMask: Phaser.GameObjects.Rectangle;
@@ -176,6 +202,7 @@ type CompanionState = {
   tauntTimer: number;
   aegisTimer: number;
   sprite: Phaser.GameObjects.Arc;
+  shadow: Phaser.GameObjects.Ellipse;
   shieldRing: Phaser.GameObjects.Arc;
   guardPlate?: Phaser.GameObjects.Rectangle;
   guardFacing: Phaser.Math.Vector2;
@@ -211,6 +238,8 @@ const PLAYER_BAR_WIDTH = 160;
 const COMPANION_BAR_WIDTH = 120;
 const TARGET_LOCK_RANGE = 520;
 const SHIELD_REGEN_DELAY = 3.25;
+const CREDIT_PICKUP_RANGE = 34;
+const INTERACT_PICKUP_RANGE = 84;
 const PLAYER_CORE_COLOR = 0xf2f7ff;
 const PLAYER_TRIM_COLOR = 0x7caeff;
 const PLAYER_TARGET_COLOR = PLAYER_CORE_COLOR;
@@ -223,6 +252,12 @@ const PLAYER_BUFF_ROW_Y = 160;
 const COMPANION_HUD_START_Y = 196;
 const HEX_DEBUFF_DURATION = 2.2;
 const COVER_INSET = 4;
+const PICKUP_RARITY_COLORS: Record<PickupVisualRarity, number> = {
+  Common: 0x63d77b,
+  Rare: 0x70c4ff,
+  Legendary: 0xffcc74,
+  Mythic: 0x9f6fff,
+};
 
 const BOSS_ARCHETYPES: Record<MissionBossKind, BossArchetype> = {
   "shard-bruiser": {
@@ -296,6 +331,7 @@ export class MissionScene extends Phaser.Scene {
   private restHealed = false;
   private supplyHintShown = false;
 
+  private playerShadow!: Phaser.GameObjects.Ellipse;
   private player!: Phaser.GameObjects.Arc;
   private playerFacing!: Phaser.GameObjects.Rectangle;
   private playerShieldRing!: Phaser.GameObjects.Arc;
@@ -343,6 +379,7 @@ export class MissionScene extends Phaser.Scene {
   private moveBase?: Phaser.GameObjects.Arc;
   private moveKnob?: Phaser.GameObjects.Arc;
   private attackButton?: MenuButton;
+  private interactButton?: MenuButton;
   private targetButton?: MenuButton;
   private pulseButton?: MenuButton;
   private dashButton?: MenuButton;
@@ -373,7 +410,10 @@ export class MissionScene extends Phaser.Scene {
   private autoAimTarget: Enemy | null = null;
   private missionCreditsEarned = 0;
   private missionMaterialsEarned = { alloy: 0, shardDust: 0, filament: 0 };
+  private missionItemsEarned: InventoryItem[] = [];
   private enemyDropCounter = 0;
+  private pickupCounter = 0;
+  private worldPickups: WorldPickup[] = [];
   private toolbarCards?: {
     fire: AbilityCard;
     pulse: AbilityCard;
@@ -481,6 +521,7 @@ export class MissionScene extends Phaser.Scene {
     this.applyCoverCollisions();
     this.updateFacing();
     this.updateBullets(dt);
+    this.updateWorldPickups(dt);
     this.updateStageState();
     this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
     if (this.hudRefreshCooldown <= 0) {
@@ -525,7 +566,10 @@ export class MissionScene extends Phaser.Scene {
     this.companions = [];
     this.missionCreditsEarned = 0;
     this.missionMaterialsEarned = { alloy: 0, shardDust: 0, filament: 0 };
+    this.missionItemsEarned = [];
     this.enemyDropCounter = 0;
+    this.pickupCounter = 0;
+    this.worldPickups = [];
 
     this.bullets = [];
     this.enemies = [];
@@ -541,6 +585,7 @@ export class MissionScene extends Phaser.Scene {
     this.moveBase = undefined;
     this.moveKnob = undefined;
     this.attackButton = undefined;
+    this.interactButton = undefined;
     this.targetButton = undefined;
     this.pulseButton = undefined;
     this.dashButton = undefined;
@@ -564,6 +609,7 @@ export class MissionScene extends Phaser.Scene {
     this.playerHp = this.playerMaxHp;
     this.playerMaxShield = this.playerCombatProfile.shieldCapacity;
     this.playerShield = this.playerMaxShield;
+    this.playerShadow = this.add.ellipse(210, 352, 34, 16, 0x000000, 0.28).setDepth(7);
     this.player = this.add.circle(210, 342, 18, PLAYER_CORE_COLOR).setDepth(10);
     this.player.setStrokeStyle(4, PLAYER_TRIM_COLOR, 1);
     this.playerShieldRing = this.add.circle(this.player.x, this.player.y, 26)
@@ -589,6 +635,9 @@ export class MissionScene extends Phaser.Scene {
         companion.coreColor,
       ).setDepth(9);
       sprite.setStrokeStyle(3, companion.trimColor, 1);
+
+      const shadow = this.add.ellipse(sprite.x, sprite.y + companion.radius * 0.72, companion.radius * 1.9, companion.radius * 0.9, 0x000000, 0.24)
+        .setDepth(7);
 
       const shieldRing = this.add.circle(sprite.x, sprite.y, companion.radius + 7)
         .setStrokeStyle(3, 0x7de6ff, 0.78)
@@ -646,6 +695,7 @@ export class MissionScene extends Phaser.Scene {
         tauntTimer: 0,
         aegisTimer: 0,
         sprite,
+        shadow,
         shieldRing,
         guardPlate,
         guardFacing: new Phaser.Math.Vector2(1, 0),
@@ -886,6 +936,20 @@ export class MissionScene extends Phaser.Scene {
     });
     this.targetButton.container.setScrollFactor(0);
 
+    this.interactButton = createMenuButton({
+      scene: this,
+      x: 1188,
+      y: 420,
+      width: 118,
+      height: 52,
+      label: "Use",
+      onClick: () => this.tryMissionInteract(),
+      depth: 15,
+      accentColor: 0x35511d,
+    });
+    this.interactButton.container.setScrollFactor(0);
+    this.interactButton.container.setVisible(false);
+
     this.pulseButton = createMenuButton({
       scene: this,
       x: 922,
@@ -932,6 +996,7 @@ export class MissionScene extends Phaser.Scene {
       attackLabel,
       this.attackButton.container,
       this.targetButton.container,
+      this.interactButton.container,
       this.pulseButton.container,
       this.arcButton.container,
       this.dashButton.container,
@@ -990,7 +1055,7 @@ export class MissionScene extends Phaser.Scene {
       if (this.logbookOverlay?.isVisible()) {
         return;
       }
-      this.beginKeyboardRevive();
+      this.tryMissionInteract();
     });
     keyboard.on("keyup-F", () => {
       this.endCompanionReviveHold();
@@ -1128,11 +1193,13 @@ export class MissionScene extends Phaser.Scene {
     this.player.setPosition(entryPoint.x, entryPoint.y);
     this.resolveCircleAgainstCover(this.player, 18);
     this.player.setAlpha(1);
+    this.playerShadow.setPosition(this.player.x, this.player.y + 13);
     this.playerShieldRing.setPosition(this.player.x, this.player.y);
     this.companions.forEach((companion) => {
       const spawnAnchor = this.getCompanionDesiredAnchor(companion, forward, null, new Phaser.Math.Vector2(0, 0));
       companion.sprite.setPosition(spawnAnchor.x, spawnAnchor.y);
       this.resolveCircleAgainstCover(companion.sprite, companion.radius);
+      companion.shadow.setPosition(companion.sprite.x, companion.sprite.y + companion.radius * 0.72);
       companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
       companion.sprite.setVisible(gameSession.getModeRules().companionsEnabled);
       companion.shieldRing.setVisible(gameSession.getModeRules().companionsEnabled && companion.shield > 0.5);
@@ -1158,6 +1225,8 @@ export class MissionScene extends Phaser.Scene {
       this.setupBossRoom(this.currentStage);
     }
 
+    this.createStageAmbience(this.currentStage);
+
     this.cameras.main.startFollow(this.player, true, 0.14, 0.14);
   }
 
@@ -1168,6 +1237,20 @@ export class MissionScene extends Phaser.Scene {
         ? { upcoming: 0x4d2f5f, current: 0xf29dff, completed: 0xc76cff }
         : { upcoming: 0x24456b, current: 0xffd36d, completed: 0x79abed };
     return palette[state];
+  }
+
+  private createStageAmbience(stage: MissionStage): void {
+    const ambientColor = stage.type === "rest"
+      ? 0x5de4c8
+      : stage.type === "boss"
+        ? 0x9f6fff
+        : 0x4aa8ff;
+    const ambientHalo = this.add.circle(this.playArea.centerX, this.playArea.centerY, Math.max(this.playArea.width, this.playArea.height) * 0.22, ambientColor, 0.05)
+      .setDepth(-6);
+    const floorShadow = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x010309, 0.18)
+      .setDepth(-7)
+      .setStrokeStyle(2, ambientColor, 0.08);
+    this.stageObjects.push(ambientHalo, floorShadow);
   }
 
   private getPlayerBaseThreat(): number {
@@ -1605,6 +1688,7 @@ export class MissionScene extends Phaser.Scene {
     if (playerShouldRecharge && !this.playerShieldRechargeStarted) {
       retroSfx.play("shield-recharge", { volume: 0.8 });
       this.playerShieldRechargeStarted = true;
+      this.spawnShieldSpark(this.player.x, this.player.y, 0x7de6ff, 0.28);
     } else if (!playerShouldRecharge) {
       this.playerShieldRechargeStarted = false;
     }
@@ -1622,6 +1706,7 @@ export class MissionScene extends Phaser.Scene {
       if (shouldRecharge && !companion.shieldRechargeStarted) {
         retroSfx.play("shield-recharge", { volume: 0.45 });
         companion.shieldRechargeStarted = true;
+        this.spawnShieldSpark(companion.sprite.x, companion.sprite.y, 0x7de6ff, 0.18);
       } else if (!shouldRecharge) {
         companion.shieldRechargeStarted = false;
       }
@@ -2404,6 +2489,7 @@ export class MissionScene extends Phaser.Scene {
     if (target.side === "player") {
       this.playerHp = Math.min(this.playerMaxHp, this.playerHp + hpAmount);
       this.spawnCombatLight(this.player.x, this.player.y, 0x9be8ff, 0.52, 220);
+      this.spawnStatusSigil(this.player.x, this.player.y - 18, 0x9be8ff, "heal");
       return;
     }
 
@@ -2413,12 +2499,14 @@ export class MissionScene extends Phaser.Scene {
 
     target.companion.hp = Math.min(target.companion.maxHp, target.companion.hp + hpAmount);
     this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0x9be8ff, 0.46, 220);
+    this.spawnStatusSigil(target.companion.sprite.x, target.companion.sprite.y - 18, 0x9be8ff, "heal");
   }
 
   private applyGuardBuff(target: { side: ActorSide; companion?: CompanionState }, duration: number): void {
     if (target.side === "player") {
       this.playerGuardBuff = Math.max(this.playerGuardBuff, duration);
       this.spawnCombatLight(this.player.x, this.player.y, 0x8ff7d1, 0.28, 160);
+      this.spawnStatusSigil(this.player.x, this.player.y - 18, 0x8ff7d1, "guard");
       return;
     }
 
@@ -2428,12 +2516,14 @@ export class MissionScene extends Phaser.Scene {
 
     target.companion.guardBuff = Math.max(target.companion.guardBuff, duration);
     this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0x8ff7d1, 0.24, 150);
+    this.spawnStatusSigil(target.companion.sprite.x, target.companion.sprite.y - 18, 0x8ff7d1, "guard");
   }
 
   private applyFocusBuff(target: { side: ActorSide; companion?: CompanionState }, duration: number): void {
     if (target.side === "player") {
       this.playerFocusBuff = Math.max(this.playerFocusBuff, duration);
       this.spawnCombatLight(this.player.x, this.player.y, 0xc4a7ff, 0.26, 160);
+      this.spawnStatusSigil(this.player.x, this.player.y - 18, 0xc4a7ff, "focus");
       return;
     }
 
@@ -2443,12 +2533,14 @@ export class MissionScene extends Phaser.Scene {
 
     target.companion.focusBuff = Math.max(target.companion.focusBuff, duration);
     this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0xc4a7ff, 0.24, 150);
+    this.spawnStatusSigil(target.companion.sprite.x, target.companion.sprite.y - 18, 0xc4a7ff, "focus");
   }
 
   private applyHexDebuff(target: { side: ActorSide; companion?: CompanionState }): void {
     if (target.side === "player") {
       this.playerSlowDebuff = Math.max(this.playerSlowDebuff, HEX_DEBUFF_DURATION);
       this.spawnCombatLight(this.player.x, this.player.y, 0xd58fff, 0.24, 150);
+      this.spawnStatusSigil(this.player.x, this.player.y - 18, 0xd58fff, "hex");
       return;
     }
 
@@ -2458,6 +2550,7 @@ export class MissionScene extends Phaser.Scene {
 
     target.companion.slowDebuff = Math.max(target.companion.slowDebuff, HEX_DEBUFF_DURATION);
     this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0xd58fff, 0.24, 150);
+    this.spawnStatusSigil(target.companion.sprite.x, target.companion.sprite.y - 18, 0xd58fff, "hex");
   }
 
   private drawSupportBeam(
@@ -2500,15 +2593,80 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const flash = this.add.circle(x, y, 26, color, 0.22).setDepth(13);
+    const outer = this.add.circle(x, y, 32, color, 0.14).setDepth(13);
+    const core = this.add.circle(x, y, 18, color, 0.3).setDepth(14);
     this.tweens.add({
-      targets: flash,
+      targets: [outer, core],
       alpha: 0,
-      scaleX: 1 + scale,
-      scaleY: 1 + scale,
+      scaleX: 1 + scale * 1.18,
+      scaleY: 1 + scale * 1.18,
       duration,
       onComplete: () => {
-        flash.destroy();
+        outer.destroy();
+        core.destroy();
+        this.releaseTransientEffect();
+      },
+    });
+  }
+
+  private spawnStatusSigil(x: number, y: number, color: number, kind: "heal" | "guard" | "focus" | "hex"): void {
+    if (!this.reserveTransientEffect()) {
+      return;
+    }
+
+    const graphics = this.add.graphics().setDepth(15);
+    graphics.lineStyle(3, color, 0.92);
+
+    if (kind === "heal") {
+      graphics.lineBetween(x - 8, y, x + 8, y);
+      graphics.lineBetween(x, y - 8, x, y + 8);
+    } else if (kind === "guard") {
+      graphics.strokePoints([
+        new Phaser.Geom.Point(x, y - 10),
+        new Phaser.Geom.Point(x + 10, y - 2),
+        new Phaser.Geom.Point(x + 6, y + 10),
+        new Phaser.Geom.Point(x - 6, y + 10),
+        new Phaser.Geom.Point(x - 10, y - 2),
+      ], true);
+    } else if (kind === "focus") {
+      graphics.strokeCircle(x, y, 10);
+      graphics.lineBetween(x - 14, y, x - 6, y);
+      graphics.lineBetween(x + 6, y, x + 14, y);
+    } else {
+      graphics.strokePoints([
+        new Phaser.Geom.Point(x, y - 12),
+        new Phaser.Geom.Point(x + 10, y),
+        new Phaser.Geom.Point(x, y + 12),
+        new Phaser.Geom.Point(x - 10, y),
+      ], true);
+    }
+
+    this.tweens.add({
+      targets: graphics,
+      alpha: 0,
+      y: y - 10,
+      duration: 260,
+      onComplete: () => {
+        graphics.destroy();
+        this.releaseTransientEffect();
+      },
+    });
+  }
+
+  private spawnShieldSpark(x: number, y: number, color: number, strength: number): void {
+    if (!this.reserveTransientEffect()) {
+      return;
+    }
+
+    const ring = this.add.circle(x, y, 20).setStrokeStyle(4, color, 0.92).setDepth(15);
+    this.tweens.add({
+      targets: ring,
+      scaleX: 1.6 + strength,
+      scaleY: 1.6 + strength,
+      alpha: 0,
+      duration: 220,
+      onComplete: () => {
+        ring.destroy();
         this.releaseTransientEffect();
       },
     });
@@ -3218,13 +3376,16 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private syncActorAttachmentsAfterSeparation(): void {
+    this.playerShadow.setPosition(this.player.x, this.player.y + 13);
     this.playerShieldRing.setPosition(this.player.x, this.player.y);
     this.companions.forEach((companion) => {
+      companion.shadow.setPosition(companion.sprite.x, companion.sprite.y + companion.radius * 0.72);
       companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
       companion.revivePromptText.setPosition(companion.sprite.x, companion.sprite.y - 38);
       this.updateCompanionGuardPlate(companion);
     });
     this.enemies.forEach((enemy) => {
+      enemy.shadow.setPosition(enemy.sprite.x, enemy.sprite.y + enemy.radius * 0.78);
       enemy.aura.setPosition(enemy.sprite.x, enemy.sprite.y);
       enemy.shieldRing.setPosition(enemy.sprite.x, enemy.sprite.y);
     });
@@ -3384,6 +3545,7 @@ export class MissionScene extends Phaser.Scene {
       xp: this.mission.baseXp,
       credits: this.missionCreditsEarned,
       materials: this.missionMaterialsEarned,
+      items: this.missionItemsEarned,
       seed: this.mission.seed,
     });
     this.scene.start("mission-result", {
@@ -3463,6 +3625,7 @@ export class MissionScene extends Phaser.Scene {
           : 0;
     const scaledShield = kind === "boss" ? baseShield : Math.round(baseShield * difficulty.enemyHp);
 
+    const shadow = this.add.ellipse(spawnX, spawnY + config.radius * 0.8, config.radius * 2.2, config.radius, 0x000000, 0.26).setDepth(7);
     const aura = this.add.circle(spawnX, spawnY, config.radius + 8, config.color, 0.26).setDepth(8);
     const shieldRing = this.add.circle(spawnX, spawnY, config.radius + 12)
       .setStrokeStyle(3, 0x7ce8ff, 0.78)
@@ -3478,6 +3641,7 @@ export class MissionScene extends Phaser.Scene {
       lastMoveLabel: kind === "boss" ? "Phase 1 Online" : "Holding Pattern",
       sprite,
       aura,
+      shadow,
       shieldRing,
       hp: phaseHpPool[0],
       maxHp: phaseHpPool[0],
@@ -3510,6 +3674,7 @@ export class MissionScene extends Phaser.Scene {
     });
 
     this.resolveCircleAgainstCover(sprite, config.radius);
+    shadow.setPosition(sprite.x, sprite.y + config.radius * 0.8);
     aura.setPosition(sprite.x, sprite.y);
     shieldRing.setPosition(sprite.x, sprite.y);
 
@@ -3658,6 +3823,7 @@ export class MissionScene extends Phaser.Scene {
     }
     if (resolved.absorbed > 0) {
       retroSfx.play(previousShield > 0 && this.playerShield <= 0 ? "shield-break" : "shield-hit", { volume: 0.72 });
+      this.spawnShieldSpark(this.player.x, this.player.y, previousShield > 0 && this.playerShield <= 0 ? 0xffd67a : 0x7de6ff, previousShield > 0 && this.playerShield <= 0 ? 0.42 : 0.22);
     }
     this.playerInvuln = 0.45;
     this.playerHp = Math.max(0, this.playerHp - resolved.healthDamage);
@@ -3694,6 +3860,7 @@ export class MissionScene extends Phaser.Scene {
         volume: enemy.kind === "boss" ? 0.62 : 0.38,
         pitch: enemy.kind === "boss" ? 0.86 : 0.96,
       });
+      this.spawnShieldSpark(enemy.sprite.x, enemy.sprite.y, previousShield > 0 && enemy.shield <= 0 ? 0xffd67a : 0x7de6ff, enemy.kind === "boss" ? 0.4 : 0.18);
     }
 
     enemy.hp -= resolved.healthDamage;
@@ -3708,10 +3875,11 @@ export class MissionScene extends Phaser.Scene {
         this.advanceBossPhase(enemy);
         return;
       }
-      this.spawnLootBurst(enemy.sprite.x, enemy.sprite.y);
+      this.spawnBossLootDrops(enemy.sprite.x, enemy.sprite.y);
     } else {
-      this.recordEnemyDrop(enemy.kind);
+      this.recordEnemyDrop(enemy.kind, enemy.sprite.x, enemy.sprite.y);
     }
+    enemy.shadow.destroy();
     enemy.sprite.destroy();
     enemy.aura.destroy();
     enemy.shieldRing.destroy();
@@ -3746,6 +3914,7 @@ export class MissionScene extends Phaser.Scene {
     }
     if (resolved.absorbed > 0) {
       retroSfx.play(previousShield > 0 && companion.shield <= 0 ? "shield-break" : "shield-hit", { volume: 0.52 });
+      this.spawnShieldSpark(companion.sprite.x, companion.sprite.y, previousShield > 0 && companion.shield <= 0 ? 0xffd67a : 0x7de6ff, 0.22);
     }
     companion.hp = Math.max(0, companion.hp - resolved.healthDamage);
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, resolved.healthDamage > 0 ? 0xffb08e : 0x7de6ff, 0.4, 180);
@@ -3768,7 +3937,7 @@ export class MissionScene extends Phaser.Scene {
 
   private spawnLootBurst(x: number, y: number): void {
     retroSfx.play("loot-burst", { volume: 0.9 });
-    const colors = [0xffd67a, 0x8fe8ff, 0xc8a7ff, 0xffb27d];
+    const colors = [0xffd67a, 0x8fe8ff, 0x9f6fff, 0x63d77b];
     const shardCount = gameSession.settings.graphics.quality === "Performance"
       ? 4
       : gameSession.settings.graphics.quality === "Balanced"
@@ -3791,6 +3960,21 @@ export class MissionScene extends Phaser.Scene {
         duration: 460,
         onComplete: () => {
           shard.destroy();
+          this.releaseTransientEffect();
+        },
+      });
+    }
+
+    if (this.reserveTransientEffect()) {
+      const shockwave = this.add.circle(x, y, 28).setStrokeStyle(7, 0xffd67a, 0.9).setDepth(16);
+      this.tweens.add({
+        targets: shockwave,
+        scaleX: 4.8,
+        scaleY: 4.8,
+        alpha: 0,
+        duration: 360,
+        onComplete: () => {
+          shockwave.destroy();
           this.releaseTransientEffect();
         },
       });
@@ -3820,13 +4004,225 @@ export class MissionScene extends Phaser.Scene {
     });
   }
 
-  private recordEnemyDrop(kind: "rusher" | "shooter" | "hexer"): void {
+  private recordEnemyDrop(kind: "rusher" | "shooter" | "hexer", x: number, y: number): void {
     this.enemyDropCounter += 1;
     const drop = buildEnemyDropBundle(kind, this.mission.difficulty, this.mission.seed + this.enemyDropCounter * 17);
-    this.missionCreditsEarned += drop.credits;
-    this.missionMaterialsEarned.alloy += drop.materials.alloy;
-    this.missionMaterialsEarned.shardDust += drop.materials.shardDust;
-    this.missionMaterialsEarned.filament += drop.materials.filament;
+    const dropX = x + Phaser.Math.Between(-18, 18);
+    const dropY = y + Phaser.Math.Between(-18, 18);
+    if (drop.credits > 0) {
+      this.spawnCreditsPickup(dropX, dropY, drop.credits);
+    }
+
+    (Object.entries(drop.materials) as Array<[MaterialPickupKind, number]>)
+      .filter(([, amount]) => amount > 0)
+      .forEach(([materialKind, amount], index) => {
+        this.spawnMaterialPickup(dropX + 18 + index * 16, dropY + Phaser.Math.Between(-10, 10), materialKind, amount);
+      });
+  }
+
+  private spawnBossLootDrops(x: number, y: number): void {
+    const bossLoot = buildBossLootBundle({
+      missionId: this.mission.id,
+      difficulty: this.mission.difficulty,
+      raceId: gameSession.getPlayerRaceId(),
+      seed: this.mission.seed + this.stageIndex * 91,
+    });
+
+    this.spawnLootBurst(x, y);
+    bossLoot.items.forEach((item, index) => {
+      const spread = index === 0 ? -56 : 56;
+      this.spawnItemPickup(x + spread, y - 4 + index * 8, item);
+    });
+  }
+
+  private spawnCreditsPickup(x: number, y: number, amount: number): void {
+    this.createWorldPickup({
+      x,
+      y,
+      kind: "credits",
+      rarity: "Common",
+      color: 0xffd67a,
+      autoPickup: true,
+      amount,
+      label: `Credits x${amount}`,
+      shape: "credits",
+    });
+  }
+
+  private spawnMaterialPickup(x: number, y: number, materialKind: MaterialPickupKind, amount: number): void {
+    const rarity = this.getMaterialPickupRarity(materialKind);
+    this.createWorldPickup({
+      x,
+      y,
+      kind: "material",
+      rarity,
+      color: PICKUP_RARITY_COLORS[rarity],
+      autoPickup: false,
+      amount,
+      materialKind,
+      label: `${this.getMaterialLabel(materialKind)} x${amount}`,
+      shape: "material",
+    });
+  }
+
+  private spawnItemPickup(x: number, y: number, item: InventoryItem): void {
+    const rarity = this.normalizePickupRarity(item.rarity);
+    this.createWorldPickup({
+      x,
+      y,
+      kind: "item",
+      rarity,
+      color: rarity === "Legendary" || rarity === "Mythic" ? item.color : PICKUP_RARITY_COLORS[rarity],
+      autoPickup: false,
+      item,
+      label: item.shortLabel,
+      shape: "item",
+    });
+  }
+
+  private createWorldPickup(options: {
+    x: number;
+    y: number;
+    kind: WorldPickup["kind"];
+    rarity: PickupVisualRarity;
+    color: number;
+    autoPickup: boolean;
+    label: string;
+    shape: "credits" | "material" | "item";
+    amount?: number;
+    materialKind?: MaterialPickupKind;
+    item?: InventoryItem;
+  }): void {
+    const shadow = this.add.ellipse(options.x, options.y + 18, 34, 16, 0x000000, 0.26).setDepth(6);
+    const halo = this.add.circle(options.x, options.y, options.shape === "item" ? 22 : 18, options.color, 0.22)
+      .setDepth(11)
+      .setStrokeStyle(options.rarity === "Legendary" || options.rarity === "Mythic" ? 3 : 2, options.color, 0.78);
+    const sprite = options.shape === "credits"
+      ? this.add.circle(options.x, options.y, 9, 0xfff4bf, 0.96).setDepth(12)
+      : this.add.rectangle(options.x, options.y, options.shape === "item" ? 22 : 18, options.shape === "item" ? 22 : 18, 0x0d1522, 0.98).setDepth(12);
+
+    if (sprite instanceof Phaser.GameObjects.Rectangle) {
+      sprite.setStrokeStyle(3, options.color, 0.92);
+      if (options.shape === "item") {
+        sprite.setAngle(45);
+      }
+    } else {
+      sprite.setStrokeStyle(3, 0xffd67a, 0.96);
+    }
+
+    const promptText = this.add.text(options.x, options.y - 34, options.autoPickup ? "" : `Pick Up\n${options.label}`, {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#f5fbff",
+      fontStyle: "bold",
+      align: "center",
+      backgroundColor: "#0a1320cc",
+      padding: { x: 8, y: 4 },
+    }).setOrigin(0.5).setDepth(16).setVisible(false);
+
+    this.worldPickups.push({
+      id: `pickup-${this.pickupCounter += 1}`,
+      kind: options.kind,
+      rarity: options.rarity,
+      color: options.color,
+      autoPickup: options.autoPickup,
+      baseX: options.x,
+      baseY: options.y,
+      amount: options.amount,
+      materialKind: options.materialKind,
+      item: options.item,
+      sprite,
+      halo,
+      shadow,
+      promptText,
+      bobOffset: Phaser.Math.FloatBetween(0, Math.PI * 2),
+      bobSpeed: Phaser.Math.FloatBetween(1.8, 2.6),
+      collected: false,
+    });
+
+    retroSfx.play(
+      options.kind === "credits"
+        ? "credit-drop"
+        : this.getLootDropCue(options.rarity),
+      {
+        volume: options.rarity === "Legendary" || options.rarity === "Mythic" ? 0.95 : 0.68,
+      },
+    );
+  }
+
+  private spawnPickupCollectFlash(pickup: WorldPickup): void {
+    if (!this.reserveTransientEffect()) {
+      return;
+    }
+
+    const flash = this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 18 : 24, pickup.color, 0.26).setDepth(15);
+    this.tweens.add({
+      targets: flash,
+      scaleX: 2.8,
+      scaleY: 2.8,
+      alpha: 0,
+      duration: 240,
+      onComplete: () => {
+        flash.destroy();
+        this.releaseTransientEffect();
+      },
+    });
+  }
+
+  private getLootDropCue(rarity: PickupVisualRarity): "loot-drop-common" | "loot-drop-rare" | "loot-drop-legendary" | "loot-drop-mythic" {
+    switch (rarity) {
+      case "Rare":
+        return "loot-drop-rare";
+      case "Legendary":
+        return "loot-drop-legendary";
+      case "Mythic":
+        return "loot-drop-mythic";
+      default:
+        return "loot-drop-common";
+    }
+  }
+
+  private getLootPickupCue(rarity: PickupVisualRarity): "loot-pickup-common" | "loot-pickup-rare" | "loot-pickup-legendary" | "loot-pickup-mythic" {
+    switch (rarity) {
+      case "Rare":
+        return "loot-pickup-rare";
+      case "Legendary":
+        return "loot-pickup-legendary";
+      case "Mythic":
+        return "loot-pickup-mythic";
+      default:
+        return "loot-pickup-common";
+    }
+  }
+
+  private normalizePickupRarity(rarity: ItemRarity): PickupVisualRarity {
+    if (rarity === "Mythic") {
+      return "Mythic";
+    }
+    if (rarity === "Legendary") {
+      return "Legendary";
+    }
+    if (rarity === "Rare" || rarity === "Epic") {
+      return "Rare";
+    }
+    return "Common";
+  }
+
+  private getMaterialPickupRarity(materialKind: MaterialPickupKind): PickupVisualRarity {
+    return materialKind === "alloy" ? "Common" : "Rare";
+  }
+
+  private getMaterialLabel(materialKind: MaterialPickupKind): string {
+    switch (materialKind) {
+      case "alloy":
+        return "Alloy";
+      case "filament":
+        return "Filament";
+      case "shardDust":
+        return "Shard Dust";
+      default:
+        return materialKind;
+    }
   }
 
   private reviveCompanion(companion: CompanionState, fromRestRoom: boolean): void {
@@ -4087,6 +4483,20 @@ export class MissionScene extends Phaser.Scene {
     this.targetButton?.setCooldownProgress(0);
     this.targetButton?.setInputEnabled(this.touchMode && !combatLocked && this.enemies.length > 0);
 
+    const interactPickup = this.getInteractPickup();
+    if (this.interactButton) {
+      this.interactButton.container.setVisible(this.touchMode && Boolean(interactPickup));
+      this.interactButton.setLabel(interactPickup
+        ? interactPickup.kind === "item" && interactPickup.item
+          ? `Pick Up\n${interactPickup.item.shortLabel}`
+          : interactPickup.kind === "material" && interactPickup.amount
+            ? `Pick Up\nx${interactPickup.amount}`
+            : "Use"
+        : "Use");
+      this.interactButton.setCooldownProgress(0);
+      this.interactButton.setInputEnabled(this.touchMode && !combatLocked && Boolean(interactPickup));
+    }
+
     this.pulseButton?.setLabel(this.getTouchCooldownLabel("Pulse", this.pulseCooldown, combatLocked));
     this.arcButton?.setLabel(this.getTouchCooldownLabel("Arc", this.arcCooldown, combatLocked));
     this.dashButton?.setLabel(this.getTouchCooldownLabel("Dash", this.dashCooldown, combatLocked));
@@ -4228,6 +4638,7 @@ export class MissionScene extends Phaser.Scene {
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
       || this.logbookButton?.container.getBounds().contains(pointer.x, pointer.y)
       || (this.attackButton?.container.visible && this.attackButton.container.getBounds().contains(pointer.x, pointer.y))
+      || (this.interactButton?.container.visible && this.interactButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.targetButton?.container.visible && this.targetButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.pulseButton?.container.visible && this.pulseButton.container.getBounds().contains(pointer.x, pointer.y))
       || (this.arcButton?.container.visible && this.arcButton.container.getBounds().contains(pointer.x, pointer.y))
@@ -4358,6 +4769,114 @@ export class MissionScene extends Phaser.Scene {
       );
 
     return candidates[0] ?? null;
+  }
+
+  private tryMissionInteract(): void {
+    if (this.missionComplete || this.transitioningStage || this.logbookOverlay?.isVisible()) {
+      return;
+    }
+
+    const reviveTarget = this.getReviveTarget();
+    if (reviveTarget) {
+      this.beginKeyboardRevive();
+      return;
+    }
+
+    const pickup = this.getInteractPickup();
+    if (pickup) {
+      this.collectWorldPickup(pickup);
+    }
+  }
+
+  private getInteractPickup(): WorldPickup | null {
+    let nearest: WorldPickup | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    this.worldPickups.forEach((pickup) => {
+      if (pickup.collected || pickup.autoPickup) {
+        return;
+      }
+
+      const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, pickup.baseX, pickup.baseY);
+      if (distance > INTERACT_PICKUP_RANGE || distance >= nearestDistance) {
+        return;
+      }
+
+      nearest = pickup;
+      nearestDistance = distance;
+    });
+
+    return nearest;
+  }
+
+  private updateWorldPickups(dt: number): void {
+    const nearestInteractPickup = this.getInteractPickup();
+    this.worldPickups.slice().forEach((pickup) => {
+      if (pickup.collected) {
+        return;
+      }
+
+      pickup.bobOffset += dt * pickup.bobSpeed;
+      const bob = Math.sin(pickup.bobOffset) * 6;
+      pickup.sprite.setPosition(pickup.baseX, pickup.baseY + bob);
+      pickup.halo.setPosition(pickup.baseX, pickup.baseY + bob);
+      pickup.promptText.setPosition(pickup.baseX, pickup.baseY - 34 + bob);
+      pickup.promptText.setVisible(!pickup.autoPickup && pickup === nearestInteractPickup);
+      pickup.halo.setAlpha(pickup === nearestInteractPickup ? 0.34 : pickup.autoPickup ? 0.2 : 0.24);
+      pickup.shadow.setScale(1, pickup === nearestInteractPickup ? 1.08 : 1);
+
+      if (pickup.autoPickup) {
+        const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, pickup.baseX, pickup.baseY);
+        if (distance <= CREDIT_PICKUP_RANGE) {
+          this.collectWorldPickup(pickup);
+        }
+      }
+    });
+  }
+
+  private collectWorldPickup(pickup: WorldPickup): void {
+    if (pickup.collected) {
+      return;
+    }
+
+    pickup.collected = true;
+    pickup.promptText.setVisible(false);
+
+    if (pickup.kind === "credits") {
+      this.missionCreditsEarned += pickup.amount ?? 0;
+      retroSfx.play("credit-pickup", { volume: 0.68 });
+      this.messageText.setText(`Recovered ${pickup.amount ?? 0} credits.`);
+    } else if (pickup.kind === "material" && pickup.materialKind) {
+      const amount = pickup.amount ?? 0;
+      this.missionMaterialsEarned[pickup.materialKind] += amount;
+      retroSfx.play(this.getLootPickupCue(pickup.rarity), { volume: 0.72 });
+      this.messageText.setText(`Recovered ${this.getMaterialLabel(pickup.materialKind)} x${amount}.`);
+    } else if (pickup.kind === "item" && pickup.item) {
+      this.missionItemsEarned.push(pickup.item);
+      retroSfx.play(this.getLootPickupCue(pickup.rarity), {
+        volume: pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 0.95 : 0.78,
+      });
+      this.messageText.setText(`Picked up ${pickup.item.name}.`);
+    }
+
+    this.spawnPickupCollectFlash(pickup);
+    this.tweens.add({
+      targets: [pickup.sprite, pickup.halo, pickup.promptText],
+      y: "-=18",
+      alpha: 0,
+      duration: 220,
+      onComplete: () => {
+        pickup.sprite.destroy();
+        pickup.halo.destroy();
+        pickup.shadow.destroy();
+        pickup.promptText.destroy();
+      },
+    });
+    this.tweens.add({
+      targets: pickup.shadow,
+      alpha: 0,
+      duration: 180,
+    });
+    this.worldPickups = this.worldPickups.filter((entry) => entry !== pickup);
   }
 
   private getCompanionThreatAvoidance(companion: CompanionState): Phaser.Math.Vector2 {
@@ -4669,6 +5188,7 @@ export class MissionScene extends Phaser.Scene {
 
   private clearEnemies(): void {
     this.enemies.forEach((enemy) => {
+      enemy.shadow.destroy();
       enemy.sprite.destroy();
       enemy.aura.destroy();
       enemy.shieldRing.destroy();
@@ -4677,6 +5197,13 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private clearStageObjects(): void {
+    this.worldPickups.forEach((pickup) => {
+      pickup.shadow.destroy();
+      pickup.halo.destroy();
+      pickup.sprite.destroy();
+      pickup.promptText.destroy();
+    });
+    this.worldPickups = [];
     this.stageObjects.forEach((object) => object.destroy());
     this.stageObjects = [];
     this.hallwayZones = [];
@@ -4791,6 +5318,12 @@ export class MissionScene extends Phaser.Scene {
       sfx: retroSfx.getDebugState(),
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       touchAttackHeld: this.attackPointerId !== null,
+      pickupCounts: {
+        world: this.worldPickups.length,
+        items: this.missionItemsEarned.length,
+        credits: this.missionCreditsEarned,
+        materials: { ...this.missionMaterialsEarned },
+      },
       playerHp: this.playerHp,
       playerShield: Math.round(this.playerShield),
       playerThreat: Number(this.playerThreat.toFixed(1)),
@@ -4821,6 +5354,15 @@ export class MissionScene extends Phaser.Scene {
         shield: Math.round(enemy.shield),
         x: Math.round(enemy.sprite.x),
         y: Math.round(enemy.sprite.y),
+      })),
+      pickups: this.worldPickups.map((pickup) => ({
+        kind: pickup.kind,
+        rarity: pickup.rarity,
+        amount: pickup.amount ?? null,
+        label: pickup.item?.name ?? pickup.materialKind ?? "credits",
+        auto: pickup.autoPickup,
+        x: Math.round(pickup.baseX),
+        y: Math.round(pickup.baseY),
       })),
     };
   }

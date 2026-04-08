@@ -28,6 +28,16 @@ export type SfxCue =
   | "boss-beam"
   | "boss-phase"
   | "loot-burst"
+  | "credit-drop"
+  | "credit-pickup"
+  | "loot-drop-common"
+  | "loot-drop-rare"
+  | "loot-drop-legendary"
+  | "loot-drop-mythic"
+  | "loot-pickup-common"
+  | "loot-pickup-rare"
+  | "loot-pickup-legendary"
+  | "loot-pickup-mythic"
   | "companion-revive";
 
 type CueOptions = {
@@ -93,6 +103,16 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "boss-beam": 180,
   "boss-phase": 220,
   "loot-burst": 200,
+  "credit-drop": 60,
+  "credit-pickup": 50,
+  "loot-drop-common": 70,
+  "loot-drop-rare": 70,
+  "loot-drop-legendary": 90,
+  "loot-drop-mythic": 110,
+  "loot-pickup-common": 60,
+  "loot-pickup-rare": 70,
+  "loot-pickup-legendary": 90,
+  "loot-pickup-mythic": 110,
   "companion-revive": 140,
 };
 
@@ -160,9 +180,9 @@ class RetroSfxManager {
 
     switch (cue) {
       case "player-fire":
-        this.tone(context, { type: "triangle", startFreq: 860 * pitch, endFreq: 430 * pitch, duration: 0.068, volume: volume * 0.18, filterFreq: 1800, pan });
-        this.tone(context, { type: "sine", startFreq: 520 * pitch, endFreq: 310 * pitch, duration: 0.08, volume: volume * 0.09, filterFreq: 1200, pan });
-        this.noise(context, { duration: 0.02, volume: volume * 0.02, filterFreq: 2200, filterType: "highpass", pan });
+        this.tone(context, { type: "triangle", startFreq: 720 * pitch, endFreq: 380 * pitch, duration: 0.078, volume: volume * 0.15, filterFreq: 1450, pan });
+        this.tone(context, { type: "sine", startFreq: 440 * pitch, endFreq: 280 * pitch, duration: 0.09, volume: volume * 0.08, filterFreq: 1000, pan });
+        this.noise(context, { duration: 0.016, volume: volume * 0.012, filterFreq: 1800, filterType: "highpass", pan });
         return;
       case "enemy-shot":
         this.tone(context, { type: "square", startFreq: 340 * pitch, endFreq: 160 * pitch, duration: 0.08, volume: volume * 0.2, filterFreq: 1800, pan });
@@ -265,6 +285,37 @@ class RetroSfxManager {
         return;
       case "loot-burst":
         this.playArpeggio(context, [392, 494, 659, 784], "square", volume * 0.1, pan, pitch, 0.065, 2600);
+        return;
+      case "credit-drop":
+        this.playArpeggio(context, [494, 588], "triangle", volume * 0.08, pan, pitch, 0.04, 2200);
+        return;
+      case "credit-pickup":
+        this.playArpeggio(context, [659, 880, 988], "triangle", volume * 0.09, pan, pitch, 0.035, 2600);
+        return;
+      case "loot-drop-common":
+        this.playArpeggio(context, [220, 262], "triangle", volume * 0.08, pan, pitch, 0.05, 1800);
+        return;
+      case "loot-drop-rare":
+        this.playArpeggio(context, [294, 392, 440], "triangle", volume * 0.08, pan, pitch, 0.05, 2200);
+        return;
+      case "loot-drop-legendary":
+        this.playArpeggio(context, [392, 523, 659, 880], "square", volume * 0.1, pan, pitch, 0.06, 2600);
+        return;
+      case "loot-drop-mythic":
+        this.playArpeggio(context, [330, 494, 740, 988], "sawtooth", volume * 0.1, pan, pitch, 0.06, 2800);
+        this.noise(context, { duration: 0.04, volume: volume * 0.02, filterFreq: 2000, filterType: "bandpass", pan, startOffset: 0.05 });
+        return;
+      case "loot-pickup-common":
+        this.playArpeggio(context, [330, 392], "triangle", volume * 0.08, pan, pitch, 0.045, 2200);
+        return;
+      case "loot-pickup-rare":
+        this.playArpeggio(context, [392, 494, 659], "triangle", volume * 0.09, pan, pitch, 0.04, 2500);
+        return;
+      case "loot-pickup-legendary":
+        this.playArpeggio(context, [494, 659, 784, 988], "square", volume * 0.1, pan, pitch, 0.05, 2800);
+        return;
+      case "loot-pickup-mythic":
+        this.playArpeggio(context, [523, 659, 880, 1046], "sawtooth", volume * 0.1, pan, pitch, 0.05, 3000);
         return;
       case "companion-revive":
         this.playArpeggio(context, [262, 330, 392], "triangle", volume * 0.11, pan, pitch, 0.085, 1800);
