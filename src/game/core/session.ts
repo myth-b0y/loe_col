@@ -15,6 +15,7 @@ import {
   DEFAULT_CARGO_SLOTS,
   DEFAULT_CRAFTING_MATERIALS,
   DEFAULT_EQUIPMENT,
+  addItemToCargoSlots,
   addCraftingMaterials,
   canItemEquipToSlot,
   calculatePlayerCombatProfile,
@@ -24,6 +25,7 @@ import {
   cloneInventoryItem,
   createEmptyCargoSlots,
   createEmptyEquipment,
+  getCompatibleEquipmentSlots,
   isGearItem,
   summarizeEquippedWeapon,
   type CraftingMaterials,
@@ -543,12 +545,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   addItemToCargo(item: InventoryItem): boolean {
     const cargo = this.saveData.loadout.cargo;
-    const openIndex = cargo.findIndex((slot) => slot === null);
-    if (openIndex < 0) {
+    const success = addItemToCargoSlots(cargo, item);
+    if (!success) {
       return false;
     }
 
-    cargo[openIndex] = cloneInventoryItem(item);
     this.emit("save-changed", this.saveData);
     return true;
   }
@@ -567,6 +568,68 @@ export class GameSession extends Phaser.Events.EventEmitter {
     const equippedItem = this.saveData.loadout.equipment[slotId];
     this.saveData.loadout.equipment[slotId] = cloneInventoryItem(item) as typeof equippedItem;
     cargo[cargoIndex] = equippedItem ?? null;
+    this.syncLoadoutSummary();
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  autoEquipCargoItem(cargoIndex: number): EquipmentSlotId | null {
+    const cargo = this.saveData.loadout.cargo;
+    if (cargoIndex < 0 || cargoIndex >= cargo.length) {
+      return null;
+    }
+
+    const item = cargo[cargoIndex];
+    if (!isGearItem(item)) {
+      return null;
+    }
+
+    const compatibleSlots = getCompatibleEquipmentSlots(item).map((slot) => slot.id);
+    if (compatibleSlots.length === 0) {
+      return null;
+    }
+
+    const preferredSlots = item.slot.startsWith("accessory")
+      ? compatibleSlots
+      : [item.slot, ...compatibleSlots.filter((slotId) => slotId !== item.slot)];
+    const emptySlot = preferredSlots.find((slotId) => this.saveData.loadout.equipment[slotId] === null) ?? preferredSlots[0];
+    return this.equipCargoItemToSlot(cargoIndex, emptySlot) ? emptySlot : null;
+  }
+
+  unequipItemFromSlot(slotId: EquipmentSlotId): boolean {
+    const item = this.saveData.loadout.equipment[slotId];
+    if (!item) {
+      return false;
+    }
+
+    const success = this.addItemToCargo(item);
+    if (!success) {
+      return false;
+    }
+
+    this.saveData.loadout.equipment[slotId] = null;
+    this.syncLoadoutSummary();
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  dropCargoItem(cargoIndex: number): boolean {
+    const cargo = this.saveData.loadout.cargo;
+    if (cargoIndex < 0 || cargoIndex >= cargo.length || cargo[cargoIndex] === null) {
+      return false;
+    }
+
+    cargo[cargoIndex] = null;
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  dropEquippedItem(slotId: EquipmentSlotId): boolean {
+    if (!this.saveData.loadout.equipment[slotId]) {
+      return false;
+    }
+
+    this.saveData.loadout.equipment[slotId] = null;
     this.syncLoadoutSummary();
     this.emit("save-changed", this.saveData);
     return true;

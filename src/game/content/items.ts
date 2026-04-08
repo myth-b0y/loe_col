@@ -19,7 +19,8 @@ export type ItemCategory =
   | "belt"
   | "back"
   | "accessory"
-  | "quest";
+  | "quest"
+  | "junk";
 
 export type ItemRarity = "Common" | "Rare" | "Epic" | "Legendary" | "Mythic";
 
@@ -68,7 +69,27 @@ export type QuestItemInstance = {
   tag: string;
 };
 
-export type InventoryItem = GearItemInstance | QuestItemInstance;
+export type JunkTypeId =
+  | "alloy-scrap"
+  | "filament-spool"
+  | "fractured-lens"
+  | "relay-core"
+  | "shadowglass-shard";
+
+export type JunkItemInstance = {
+  instanceId: string;
+  kind: "junk";
+  templateId: JunkTypeId;
+  name: string;
+  shortLabel: string;
+  description: string;
+  rarity: ItemRarity;
+  color: number;
+  stackCount: number;
+  maxStack: number;
+};
+
+export type InventoryItem = GearItemInstance | QuestItemInstance | JunkItemInstance;
 export type EquipmentLoadout = Record<EquipmentSlotId, GearItemInstance | null>;
 
 export type CraftingMaterials = {
@@ -290,6 +311,59 @@ const LEGENDARY_SET_BONUS_LABELS: Record<number, string> = {
   3: "Sunforged Vigil (3): Pulse and Arc Lance hit harder and cycle faster.",
 };
 
+const JUNK_TEMPLATES: Record<JunkTypeId, Omit<JunkItemInstance, "instanceId" | "stackCount">> = {
+  "alloy-scrap": {
+    kind: "junk",
+    templateId: "alloy-scrap",
+    name: "Alloy Scrap",
+    shortLabel: "Alloy Scrap",
+    description: "Bent structural fragments and salvage-grade plating for future forging work.",
+    rarity: "Common",
+    color: RARITY_COLORS.Common,
+    maxStack: 25,
+  },
+  "filament-spool": {
+    kind: "junk",
+    templateId: "filament-spool",
+    name: "Filament Spool",
+    shortLabel: "Filament",
+    description: "Recovered weave-filament coils that still carry a little charge.",
+    rarity: "Common",
+    color: RARITY_COLORS.Common,
+    maxStack: 25,
+  },
+  "fractured-lens": {
+    kind: "junk",
+    templateId: "fractured-lens",
+    name: "Fractured Lens",
+    shortLabel: "Lens",
+    description: "Cracked sighting glass and sensor housings stripped from shadow rigs.",
+    rarity: "Common",
+    color: RARITY_COLORS.Common,
+    maxStack: 20,
+  },
+  "relay-core": {
+    kind: "junk",
+    templateId: "relay-core",
+    name: "Relay Core Fragment",
+    shortLabel: "Relay Core",
+    description: "A humming shard of relay architecture useful for advanced crafting experiments later.",
+    rarity: "Rare",
+    color: RARITY_COLORS.Rare,
+    maxStack: 12,
+  },
+  "shadowglass-shard": {
+    kind: "junk",
+    templateId: "shadowglass-shard",
+    name: "Shadowglass Shard",
+    shortLabel: "Shadowglass",
+    description: "Cold, luminous fragments left behind by deeper corruption signatures.",
+    rarity: "Rare",
+    color: RARITY_COLORS.Rare,
+    maxStack: 12,
+  },
+};
+
 export const EQUIPMENT_SLOTS: Array<{ id: EquipmentSlotId; label: string }> = [
   { id: "head", label: "Head" },
   { id: "chest", label: "Chest" },
@@ -384,6 +458,83 @@ export function isQuestItem(item: InventoryItem | null | undefined): item is Que
   return Boolean(item && item.kind === "quest");
 }
 
+export function isJunkItem(item: InventoryItem | null | undefined): item is JunkItemInstance {
+  return Boolean(item && item.kind === "junk");
+}
+
+export function isEquipableItem(item: InventoryItem | null | undefined): item is GearItemInstance {
+  return isGearItem(item);
+}
+
+export function getItemStackCount(item: InventoryItem | null | undefined): number {
+  return isJunkItem(item) ? item.stackCount : 1;
+}
+
+export function canItemsStack(a: InventoryItem | null | undefined, b: InventoryItem | null | undefined): boolean {
+  return isJunkItem(a)
+    && isJunkItem(b)
+    && a.templateId === b.templateId
+    && a.rarity === b.rarity;
+}
+
+export function addItemToCargoSlots(
+  cargo: Array<InventoryItem | null>,
+  item: InventoryItem | null | undefined,
+): boolean {
+  const incoming = cloneInventoryItem(item);
+  if (!incoming) {
+    return false;
+  }
+
+  const nextCargo = cloneCargoSlots(cargo);
+
+  if (incoming.kind === "junk") {
+    let remaining = incoming.stackCount;
+    nextCargo.forEach((slot) => {
+      if (remaining <= 0 || !canItemsStack(slot, incoming) || !isJunkItem(slot)) {
+        return;
+      }
+
+      const openSpace = slot.maxStack - slot.stackCount;
+      if (openSpace <= 0) {
+        return;
+      }
+
+      const transferred = Math.min(openSpace, remaining);
+      slot.stackCount += transferred;
+      remaining -= transferred;
+    });
+
+    while (remaining > 0) {
+      const openIndex = nextCargo.findIndex((slot) => slot === null);
+      if (openIndex < 0) {
+        return false;
+      }
+
+      const nextStack = cloneInventoryItem(incoming);
+      if (!nextStack || nextStack.kind !== "junk") {
+        return false;
+      }
+
+      nextStack.stackCount = Math.min(nextStack.maxStack, remaining);
+      remaining -= nextStack.stackCount;
+      nextCargo[openIndex] = nextStack;
+    }
+  } else {
+    const openIndex = nextCargo.findIndex((slot) => slot === null);
+    if (openIndex < 0) {
+      return false;
+    }
+
+    nextCargo[openIndex] = incoming;
+  }
+
+  nextCargo.forEach((slot, index) => {
+    cargo[index] = slot;
+  });
+  return true;
+}
+
 export function canItemEquipToSlot(item: InventoryItem | null | undefined, slotId: EquipmentSlotId): boolean {
   if (!isGearItem(item)) {
     return false;
@@ -425,6 +576,10 @@ export function getItemShortLabel(item: InventoryItem | null | undefined): strin
     return "";
   }
 
+  if (isJunkItem(item)) {
+    return item.stackCount > 1 ? `${item.shortLabel} x${item.stackCount}` : item.shortLabel;
+  }
+
   return item.shortLabel;
 }
 
@@ -463,6 +618,14 @@ export function describeInventoryItem(item: InventoryItem | null | undefined): s
 
   if (item.kind === "quest") {
     return [item.description];
+  }
+
+  if (item.kind === "junk") {
+    return [
+      `${item.rarity} Junk`,
+      `Stack ${item.stackCount}/${item.maxStack}`,
+      item.description,
+    ];
   }
 
   return [
@@ -558,6 +721,15 @@ export function summarizeCombatProfile(profile: PlayerCombatProfile): string[] {
     `Primary ${profile.primaryFireDamage} | Pulse ${profile.pulseDamage} | Arc ${profile.arcDamage}`,
     `Move ${Math.round(profile.moveSpeedMultiplier * 100)}% | Guard ${Math.round(profile.guardMitigation * 100)}% | Rhythm ${Math.round(profile.abilityCooldownMultiplier * 100)}%`,
   ];
+}
+
+export function createJunkLoot(templateId: JunkTypeId, stackCount = 1): JunkItemInstance {
+  const template = JUNK_TEMPLATES[templateId];
+  return {
+    ...template,
+    instanceId: `junk-${templateId}-${Math.floor(Math.random() * 1_000_000_000)}`,
+    stackCount: Math.max(1, Math.min(template.maxStack, stackCount)),
+  };
 }
 
 export function createLegendarySetPiece(slot: "head" | "chest" | "legs", raceTag: RaceId, seed: number): GearItemInstance {

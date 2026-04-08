@@ -15,22 +15,32 @@ import {
 import { getMissionContract } from "../content/missions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
+import {
+  createLightingRig,
+  setAnyLightIntensity,
+  setAnyLightPosition,
+  setAnyLightVisible,
+  type LightingRig,
+  type ShadowSource,
+} from "../fx/energyLighting";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { InventoryOverlay } from "../ui/InventoryOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { MissionBoardOverlay } from "../ui/MissionBoardOverlay";
-import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
 type StationId = "cockpit" | "mission" | "loadout";
 type InteractionTargetKind = "station" | "airlock";
+type SceneLight = Phaser.GameObjects.PointLight | Phaser.GameObjects.Arc;
 
 type Station = {
   id: StationId;
+  accent: number;
   shadow: Phaser.GameObjects.Ellipse;
   glow: Phaser.GameObjects.Ellipse;
   zone: Phaser.GameObjects.Rectangle;
   label: Phaser.GameObjects.Text;
   hint: Phaser.GameObjects.Text;
+  light: SceneLight;
   interactionRadius: number;
 };
 
@@ -46,11 +56,13 @@ type HubCompanionActor = {
   id: string;
   name: string;
   roleLabel: string;
+  attackStyle: CompanionDefinition["attackStyle"];
   primaryGear: string;
   supportGear: string;
   anchor: Phaser.Math.Vector2;
   shadow: Phaser.GameObjects.Ellipse;
   sprite: Phaser.GameObjects.Arc;
+  light: SceneLight;
   shieldPlate?: Phaser.GameObjects.Rectangle;
   label: Phaser.GameObjects.Text;
   pulseOffset: number;
@@ -126,12 +138,16 @@ function getBoardFormationLabel(slotId: FormationSlotId): string {
 }
 
 export class HubScene extends Phaser.Scene {
-  private brightnessLayer?: BrightnessLayer;
+  private lightingRig?: LightingRig;
   private playerShadow!: Phaser.GameObjects.Ellipse;
   private player!: Phaser.GameObjects.Arc;
+  private playerLight?: SceneLight;
   private crew: HubCompanionActor[] = [];
   private buddyPulse = 0;
   private stations: Station[] = [];
+  private ambientLights: SceneLight[] = [];
+  private hubShadowCasters: Phaser.Geom.Rectangle[] = [];
+  private hubShadowSources: ShadowSource[] = [];
   private nearestStation: Station | null = null;
   private panel?: Phaser.GameObjects.Container;
   private panelBody?: Phaser.GameObjects.Text;
@@ -197,14 +213,18 @@ export class HubScene extends Phaser.Scene {
     this.currentInteraction = null;
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
-    this.drawBackdrop();
-    this.brightnessLayer = createBrightnessLayer(this, {
-      ambientAlpha: 0.08,
-      tintColor: 0x03101a,
-      tintAlpha: 0.12,
-      edgeShadeAlpha: 0.12,
-      edgeThickness: 72,
+    this.lightingRig = createLightingRig(this, {
+      x: HUB_ROOM.x,
+      y: HUB_ROOM.y,
+      width: HUB_ROOM.width,
+      height: HUB_ROOM.height,
+      ambientAlpha: 0.42,
+      darkColor: 0x01050c,
+      veilDepth: 9,
+      shadowDepth: 9.35,
+      lightDepth: 9.8,
     });
+    this.drawBackdrop();
     this.createActors();
     this.createStations();
     this.createHud();
@@ -224,7 +244,11 @@ export class HubScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameSession.off("settings-changed", syncInputMode);
       gameSession.off("input-mode-changed", syncInputMode);
-      this.brightnessLayer?.destroy();
+      this.playerLight?.destroy();
+      this.crew.forEach((companion) => companion.light.destroy());
+      this.stations.forEach((station) => station.light.destroy());
+      this.ambientLights.forEach((light) => light.destroy());
+      this.lightingRig?.destroy();
     });
   }
 
@@ -236,6 +260,7 @@ export class HubScene extends Phaser.Scene {
     this.updateNearestStation();
     this.updateInteractionTarget();
     this.updatePrompt();
+    this.updateHubLighting();
   }
 
   private drawBackdrop(): void {
@@ -272,10 +297,14 @@ export class HubScene extends Phaser.Scene {
     this.add.rectangle(186, 360, 68, 176, 0x123354, 0.94)
       .setStrokeStyle(3, 0x7ebaff, 0.82)
       .setDepth(-5);
+    this.registerHubCaster(182, 368, 94, HUB_ROOM.height - 78);
+    this.registerHubCaster(1098, 368, 134, HUB_ROOM.height - 78);
+    this.registerHubCaster(186, 360, 68, 176);
 
     this.add.rectangle(708, 546, 532, 136, 0x132a40, 0.88)
       .setStrokeStyle(2, 0x7aa9dd, 0.72)
       .setDepth(-6);
+    this.registerHubCaster(708, 546, 532, 136);
     this.add.text(708, 484, "Crew Quarters", {
       fontFamily: "Arial",
       fontSize: "18px",
@@ -295,6 +324,7 @@ export class HubScene extends Phaser.Scene {
       .setStrokeStyle(3, 0x7ec4ff, 0.62)
       .setDepth(5)
       .setInteractive({ useHandCursor: true });
+    this.registerHubCaster(1120, HUB_ROOM.centerY, 60, 148);
     this.airlockDoor.on("pointerdown", () => this.tryActivateAirlock());
     this.airlockLabel = this.add.text(1070, 192, "Deploy Door", {
       fontFamily: "Arial",
@@ -309,12 +339,19 @@ export class HubScene extends Phaser.Scene {
       color: "#f5fbff",
       fontStyle: "bold",
     });
+
+    this.createAmbientBeam(188, 168, 252, 0x7ebaff, 92, 168, 0.12);
+    this.createAmbientBeam(482, 168, 244, 0x59c9ff, 112, 186, 0.11);
+    this.createAmbientBeam(798, 168, 244, 0xffd36d, 112, 186, 0.11);
+    this.createAmbientBeam(1120, 164, 278, 0x6fd0ff, 86, 168, 0.12);
   }
 
   private createActors(): void {
     this.playerShadow = this.add.ellipse(304, HUB_ROOM.centerY + 14, 38, 16, 0x000000, 0.28).setDepth(6);
     this.player = this.add.circle(304, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
+    this.playerLight = this.lightingRig?.createPointLight(this.player.x, this.player.y, 0x92c8ff, 136, 0.92, 0.07)
+      ?? this.add.circle(this.player.x, this.player.y, 22, 0x92c8ff, 0.22).setDepth(10).setBlendMode(Phaser.BlendModes.ADD);
 
     this.crew = STORY_COMPANIONS.map((companion, index) => {
       const anchor = new Phaser.Math.Vector2(companion.hubPosition.x, companion.hubPosition.y);
@@ -322,6 +359,14 @@ export class HubScene extends Phaser.Scene {
         .setDepth(6);
       const sprite = this.add.circle(anchor.x, anchor.y, companion.radius, companion.coreColor).setDepth(7);
       sprite.setStrokeStyle(3, companion.trimColor, 1);
+      const light = this.lightingRig?.createPointLight(
+        anchor.x,
+        anchor.y,
+        companion.projectileColor,
+        companion.attackStyle === "healer" ? 98 : companion.attackStyle === "shield" || companion.attackStyle === "bulwark" ? 88 : 80,
+        companion.attackStyle === "healer" ? 0.56 : 0.42,
+        0.085,
+      ) ?? this.add.circle(anchor.x, anchor.y, 16, companion.projectileColor, 0.18).setDepth(9).setBlendMode(Phaser.BlendModes.ADD);
 
       const shieldPlate = companion.attackStyle === "shield"
         ? this.add.rectangle(anchor.x + companion.radius + 8, anchor.y, 10, 28, 0x335e48, 0.96)
@@ -341,11 +386,13 @@ export class HubScene extends Phaser.Scene {
         id: companion.id,
         name: companion.name,
         roleLabel: getCompanionRoleDisplay(companion),
+        attackStyle: companion.attackStyle,
         primaryGear: companion.primaryGear,
         supportGear: companion.supportGear,
         anchor,
         shadow,
         sprite,
+        light,
         shieldPlate,
         label,
         pulseOffset: index * 0.9,
@@ -383,6 +430,9 @@ export class HubScene extends Phaser.Scene {
       .setStrokeStyle(3, accent, 0.72)
       .setDepth(5)
       .setInteractive();
+    this.registerHubCaster(x, y, width, height);
+    const light = this.lightingRig?.createPointLight(x, y + height * 0.1, accent, Math.max(148, width * 0.92), 0.62, 0.078)
+      ?? this.add.circle(x, y + height * 0.1, 24, accent, 0.18).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
 
     const title = this.add.text(x, y - 14, label, {
       fontFamily: "Arial",
@@ -402,11 +452,13 @@ export class HubScene extends Phaser.Scene {
 
     const station: Station = {
       id,
+      accent,
       shadow,
       glow,
       zone,
       label: title,
       hint,
+      light,
       interactionRadius: 112,
     };
 
@@ -1115,6 +1167,60 @@ export class HubScene extends Phaser.Scene {
     });
   }
 
+  private updateHubLighting(): void {
+    if (!this.lightingRig) {
+      return;
+    }
+
+    this.hubShadowSources = [];
+    if (this.playerLight) {
+      setAnyLightPosition(this.playerLight, this.player.x, this.player.y);
+      setAnyLightIntensity(this.playerLight, 0.92);
+      setAnyLightVisible(this.playerLight, true);
+      this.hubShadowSources.push({
+        x: this.player.x,
+        y: this.player.y,
+        radius: 136,
+        intensity: 1,
+      });
+    }
+
+    this.crew.forEach((companion) => {
+      setAnyLightPosition(companion.light, companion.sprite.x, companion.sprite.y);
+      setAnyLightIntensity(
+        companion.light,
+        companion.attackStyle === "healer"
+          ? 0.56
+          : companion.attackStyle === "shield" || companion.attackStyle === "bulwark"
+            ? 0.46
+            : 0.38,
+      );
+      setAnyLightVisible(companion.light, true);
+      this.hubShadowSources.push({
+        x: companion.sprite.x,
+        y: companion.sprite.y,
+        radius: companion.attackStyle === "healer" ? 98 : 84,
+        intensity: companion.attackStyle === "healer" ? 0.56 : 0.4,
+      });
+    });
+
+    this.stations.forEach((station) => {
+      const highlighted = this.nearestStation?.id === station.id;
+      setAnyLightPosition(station.light, station.zone.x, station.zone.y + station.zone.height * 0.08);
+      setAnyLightIntensity(station.light, highlighted ? 0.92 : 0.58);
+      setAnyLightVisible(station.light, true);
+      this.hubShadowSources.push({
+        x: station.zone.x,
+        y: station.zone.y + station.zone.height * 0.08,
+        radius: Math.max(152, station.zone.width * 0.92),
+        intensity: highlighted ? 0.86 : 0.52,
+      });
+    });
+
+    this.ambientLights.forEach((light) => setAnyLightVisible(light, true));
+    this.lightingRig.refreshShadows(this.hubShadowSources, this.hubShadowCasters, 260);
+  }
+
   private updateNearestStation(): void {
     let nearest: Station | null = null;
     let nearestDistance = Number.POSITIVE_INFINITY;
@@ -1705,6 +1811,46 @@ export class HubScene extends Phaser.Scene {
     const augmentedPointer = pointer as Phaser.Input.Pointer & { wasTouch?: boolean };
     const event = pointer.event as (PointerEvent & { pointerType?: string }) | undefined;
     return Boolean(augmentedPointer.wasTouch || event?.pointerType === "touch");
+  }
+
+  private registerHubCaster(x: number, y: number, width: number, height: number): void {
+    this.hubShadowCasters.push(new Phaser.Geom.Rectangle(x - width / 2, y - height / 2, width, height));
+  }
+
+  private createAmbientBeam(
+    x: number,
+    topY: number,
+    bottomY: number,
+    color: number,
+    width: number,
+    lightRadius: number,
+    alpha: number,
+  ): void {
+    const housing = this.add.rectangle(x, topY - 22, Math.max(40, width * 0.28), 16, 0x16263a, 0.96)
+      .setStrokeStyle(2, color, 0.45)
+      .setDepth(5);
+    const beam = this.add.graphics().setDepth(5.5).setBlendMode(Phaser.BlendModes.ADD);
+    beam.fillStyle(color, alpha);
+    beam.fillPoints([
+      new Phaser.Geom.Point(x - width * 0.18, topY - 10),
+      new Phaser.Geom.Point(x + width * 0.18, topY - 10),
+      new Phaser.Geom.Point(x + width * 0.5, bottomY),
+      new Phaser.Geom.Point(x - width * 0.5, bottomY),
+    ], true);
+    const beamCore = this.add.graphics().setDepth(5.6).setBlendMode(Phaser.BlendModes.ADD);
+    beamCore.fillStyle(0xffffff, alpha * 0.34);
+    beamCore.fillPoints([
+      new Phaser.Geom.Point(x - width * 0.08, topY - 12),
+      new Phaser.Geom.Point(x + width * 0.08, topY - 12),
+      new Phaser.Geom.Point(x + width * 0.22, bottomY),
+      new Phaser.Geom.Point(x - width * 0.22, bottomY),
+    ], true);
+    const light = this.lightingRig?.createPointLight(x, bottomY - 10, color, lightRadius, 0.5, 0.08);
+    if (light) {
+      this.ambientLights.push(light);
+    }
+    housing.setData("beam", beam);
+    housing.setData("beamCore", beamCore);
   }
 
   getDebugSnapshot(): Record<string, unknown> {

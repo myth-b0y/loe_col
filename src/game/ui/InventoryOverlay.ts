@@ -2,12 +2,12 @@ import Phaser from "phaser";
 
 import {
   EQUIPMENT_SLOTS,
-  getCompatibleEquipmentSlots,
   describeCraftingMaterials,
   describeInventoryItem,
   getItemColor,
   getItemName,
   getItemShortLabel,
+  isGearItem,
   summarizeCombatProfile,
   type CraftingMaterials,
   type EquipmentLoadout,
@@ -49,6 +49,10 @@ type EquipmentSlotUi = {
   itemLabel: Phaser.GameObjects.Text;
 };
 
+type InventorySelection =
+  | { kind: "cargo"; index: number }
+  | { kind: "equipment"; slotId: EquipmentSlotId };
+
 const PANEL_DEPTH = 60;
 const FRAME_COLOR = 0x365a82;
 const FRAME_ALPHA = 0.78;
@@ -56,7 +60,6 @@ const SECTION_FILL = 0x0b1622;
 const SLOT_FILL = 0x0f1d2d;
 const SLOT_INNER = 0x12263a;
 const SELECTED_COLOR = 0xdab66b;
-const VALID_COLOR = 0x73c2ff;
 
 export class InventoryOverlay {
   private readonly onClose: () => void;
@@ -73,7 +76,13 @@ export class InventoryOverlay {
   private readonly equipmentSlots: EquipmentSlotUi[];
   private readonly cargoCells: CargoCellUi[];
   private readonly closeButton: MenuButton;
-  private selectedCargoIndex: number | null = null;
+  private readonly actionMenu: Phaser.GameObjects.Container;
+  private readonly actionTitle: Phaser.GameObjects.Text;
+  private readonly actionBody: Phaser.GameObjects.Text;
+  private readonly actionPrimary: MenuButton;
+  private readonly actionSecondary: MenuButton;
+  private readonly actionTertiary: MenuButton;
+  private selectedEntry: InventorySelection | null = null;
   private currentSnapshot!: InventoryOverlaySnapshot;
 
   constructor({ scene, onClose, getSnapshot }: InventoryOverlayOptions) {
@@ -83,6 +92,12 @@ export class InventoryOverlay {
     this.backdrop = scene.add.rectangle(640, 360, 1280, 720, 0x02060c, 0.9)
       .setDepth(PANEL_DEPTH)
       .setInteractive();
+    this.backdrop.on("pointerdown", () => {
+      if (this.actionMenu.visible) {
+        this.hideActionMenu();
+        this.refresh();
+      }
+    });
 
     const panel = scene.add.rectangle(640, 360, 1120, 670, 0x08111b, 0.985)
       .setDepth(PANEL_DEPTH + 1)
@@ -128,6 +143,69 @@ export class InventoryOverlay {
       depth: PANEL_DEPTH + 2,
       accentColor: 0x19324f,
     });
+
+    const actionPanel = scene.add.rectangle(0, 0, 228, 206, 0x09131f, 0.98)
+      .setStrokeStyle(2, 0x6b93be, 0.82);
+    this.actionTitle = scene.add.text(0, -74, "", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#f7fbff",
+      fontStyle: "bold",
+      align: "center",
+      wordWrap: { width: 182 },
+    }).setOrigin(0.5);
+    this.actionBody = scene.add.text(0, -34, "", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#b8cfe9",
+      align: "center",
+      wordWrap: { width: 186 },
+    }).setOrigin(0.5, 0);
+    this.actionPrimary = createMenuButton({
+      scene,
+      x: 0,
+      y: 32,
+      width: 172,
+      height: 38,
+      label: "Equip",
+      onClick: () => this.runActionMenuPrimary(),
+      depth: PANEL_DEPTH + 6,
+      accentColor: 0x214a72,
+    });
+    this.actionSecondary = createMenuButton({
+      scene,
+      x: 0,
+      y: 78,
+      width: 172,
+      height: 34,
+      label: "Drop",
+      onClick: () => this.runActionMenuDrop(),
+      depth: PANEL_DEPTH + 6,
+      accentColor: 0x5a3b22,
+    });
+    this.actionTertiary = createMenuButton({
+      scene,
+      x: 0,
+      y: 120,
+      width: 172,
+      height: 34,
+      label: "Examine",
+      onClick: () => this.runActionMenuExamine(),
+      depth: PANEL_DEPTH + 6,
+      accentColor: 0x263f5f,
+    });
+    this.actionMenu = scene.add.container(0, 0, [
+      actionPanel,
+      this.actionTitle,
+      this.actionBody,
+      this.actionPrimary.container,
+      this.actionSecondary.container,
+      this.actionTertiary.container,
+    ]).setDepth(PANEL_DEPTH + 5).setVisible(false);
+    this.actionMenu.setScrollFactor(0);
+    this.actionPrimary.container.setScrollFactor(0);
+    this.actionSecondary.container.setScrollFactor(0);
+    this.actionTertiary.container.setScrollFactor(0);
 
     const gearHeader = scene.add.text(118, 174, "Equipment", {
       fontFamily: "Arial",
@@ -275,6 +353,7 @@ export class InventoryOverlay {
       divider,
       dividerSpark,
       this.closeButton.container,
+      this.actionMenu,
       gearHeader,
       characterHeader,
       this.characterWell,
@@ -302,14 +381,14 @@ export class InventoryOverlay {
   show(): void {
     this.root.setVisible(true);
     this.setInputEnabled(true);
-    this.selectedCargoIndex = null;
+    this.hideActionMenu();
     this.refresh();
   }
 
   hide(): void {
     this.root.setVisible(false);
     this.setInputEnabled(false);
-    this.selectedCargoIndex = null;
+    this.hideActionMenu();
     this.onClose();
   }
 
@@ -320,11 +399,10 @@ export class InventoryOverlay {
   refresh(): void {
     this.currentSnapshot = this.getSnapshot();
     const { equipment, cargo, materials } = this.currentSnapshot;
-    const selectedItem = this.getSelectedCargoItem();
-    const validSlots = selectedItem ? new Set(getCompatibleEquipmentSlots(selectedItem).map((slot) => slot.id)) : new Set<EquipmentSlotId>();
     const allowEquip = this.currentSnapshot.allowEquip ?? true;
     const titleText = this.currentSnapshot.title ?? "Inventory";
     const subtitleText = this.currentSnapshot.subtitle ?? "Select cargo, then click a valid equipment slot.";
+    const selectedItem = this.getSelectedItem();
 
     const materialSummary = describeCraftingMaterials(materials);
     this.title.setText(titleText);
@@ -340,16 +418,16 @@ export class InventoryOverlay {
       slot.itemLabel.setText(item ? getItemShortLabel(item) : "Empty");
       slot.itemLabel.setColor(item ? "#f5fbff" : "#6f88a7");
 
-      const isValid = allowEquip && selectedItem ? validSlots.has(slot.slotId) : false;
-      const borderColor = isValid ? VALID_COLOR : item ? getItemColor(item) : FRAME_COLOR;
-      const borderAlpha = isValid ? 0.96 : item ? 0.84 : 0.7;
+      const isSelected = this.selectedEntry?.kind === "equipment" && this.selectedEntry.slotId === slot.slotId;
+      const borderColor = isSelected ? SELECTED_COLOR : item ? getItemColor(item) : FRAME_COLOR;
+      const borderAlpha = isSelected ? 0.98 : item ? 0.84 : 0.7;
       slot.frame.setStrokeStyle(2, borderColor, borderAlpha);
-      slot.frame.setFillStyle(isValid ? SLOT_INNER : SLOT_FILL, 0.98);
+      slot.frame.setFillStyle(isSelected ? SLOT_INNER : SLOT_FILL, 0.98);
     });
 
     this.cargoCells.forEach((cell) => {
       const item = cargo[cell.index];
-      const isSelected = this.selectedCargoIndex === cell.index;
+      const isSelected = this.selectedEntry?.kind === "cargo" && this.selectedEntry.index === cell.index;
       cell.itemLabel.setText(item ? getItemShortLabel(item) : "");
       cell.itemLabel.setColor(item ? "#f5fbff" : "#7a91ad");
       cell.frame.setStrokeStyle(2, isSelected ? SELECTED_COLOR : item ? getItemColor(item) : FRAME_COLOR, isSelected ? 0.98 : item ? 0.84 : 0.62);
@@ -367,15 +445,7 @@ export class InventoryOverlay {
       return;
     }
 
-    if (validSlots.size === 0) {
-      this.statusText.setText([`${getItemName(selectedItem)} cannot be equipped.`, ...describeInventoryItem(selectedItem)].join("\n"));
-      return;
-    }
-
-    this.statusText.setText([
-      `Selected ${getItemName(selectedItem)}. Click a highlighted slot to equip.`,
-      ...describeInventoryItem(selectedItem),
-    ].join("\n"));
+    this.statusText.setText([`${getItemName(selectedItem)} selected.`, ...describeInventoryItem(selectedItem)].join("\n"));
   }
 
   private onCargoCellClicked(index: number): void {
@@ -383,51 +453,53 @@ export class InventoryOverlay {
     const item = cargo[index];
 
     if (!item) {
-      this.selectedCargoIndex = null;
+      this.hideActionMenu();
       this.statusText.setText("Empty cargo slot.");
       this.refresh();
       return;
     }
 
-    this.selectedCargoIndex = this.selectedCargoIndex === index ? null : index;
+    this.selectedEntry = { kind: "cargo", index };
+    const cell = this.cargoCells.find((entry) => entry.index === index);
+    if (cell) {
+      this.showActionMenu(cell.frame.x + 110, cell.frame.y - 18);
+    }
     this.refresh();
   }
 
   private onEquipmentSlotClicked(slotId: EquipmentSlotId): void {
+    const currentItem = this.currentSnapshot.equipment[slotId];
     if ((this.currentSnapshot.allowEquip ?? true) === false) {
-      const item = this.currentSnapshot.equipment[slotId];
-      this.statusText.setText(item
-        ? [`${getItemName(item)} equipped in ${this.getSlotLabel(slotId)}.`, ...describeInventoryItem(item)].join("\n")
+      this.statusText.setText(currentItem
+        ? [`${getItemName(currentItem)} equipped in ${this.getSlotLabel(slotId)}.`, ...describeInventoryItem(currentItem)].join("\n")
         : `${this.getSlotLabel(slotId)} is empty.`);
       return;
     }
 
-    if (this.selectedCargoIndex === null) {
-      const item = gameSession.getEquipmentLoadout()[slotId];
-      this.statusText.setText(item
-        ? [`${getItemName(item)} equipped in ${this.getSlotLabel(slotId)}.`, ...describeInventoryItem(item)].join("\n")
-        : `${this.getSlotLabel(slotId)} is empty.`);
+    if (!currentItem) {
+      this.hideActionMenu();
+      this.statusText.setText(`${this.getSlotLabel(slotId)} is empty.`);
       return;
     }
 
-    const success = gameSession.equipCargoItemToSlot(this.selectedCargoIndex, slotId);
-    if (!success) {
-      this.statusText.setText(`That item can't go into ${this.getSlotLabel(slotId)}.`);
-      this.refresh();
-      return;
+    this.selectedEntry = { kind: "equipment", slotId };
+    const slot = this.equipmentSlots.find((entry) => entry.slotId === slotId);
+    if (slot) {
+      this.showActionMenu(slot.frame.x + 138, slot.frame.y - 10);
     }
-
-    this.selectedCargoIndex = null;
-    this.statusText.setText(`Equipped item into ${this.getSlotLabel(slotId)}.`);
     this.refresh();
   }
 
-  private getSelectedCargoItem(): InventoryItem | null {
-    if (this.selectedCargoIndex === null) {
+  private getSelectedItem(): InventoryItem | null {
+    if (!this.selectedEntry) {
       return null;
     }
 
-    return this.currentSnapshot.cargo[this.selectedCargoIndex];
+    if (this.selectedEntry.kind === "cargo") {
+      return this.currentSnapshot.cargo[this.selectedEntry.index];
+    }
+
+    return this.currentSnapshot.equipment[this.selectedEntry.slotId];
   }
 
   private getSlotLabel(slotId: EquipmentSlotId): string {
@@ -460,5 +532,84 @@ export class InventoryOverlay {
         cell.frame.input.enabled = enabled;
       }
     });
+    this.actionPrimary.setInputEnabled(enabled && this.actionPrimary.container.visible);
+    this.actionSecondary.setInputEnabled(enabled && this.actionSecondary.container.visible);
+    this.actionTertiary.setInputEnabled(enabled && this.actionTertiary.container.visible);
+  }
+
+  private showActionMenu(x: number, y: number): void {
+    const item = this.getSelectedItem();
+    if (!item || !this.selectedEntry) {
+      this.hideActionMenu();
+      return;
+    }
+
+    this.actionMenu.setVisible(true);
+    this.actionMenu.setPosition(Phaser.Math.Clamp(x, 660, 1040), Phaser.Math.Clamp(y, 246, 574));
+    this.actionTitle.setText(getItemName(item));
+    this.actionBody.setText(describeInventoryItem(item).slice(0, 2).join("\n"));
+
+    const allowEquip = this.currentSnapshot.allowEquip ?? true;
+    const canEquip = allowEquip && this.selectedEntry.kind === "cargo" && isGearItem(item);
+    const canUnequip = allowEquip && this.selectedEntry.kind === "equipment";
+    this.actionPrimary.container.setVisible(canEquip || canUnequip);
+    this.actionPrimary.setInputEnabled(canEquip || canUnequip);
+    this.actionPrimary.setLabel(canUnequip ? "Unequip" : "Equip");
+
+    const canDrop = allowEquip;
+    this.actionSecondary.container.setVisible(canDrop);
+    this.actionSecondary.setInputEnabled(canDrop);
+    this.actionSecondary.setLabel("Drop");
+
+    this.actionTertiary.container.setVisible(true);
+    this.actionTertiary.setInputEnabled(true);
+    this.actionTertiary.setLabel("Examine");
+  }
+
+  private hideActionMenu(): void {
+    this.selectedEntry = null;
+    this.actionMenu.setVisible(false);
+    this.actionPrimary.container.setVisible(false);
+    this.actionSecondary.container.setVisible(false);
+    this.actionTertiary.container.setVisible(false);
+  }
+
+  private runActionMenuPrimary(): void {
+    if (!this.selectedEntry) {
+      return;
+    }
+
+    if (this.selectedEntry.kind === "cargo") {
+      const slotId = gameSession.autoEquipCargoItem(this.selectedEntry.index);
+      this.statusText.setText(slotId ? `Equipped into ${this.getSlotLabel(slotId)}.` : "That item cannot be equipped right now.");
+    } else {
+      const ok = gameSession.unequipItemFromSlot(this.selectedEntry.slotId);
+      this.statusText.setText(ok ? `Moved ${this.getSlotLabel(this.selectedEntry.slotId)} item into cargo.` : "No open cargo slot for unequip.");
+    }
+
+    this.hideActionMenu();
+    this.refresh();
+  }
+
+  private runActionMenuDrop(): void {
+    if (!this.selectedEntry || (this.currentSnapshot.allowEquip ?? true) === false) {
+      return;
+    }
+
+    const ok = this.selectedEntry.kind === "cargo"
+      ? gameSession.dropCargoItem(this.selectedEntry.index)
+      : gameSession.dropEquippedItem(this.selectedEntry.slotId);
+    this.statusText.setText(ok ? "Item dropped." : "Drop failed.");
+    this.hideActionMenu();
+    this.refresh();
+  }
+
+  private runActionMenuExamine(): void {
+    const item = this.getSelectedItem();
+    if (!item) {
+      return;
+    }
+
+    this.statusText.setText([`Examine page later for ${getItemName(item)}.`, ...describeInventoryItem(item)].join("\n"));
   }
 }

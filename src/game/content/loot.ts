@@ -2,6 +2,7 @@ import {
   DEFAULT_CRAFTING_MATERIALS,
   addCraftingMaterials,
   cloneInventoryItem,
+  createJunkLoot,
   createLegendarySetPiece,
   createProceduralBossGear,
   describeCraftingMaterials,
@@ -25,7 +26,7 @@ export type MissionRewardBundle = {
 
 export type EnemyDropBundle = {
   credits: number;
-  materials: CraftingMaterials;
+  items: InventoryItem[];
 };
 
 export type BossLootBundle = {
@@ -90,7 +91,7 @@ export function getMissionRewardPreview(missionId: string, xp: number): MissionR
   return {
     xp,
     dropLines: [`Boss Cache: ${legendaryLabel}`, `Bonus Drop: ${bonusLabel}`],
-    salvageLine: "Field salvage: enemy credits + crafting materials",
+    salvageLine: "Field salvage: enemy credits + junk salvage",
   };
 }
 
@@ -148,7 +149,7 @@ export function buildEnemyDropBundle(kind: "rusher" | "shooter" | "hexer" | "bos
   if (kind === "boss") {
     return {
       credits: 0,
-      materials: { ...DEFAULT_CRAFTING_MATERIALS },
+      items: [],
     };
   }
 
@@ -158,20 +159,31 @@ export function buildEnemyDropBundle(kind: "rusher" | "shooter" | "hexer" | "bos
       ? rng.int(7, 11)
       : rng.int(9, 13);
 
-  const materials = { ...DEFAULT_CRAFTING_MATERIALS };
+  const items: InventoryItem[] = [];
   if (kind === "rusher") {
-    materials.alloy += rng.int(0, Math.round(1 * base));
+    if (rng.int(0, 100) < 78) {
+      items.push(createJunkLoot("alloy-scrap", rng.int(1, Math.max(1, Math.round(2 * base)))));
+    }
+    if (rng.int(0, 100) < 24) {
+      items.push(createJunkLoot("filament-spool", 1));
+    }
   } else if (kind === "shooter") {
-    materials.filament += rng.int(0, Math.round(1 * base));
-    materials.alloy += rng.int(0, 1);
+    if (rng.int(0, 100) < 72) {
+      items.push(createJunkLoot("fractured-lens", rng.int(1, Math.max(1, Math.round(2 * base)))));
+    }
+    if (rng.int(0, 100) < 28) {
+      items.push(createJunkLoot("relay-core", 1));
+    }
   } else {
-    materials.shardDust += rng.int(1, Math.max(1, Math.round(1.4 * base)));
-    materials.filament += rng.int(0, 1);
+    items.push(createJunkLoot("shadowglass-shard", rng.int(1, Math.max(1, Math.round(1.2 * base)))));
+    if (rng.int(0, 100) < 38) {
+      items.push(createJunkLoot("relay-core", 1));
+    }
   }
 
   return {
     credits,
-    materials,
+    items,
   };
 }
 
