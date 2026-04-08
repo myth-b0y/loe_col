@@ -363,9 +363,9 @@ export class MissionBoardOverlay {
     ]);
     this.detailReward.setText([
       `Reward Projection`,
-      `+${selected.reward.xp} XP`,
-      `+${selected.reward.credits} Credits`,
-      `Recovered Item: ${selected.reward.item}`,
+      `+${selected.baseXp} XP`,
+      ...selected.rewardPreview.dropLines,
+      selected.rewardPreview.salvageLine,
     ]);
 
     this.acceptAllButton.setEnabled(contracts.some((contract) => !acceptedMissionIds.includes(contract.id)));

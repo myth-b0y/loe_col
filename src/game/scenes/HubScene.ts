@@ -1458,7 +1458,14 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    this.rewardText.setText(`Mission reward: +${reward.xp} XP, +${reward.credits} credits, ${reward.item}`);
+    const materialCount = [
+      reward.materials.alloy > 0,
+      reward.materials.shardDust > 0,
+      reward.materials.filament > 0,
+    ].filter(Boolean).length;
+    this.rewardText.setText(
+      `Mission reward: +${reward.xp} XP | +${reward.credits} credits | ${reward.items.length} gear drop${reward.items.length === 1 ? "" : "s"} | ${materialCount} salvage bundle${materialCount === 1 ? "" : "s"}`,
+    );
     this.rewardText.setVisible(true);
 
     this.time.delayedCall(5200, () => {

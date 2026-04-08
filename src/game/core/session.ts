@@ -11,15 +11,29 @@ import {
   type SquadAssignment,
 } from "../content/companions";
 import {
+  ALL_EQUIPMENT_SLOT_IDS,
   DEFAULT_CARGO_SLOTS,
   DEFAULT_CRAFTING_MATERIALS,
   DEFAULT_EQUIPMENT,
+  addCraftingMaterials,
   canItemEquipToSlot,
-  getItemDefinition,
+  calculatePlayerCombatProfile,
+  cloneCargoSlots,
+  cloneCraftingMaterials,
+  cloneEquipmentLoadout,
+  cloneInventoryItem,
+  createEmptyCargoSlots,
+  createEmptyEquipment,
+  isGearItem,
+  summarizeEquippedWeapon,
   type CraftingMaterials,
   type EquipmentLoadout,
   type EquipmentSlotId,
+  type InventoryItem,
+  type PlayerCombatProfile,
+  type RaceId,
 } from "../content/items";
+import { type MissionRewardBundle } from "../content/loot";
 import {
   DEFAULT_RUN_CONFIG,
   GAME_MODE_RULES,
@@ -42,12 +56,7 @@ export type DifficultyProfile = {
   enemyCooldown: number;
 };
 
-export type RewardData = {
-  credits: number;
-  xp: number;
-  item: string;
-  itemId?: string;
-};
+export type RewardData = MissionRewardBundle;
 
 export const INPUT_MODE_OPTIONS: InputModePreference[] = ["Auto", "Desktop", "Touch"];
 export const DIFFICULTY_OPTIONS: GameplayDifficulty[] = ["Novice", "Knight", "Legend", "Mythic"];
@@ -108,12 +117,13 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 5;
+  version: 6;
   meta: {
     lastSavedAt: string | null;
   };
   profile: {
     callsign: string;
+    raceId: RaceId;
     level: number;
     xp: number;
     credits: number;
@@ -125,7 +135,7 @@ export type SaveData = {
     companion: string;
     squad: SquadAssignment[];
     equipment: EquipmentLoadout;
-    cargo: Array<string | null>;
+    cargo: Array<InventoryItem | null>;
     crafting: CraftingMaterials;
   };
   missions: {
@@ -180,25 +190,26 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const DEFAULT_SAVE: SaveData = {
-  version: 5,
+  version: 6,
   meta: {
     lastSavedAt: null,
   },
   profile: {
     callsign: "Champion",
+    raceId: "olydran",
     level: 1,
     xp: 0,
     credits: 140,
   },
   loadout: {
-    weapon: "Lumen Carbine",
+    weapon: "Unarmed",
     ability: "Pulse Burst",
     support: "Arc Lance",
     companion: "Rook / Sera / Lyra",
     squad: clone([...DEFAULT_SQUAD_ASSIGNMENTS]),
-    equipment: clone(DEFAULT_EQUIPMENT),
-    cargo: clone(DEFAULT_CARGO_SLOTS),
-    crafting: clone(DEFAULT_CRAFTING_MATERIALS),
+    equipment: cloneEquipmentLoadout(DEFAULT_EQUIPMENT),
+    cargo: cloneCargoSlots(DEFAULT_CARGO_SLOTS),
+    crafting: cloneCraftingMaterials(DEFAULT_CRAFTING_MATERIALS),
   },
   missions: {
     acceptedMissionIds: [],
@@ -252,27 +263,51 @@ function normalizeSquadAssignments(assignments: SquadAssignment[]): SquadAssignm
   return normalized.slice(0, 3);
 }
 
-function normalizeCargoSlots(cargo: Array<string | null> | undefined): Array<string | null> {
-  const defaults = clone(DEFAULT_CARGO_SLOTS);
+function normalizeEquipmentLoadout(
+  equipment: Partial<Record<EquipmentSlotId, unknown>> | undefined,
+): EquipmentLoadout {
+  const defaults = createEmptyEquipment();
+  if (!equipment) {
+    return defaults;
+  }
+
+  ALL_EQUIPMENT_SLOT_IDS.forEach((slotId) => {
+    const value = equipment[slotId];
+    defaults[slotId] = isGearItem(value as InventoryItem | null | undefined)
+      ? cloneInventoryItem(value as InventoryItem) as typeof defaults[typeof slotId]
+      : null;
+  });
+
+  return defaults;
+}
+
+function normalizeCargoSlots(cargo: unknown[] | undefined): Array<InventoryItem | null> {
+  const defaults = createEmptyCargoSlots(DEFAULT_CARGO_SLOTS.length);
   if (!cargo || cargo.length === 0) {
     return defaults;
   }
 
-  const result = defaults.map((item, index) => cargo[index] ?? item);
-  return result.slice(0, defaults.length);
+  return defaults.map((_, index) => {
+    const value = cargo[index];
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    return cloneInventoryItem(value as InventoryItem);
+  });
 }
 
 function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 5 as const,
+    version: 6 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
     loadout: {
       ...clone(DEFAULT_SAVE.loadout),
       ...parsed.loadout,
-      equipment: { ...clone(DEFAULT_SAVE.loadout.equipment), ...parsed.loadout?.equipment },
+      equipment: normalizeEquipmentLoadout(parsed.loadout?.equipment as Partial<Record<EquipmentSlotId, unknown>> | undefined),
       crafting: { ...clone(DEFAULT_SAVE.loadout.crafting), ...parsed.loadout?.crafting },
       cargo: normalizeCargoSlots(parsed.loadout?.cargo),
     },
@@ -291,6 +326,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
 
   merged.loadout.squad = normalizedSquad;
   merged.loadout.companion = summarizeSquadAssignments(normalizedSquad);
+  merged.loadout.weapon = summarizeEquippedWeapon(merged.loadout.equipment);
   merged.missions.acceptedMissionIds = acceptedMissionIds;
   merged.missions.selectedMissionId = selectedMissionId;
   merged.progression.completedMissionIds = Array.from(new Set(merged.progression.completedMissionIds ?? []));
@@ -473,25 +509,33 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   getEquipmentLoadout(): EquipmentLoadout {
-    return clone(this.saveData.loadout.equipment);
+    return cloneEquipmentLoadout(this.saveData.loadout.equipment);
   }
 
-  getCargoSlots(): Array<string | null> {
-    return [...this.saveData.loadout.cargo];
+  getCargoSlots(): Array<InventoryItem | null> {
+    return cloneCargoSlots(this.saveData.loadout.cargo);
   }
 
   getCraftingMaterials(): CraftingMaterials {
-    return clone(this.saveData.loadout.crafting);
+    return cloneCraftingMaterials(this.saveData.loadout.crafting);
   }
 
-  addItemToCargo(itemId: string): boolean {
+  getPlayerRaceId(): RaceId {
+    return this.saveData.profile.raceId;
+  }
+
+  getPlayerCombatProfile(): PlayerCombatProfile {
+    return calculatePlayerCombatProfile(this.saveData.loadout.equipment);
+  }
+
+  addItemToCargo(item: InventoryItem): boolean {
     const cargo = this.saveData.loadout.cargo;
     const openIndex = cargo.findIndex((slot) => slot === null);
     if (openIndex < 0) {
       return false;
     }
 
-    cargo[openIndex] = itemId;
+    cargo[openIndex] = cloneInventoryItem(item);
     this.emit("save-changed", this.saveData);
     return true;
   }
@@ -502,15 +546,15 @@ export class GameSession extends Phaser.Events.EventEmitter {
       return false;
     }
 
-    const itemId = cargo[cargoIndex];
-    const item = getItemDefinition(itemId);
+    const item = cargo[cargoIndex];
     if (!item || !canItemEquipToSlot(item, slotId)) {
       return false;
     }
 
     const equippedItem = this.saveData.loadout.equipment[slotId];
-    this.saveData.loadout.equipment[slotId] = item.id;
+    this.saveData.loadout.equipment[slotId] = cloneInventoryItem(item) as typeof equippedItem;
     cargo[cargoIndex] = equippedItem ?? null;
+    this.syncLoadoutSummary();
     this.emit("save-changed", this.saveData);
     return true;
   }
@@ -695,7 +739,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   completeMission(missionId: string, reward: RewardData): void {
     this.activeMissionId = null;
-    this.pendingReward = reward;
 
     if (!this.saveData.progression.completedMissionIds.includes(missionId)) {
       this.saveData.progression.completedMissionIds.push(missionId);
@@ -707,9 +750,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.saveData.profile.credits += reward.credits;
     this.saveData.profile.xp += reward.xp;
     this.saveData.profile.level = 1 + Math.floor(this.saveData.profile.xp / 160);
-    if (reward.itemId) {
-      this.addItemToCargo(reward.itemId);
-    }
+    this.saveData.loadout.crafting = addCraftingMaterials(this.saveData.loadout.crafting, reward.materials);
+    reward.items.forEach((item) => {
+      this.addItemToCargo(item);
+    });
+    this.pendingReward = clone(reward);
 
     this.emit("save-changed", this.saveData);
   }
@@ -818,6 +863,10 @@ export class GameSession extends Phaser.Events.EventEmitter {
   setDifficulty(value: GameplayDifficulty): void {
     this.settings.gameplay.difficulty = value;
     this.persistSettings();
+  }
+
+  private syncLoadoutSummary(): void {
+    this.saveData.loadout.weapon = summarizeEquippedWeapon(this.saveData.loadout.equipment);
   }
 
   private loadSaveSlots(): void {

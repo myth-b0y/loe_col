@@ -3,9 +3,13 @@ import Phaser from "phaser";
 import {
   EQUIPMENT_SLOTS,
   getCompatibleEquipmentSlots,
-  getItemDefinition,
+  describeCraftingMaterials,
+  describeInventoryItem,
+  getItemColor,
+  getItemName,
+  getItemShortLabel,
   type EquipmentSlotId,
-  type ItemDefinition,
+  type InventoryItem,
 } from "../content/items";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
@@ -212,8 +216,9 @@ export class InventoryOverlay {
 
     this.statusText = scene.add.text(120, 664, "No item selected.", {
       fontFamily: "Arial",
-      fontSize: "15px",
+      fontSize: "14px",
       color: "#9eb7d7",
+      wordWrap: { width: 760 },
     }).setDepth(PANEL_DEPTH + 2);
 
     this.currencyText = scene.add.text(1080, 664, "", {
@@ -274,49 +279,57 @@ export class InventoryOverlay {
   refresh(): void {
     const equipment = gameSession.getEquipmentLoadout();
     const cargo = gameSession.getCargoSlots();
+    const materials = gameSession.getCraftingMaterials();
     const selectedItem = this.getSelectedCargoItem();
     const validSlots = selectedItem ? new Set(getCompatibleEquipmentSlots(selectedItem).map((slot) => slot.id)) : new Set<EquipmentSlotId>();
 
-    this.currencyText.setText(`Credits: ${gameSession.saveData.profile.credits}`);
+    const materialSummary = describeCraftingMaterials(materials);
+    this.currencyText.setText([
+      `Credits: ${gameSession.saveData.profile.credits}`,
+      materialSummary.length > 0 ? materialSummary.join(" | ") : "No crafting salvage",
+    ]);
 
     this.equipmentSlots.forEach((slot) => {
-      const item = getItemDefinition(equipment[slot.slotId]);
-      slot.itemLabel.setText(item?.shortLabel ?? "Empty");
+      const item = equipment[slot.slotId];
+      slot.itemLabel.setText(item ? getItemShortLabel(item) : "Empty");
       slot.itemLabel.setColor(item ? "#f5fbff" : "#6f88a7");
 
       const isValid = selectedItem ? validSlots.has(slot.slotId) : false;
-      const borderColor = isValid ? VALID_COLOR : item?.color ?? FRAME_COLOR;
+      const borderColor = isValid ? VALID_COLOR : item ? getItemColor(item) : FRAME_COLOR;
       const borderAlpha = isValid ? 0.96 : item ? 0.84 : 0.7;
       slot.frame.setStrokeStyle(2, borderColor, borderAlpha);
       slot.frame.setFillStyle(isValid ? SLOT_INNER : SLOT_FILL, 0.98);
     });
 
     this.cargoCells.forEach((cell) => {
-      const item = getItemDefinition(cargo[cell.index]);
+      const item = cargo[cell.index];
       const isSelected = this.selectedCargoIndex === cell.index;
-      cell.itemLabel.setText(item?.shortLabel ?? "");
+      cell.itemLabel.setText(item ? getItemShortLabel(item) : "");
       cell.itemLabel.setColor(item ? "#f5fbff" : "#7a91ad");
-      cell.frame.setStrokeStyle(2, isSelected ? SELECTED_COLOR : item?.color ?? FRAME_COLOR, isSelected ? 0.98 : item ? 0.84 : 0.62);
+      cell.frame.setStrokeStyle(2, isSelected ? SELECTED_COLOR : item ? getItemColor(item) : FRAME_COLOR, isSelected ? 0.98 : item ? 0.84 : 0.62);
       cell.frame.setFillStyle(isSelected ? SLOT_INNER : SLOT_FILL, 0.98);
       cell.hotkeyLabel.setAlpha(item ? 0.85 : 0.3);
     });
 
     if (!selectedItem) {
-      this.statusText.setText("No item selected.");
+      this.statusText.setText("No item selected. Gear starts empty now, and boss drops will fill this board as you progress.");
       return;
     }
 
     if (validSlots.size === 0) {
-      this.statusText.setText(`${selectedItem.name} cannot be equipped.`);
+      this.statusText.setText([`${getItemName(selectedItem)} cannot be equipped.`, ...describeInventoryItem(selectedItem)].join("\n"));
       return;
     }
 
-    this.statusText.setText(`Selected ${selectedItem.name}. Click a highlighted slot to equip.`);
+    this.statusText.setText([
+      `Selected ${getItemName(selectedItem)}. Click a highlighted slot to equip.`,
+      ...describeInventoryItem(selectedItem),
+    ].join("\n"));
   }
 
   private onCargoCellClicked(index: number): void {
     const cargo = gameSession.getCargoSlots();
-    const item = getItemDefinition(cargo[index]);
+    const item = cargo[index];
 
     if (!item) {
       this.selectedCargoIndex = null;
@@ -331,8 +344,10 @@ export class InventoryOverlay {
 
   private onEquipmentSlotClicked(slotId: EquipmentSlotId): void {
     if (this.selectedCargoIndex === null) {
-      const item = getItemDefinition(gameSession.getEquipmentLoadout()[slotId]);
-      this.statusText.setText(item ? `${item.name} equipped in ${this.getSlotLabel(slotId)}.` : `${this.getSlotLabel(slotId)} is empty.`);
+      const item = gameSession.getEquipmentLoadout()[slotId];
+      this.statusText.setText(item
+        ? [`${getItemName(item)} equipped in ${this.getSlotLabel(slotId)}.`, ...describeInventoryItem(item)].join("\n")
+        : `${this.getSlotLabel(slotId)} is empty.`);
       return;
     }
 
@@ -348,13 +363,13 @@ export class InventoryOverlay {
     this.refresh();
   }
 
-  private getSelectedCargoItem(): ItemDefinition | null {
+  private getSelectedCargoItem(): InventoryItem | null {
     if (this.selectedCargoIndex === null) {
       return null;
     }
 
     const cargo = gameSession.getCargoSlots();
-    return getItemDefinition(cargo[this.selectedCargoIndex]);
+    return cargo[this.selectedCargoIndex];
   }
 
   private getSlotLabel(slotId: EquipmentSlotId): string {

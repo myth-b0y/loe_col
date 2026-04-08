@@ -14,6 +14,7 @@ import {
   type MissionStage,
   type RestStage,
 } from "../content/missions";
+import { buildEnemyDropBundle, buildMissionRewardBundle } from "../content/loot";
 import {
   getCompanionRoleDisplay,
   getFormationSlot,
@@ -201,7 +202,6 @@ const BASE_STAGE_VERTICAL = new Phaser.Geom.Rectangle(338, 110, 604, 1500);
 const BASE_REST_VERTICAL = new Phaser.Geom.Rectangle(250, 150, 780, 820);
 const MOVE_SPEED = 315;
 const DASH_DISTANCE = 128;
-const PRIMARY_FIRE_COOLDOWN = 0.16;
 const PULSE_COOLDOWN = 2.8;
 const ARC_COOLDOWN = 4.5;
 const DASH_COOLDOWN = 1.25;
@@ -300,10 +300,11 @@ export class MissionScene extends Phaser.Scene {
   private playerFacing!: Phaser.GameObjects.Rectangle;
   private playerShieldRing!: Phaser.GameObjects.Arc;
   private companions: CompanionState[] = [];
+  private playerCombatProfile = gameSession.getPlayerCombatProfile();
   private playerHp = 100;
   private playerMaxHp = 100;
-  private playerShield = 60;
-  private playerMaxShield = 60;
+  private playerShield = 0;
+  private playerMaxShield = 0;
   private playerShieldDelay = 0;
   private playerShieldRechargeStarted = false;
   private playerThreat = 18;
@@ -370,6 +371,9 @@ export class MissionScene extends Phaser.Scene {
   private progressDots: Phaser.GameObjects.Arc[] = [];
   private selectedTarget: Enemy | null = null;
   private autoAimTarget: Enemy | null = null;
+  private missionCreditsEarned = 0;
+  private missionMaterialsEarned = { alloy: 0, shardDust: 0, filament: 0 };
+  private enemyDropCounter = 0;
   private toolbarCards?: {
     fire: AbilityCard;
     pulse: AbilityCard;
@@ -446,7 +450,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const playerCooldownRate = this.playerFocusBuff > 0 ? 1.28 : 1;
+    const playerCooldownRate = (this.playerFocusBuff > 0 ? 1.28 : 1) * this.playerCombatProfile.abilityCooldownMultiplier;
     this.fireCooldown = Math.max(0, this.fireCooldown - dt * playerCooldownRate);
     this.pulseCooldown = Math.max(0, this.pulseCooldown - dt * playerCooldownRate);
     this.dashCooldown = Math.max(0, this.dashCooldown - dt * playerCooldownRate);
@@ -486,6 +490,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private resetMissionRuntime(): void {
+    this.playerCombatProfile = gameSession.getPlayerCombatProfile();
     this.stageIndex = 0;
     this.missionComplete = false;
     this.stageCleared = false;
@@ -504,8 +509,8 @@ export class MissionScene extends Phaser.Scene {
 
     this.playerHp = 100;
     this.playerMaxHp = 100;
-    this.playerShield = 60;
-    this.playerMaxShield = 60;
+    this.playerShield = 0;
+    this.playerMaxShield = 0;
     this.playerShieldDelay = 0;
     this.playerShieldRechargeStarted = false;
     this.playerThreat = 18;
@@ -518,6 +523,9 @@ export class MissionScene extends Phaser.Scene {
     this.dashCooldown = 0;
     this.arcCooldown = 0;
     this.companions = [];
+    this.missionCreditsEarned = 0;
+    this.missionMaterialsEarned = { alloy: 0, shardDust: 0, filament: 0 };
+    this.enemyDropCounter = 0;
 
     this.bullets = [];
     this.enemies = [];
@@ -551,6 +559,11 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private createActors(): void {
+    this.playerCombatProfile = gameSession.getPlayerCombatProfile();
+    this.playerMaxHp = this.playerCombatProfile.maxHp;
+    this.playerHp = this.playerMaxHp;
+    this.playerMaxShield = this.playerCombatProfile.shieldCapacity;
+    this.playerShield = this.playerMaxShield;
     this.player = this.add.circle(210, 342, 18, PLAYER_CORE_COLOR).setDepth(10);
     this.player.setStrokeStyle(4, PLAYER_TRIM_COLOR, 1);
     this.playerShieldRing = this.add.circle(this.player.x, this.player.y, 26)
@@ -613,8 +626,8 @@ export class MissionScene extends Phaser.Scene {
         radius: companion.radius,
         hp: companion.maxHp,
         maxHp: companion.maxHp,
-        shield: companion.maxShield,
-        maxShield: companion.maxShield,
+        shield: this.playerCombatProfile.companionShieldCapacity,
+        maxShield: this.playerCombatProfile.companionShieldCapacity,
         shieldDelay: 0,
         shieldRechargeStarted: false,
         slowDebuff: 0,
@@ -1531,8 +1544,9 @@ export class MissionScene extends Phaser.Scene {
 
     const movement = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
     const slowMultiplier = this.playerSlowDebuff > 0 ? 0.72 : 1;
-    this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * MOVE_SPEED * slowMultiplier * dt, this.playArea.x + 20, this.playArea.right - 20);
-    this.player.y = Phaser.Math.Clamp(this.player.y + movement.y * MOVE_SPEED * slowMultiplier * dt, this.playArea.y + 20, this.playArea.bottom - 20);
+    const moveSpeed = MOVE_SPEED * this.playerCombatProfile.moveSpeedMultiplier;
+    this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * moveSpeed * slowMultiplier * dt, this.playArea.x + 20, this.playArea.right - 20);
+    this.player.y = Phaser.Math.Clamp(this.player.y + movement.y * moveSpeed * slowMultiplier * dt, this.playArea.y + 20, this.playArea.bottom - 20);
     this.player.setAlpha(this.playerInvuln > 0 ? 0.6 : 1);
     this.playerShieldRing.setPosition(this.player.x, this.player.y);
     this.applyHumanoidStride(this.player, movement.length(), 0, this.getBaseAimDirection());
@@ -1596,7 +1610,10 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (playerShouldRecharge) {
-      const playerShieldRate = PLAYER_SHIELD_REGEN_RATE * (this.playerFocusBuff > 0 ? 1.22 : 1);
+      const baseRate = this.playerCombatProfile.shieldRecoveryRate > 0
+        ? this.playerCombatProfile.shieldRecoveryRate
+        : PLAYER_SHIELD_REGEN_RATE;
+      const playerShieldRate = baseRate * (this.playerFocusBuff > 0 ? 1.22 : 1);
       this.playerShield = Math.min(this.playerMaxShield, this.playerShield + playerShieldRate * dt);
     }
 
@@ -1610,7 +1627,10 @@ export class MissionScene extends Phaser.Scene {
       }
 
       if (shouldRecharge) {
-        const shieldRate = COMPANION_SHIELD_REGEN_RATE * (companion.focusBuff > 0 ? 1.24 : 1);
+        const baseRate = this.playerCombatProfile.companionShieldRecoveryRate > 0
+          ? this.playerCombatProfile.companionShieldRecoveryRate
+          : COMPANION_SHIELD_REGEN_RATE;
+        const shieldRate = baseRate * (companion.focusBuff > 0 ? 1.24 : 1);
         companion.shield = Math.min(companion.maxShield, companion.shield + shieldRate * dt);
       }
     });
@@ -1663,11 +1683,20 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.fireCooldown = PRIMARY_FIRE_COOLDOWN;
+    this.fireCooldown = this.playerCombatProfile.primaryFireCooldown;
     this.addPlayerThreat(1.7);
     const direction = this.getCombatAimDirection();
     retroSfx.play("player-fire", { pitch: Phaser.Math.FloatBetween(0.98, 1.04), volume: 0.9 });
-    this.spawnBullet(this.player.x + direction.x * 24, this.player.y + direction.y * 24, direction, 560, 12, 5, "player", 0x7ee1ff);
+    this.spawnBullet(
+      this.player.x + direction.x * 24,
+      this.player.y + direction.y * 24,
+      direction,
+      560,
+      this.playerCombatProfile.primaryFireDamage,
+      5,
+      "player",
+      0x7ee1ff,
+    );
   }
 
   private updateCompanions(dt: number): void {
@@ -1899,6 +1928,9 @@ export class MissionScene extends Phaser.Scene {
         ? healTarget.companion.maxHp - healTarget.companion.hp
         : 0;
     const pressure = this.getAllyPressure(healTarget);
+    if (this.enemies.length === 0) {
+      return missingHealth >= 2;
+    }
     return missingHealth >= 13 || pressure >= 1.15;
   }
 
@@ -1915,6 +1947,9 @@ export class MissionScene extends Phaser.Scene {
       : supportTarget.companion
         ? supportTarget.companion.maxHp - supportTarget.companion.hp
         : 0;
+    if (this.enemies.length === 0) {
+      return missingHealth >= 3 || (!focusActive && missingHealth >= 1);
+    }
     return !focusActive && (pressure >= 0.9 || missingHealth >= 9);
   }
 
@@ -2201,8 +2236,9 @@ export class MissionScene extends Phaser.Scene {
 
   private getCompanionHealTarget(companion: CompanionState): { side: ActorSide; companion?: CompanionState; x: number; y: number; score: number } | null {
     const candidates: Array<{ side: ActorSide; companion?: CompanionState; x: number; y: number; score: number }> = [];
+    const minimumMissing = this.enemies.length === 0 ? 1 : 6;
     const playerMissing = this.playerMaxHp - this.playerHp;
-    if (playerMissing > 6) {
+    if (playerMissing > minimumMissing) {
       candidates.push({
         side: "player",
         x: this.player.x,
@@ -2217,7 +2253,7 @@ export class MissionScene extends Phaser.Scene {
       }
 
       const missing = ally.maxHp - ally.hp;
-      if (missing <= 6) {
+      if (missing <= minimumMissing) {
         return;
       }
 
@@ -3341,10 +3377,19 @@ export class MissionScene extends Phaser.Scene {
     this.setExitDoorOpen(false, "Complete");
     this.lockBracket.clear();
     this.releaseMissionControls();
+    const reward = buildMissionRewardBundle({
+      missionId: this.mission.id,
+      difficulty: this.mission.difficulty,
+      raceId: gameSession.getPlayerRaceId(),
+      xp: this.mission.baseXp,
+      credits: this.missionCreditsEarned,
+      materials: this.missionMaterialsEarned,
+      seed: this.mission.seed,
+    });
     this.scene.start("mission-result", {
       missionId: this.mission.id,
       missionTitle: this.mission.title,
-      reward: this.mission.reward,
+      reward,
     });
   }
 
@@ -3529,7 +3574,7 @@ export class MissionScene extends Phaser.Scene {
     this.enemies.slice().forEach((enemy) => {
       const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, enemy.sprite.x, enemy.sprite.y);
       if (distance <= 170) {
-        this.damageEnemy(enemy, 28);
+        this.damageEnemy(enemy, this.playerCombatProfile.pulseDamage);
       }
     });
   }
@@ -3558,7 +3603,7 @@ export class MissionScene extends Phaser.Scene {
       const distanceAlong = toEnemy.dot(direction);
       const lateral = Math.abs(toEnemy.cross(direction));
       if (distanceAlong >= 0 && distanceAlong <= 250 && lateral <= 38) {
-        this.damageEnemy(enemy, 40);
+        this.damageEnemy(enemy, this.playerCombatProfile.arcDamage);
       }
     });
   }
@@ -3600,12 +3645,15 @@ export class MissionScene extends Phaser.Scene {
       this.endAllCompanionRevives();
     }
 
-    const guardedAmount = this.playerGuardBuff > 0 ? Math.max(1, Math.round(amount * 0.72)) : amount;
+    const guardReduction = this.playerGuardBuff > 0
+      ? 0.28 + this.playerCombatProfile.guardMitigation
+      : this.playerCombatProfile.guardMitigation;
+    const guardedAmount = Math.max(1, Math.round(amount * (1 - guardReduction)));
     const previousShield = this.playerShield;
     const resolved = this.applyShieldDamage(this.playerShield, guardedAmount);
     this.playerShield = resolved.shield;
     if (this.playerMaxShield > 0 && guardedAmount > 0) {
-      this.playerShieldDelay = SHIELD_REGEN_DELAY;
+      this.playerShieldDelay = this.playerCombatProfile.shieldRegenDelay;
       this.playerShieldRechargeStarted = false;
     }
     if (resolved.absorbed > 0) {
@@ -3661,6 +3709,8 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
       this.spawnLootBurst(enemy.sprite.x, enemy.sprite.y);
+    } else {
+      this.recordEnemyDrop(enemy.kind);
     }
     enemy.sprite.destroy();
     enemy.aura.destroy();
@@ -3685,12 +3735,13 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.endCompanionReviveHold(companion);
-    const guardedAmount = companion.guardBuff > 0 ? Math.max(1, Math.round(amount * 0.72)) : amount;
+    const guardReduction = companion.guardBuff > 0 ? 0.28 : 0;
+    const guardedAmount = Math.max(1, Math.round(amount * (1 - guardReduction)));
     const previousShield = companion.shield;
     const resolved = this.applyShieldDamage(companion.shield, guardedAmount);
     companion.shield = resolved.shield;
     if (companion.maxShield > 0 && guardedAmount > 0) {
-      companion.shieldDelay = SHIELD_REGEN_DELAY;
+      companion.shieldDelay = this.playerCombatProfile.shieldRegenDelay;
       companion.shieldRechargeStarted = false;
     }
     if (resolved.absorbed > 0) {
@@ -3767,6 +3818,15 @@ export class MissionScene extends Phaser.Scene {
         this.releaseTransientEffect();
       },
     });
+  }
+
+  private recordEnemyDrop(kind: "rusher" | "shooter" | "hexer"): void {
+    this.enemyDropCounter += 1;
+    const drop = buildEnemyDropBundle(kind, this.mission.difficulty, this.mission.seed + this.enemyDropCounter * 17);
+    this.missionCreditsEarned += drop.credits;
+    this.missionMaterialsEarned.alloy += drop.materials.alloy;
+    this.missionMaterialsEarned.shardDust += drop.materials.shardDust;
+    this.missionMaterialsEarned.filament += drop.materials.filament;
   }
 
   private reviveCompanion(companion: CompanionState, fromRestRoom: boolean): void {

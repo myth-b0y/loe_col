@@ -24,37 +24,37 @@ export class MainMenuScene extends Phaser.Scene {
     this.drawBackdrop();
     this.brightnessLayer = createBrightnessLayer(this);
 
-    this.add.text(270, 102, GAME_IP, {
+    this.add.text(324, 84, GAME_IP, {
       fontFamily: "Arial",
-      fontSize: "16px",
+      fontSize: "18px",
       color: "#9fc6ff",
       fontStyle: "bold",
     }).setOrigin(0.5, 0);
 
-    this.add.text(160, 132, GAME_SERIES, {
+    this.add.text(324, 126, GAME_SERIES, {
       fontFamily: "Arial",
       fontSize: "54px",
       color: "#f6fbff",
       fontStyle: "bold",
-    });
-    this.add.text(272, 194, GAME_TITLE, {
+    }).setOrigin(0.5, 0);
+    this.add.text(324, 204, GAME_TITLE, {
       fontFamily: "Arial",
       fontSize: "32px",
       color: "#d8eaff",
       fontStyle: "bold",
     }).setOrigin(0.5, 0);
 
-    this.add.text(164, 220, "Age of Legends tactical action RPG prototype", {
+    this.add.text(324, 258, "Age of Legends tactical action RPG prototype", {
       fontFamily: "Arial",
-      fontSize: "20px",
+      fontSize: "18px",
       color: "#d2e5ff",
-    });
+    }).setOrigin(0.5, 0);
 
-    this.add.text(162, 268, "Build the crew. Launch the mission. Clear the outpost. Return stronger.", {
+    this.add.text(324, 302, "Build the crew. Launch the mission. Clear the outpost. Return stronger.", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#b4cbed",
-    });
+    }).setOrigin(0.5, 0);
 
     const buttons: MenuButton[] = [
       createMenuButton({

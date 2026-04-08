@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { describeRewardBundle } from "../content/loot";
 import { gameSession, type RewardData } from "../core/session";
 import { createMenuButton } from "../ui/buttons";
 
@@ -36,9 +37,7 @@ export class MissionResultScene extends Phaser.Scene {
     this.add.text(640, 278, [
       `${this.missionTitle} has been cleared.`,
       "",
-      `Reward: +${data.reward.xp} XP`,
-      `Credits: +${data.reward.credits}`,
-      `Recovered Item: ${data.reward.item}`,
+      ...describeRewardBundle(data.reward),
       "",
       "Return to the command deck to save, regroup, and queue the next contract.",
     ], {

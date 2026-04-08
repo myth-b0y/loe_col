@@ -433,8 +433,9 @@ export class LogbookOverlay {
       `Objective: ${selected.objective}`,
       "",
       "Reward",
-      `+${selected.reward.xp} XP | +${selected.reward.credits} Credits`,
-      `Recovered Item: ${selected.reward.item}`,
+      `+${selected.baseXp} XP`,
+      ...selected.rewardPreview.dropLines,
+      selected.rewardPreview.salvageLine,
     ]);
     this.completedText.setText(
       inMission

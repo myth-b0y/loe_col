@@ -1,4 +1,4 @@
-import type { RewardData } from "../core/session";
+import { getMissionRewardPreview, type MissionRewardPreview } from "./loot";
 
 export type MissionDifficultyTier = "easy" | "medium" | "hard";
 export type MissionEnemyKind = "rusher" | "shooter" | "hexer";
@@ -59,7 +59,8 @@ export type MissionContractDefinition = {
   briefing: string[];
   prompt: string;
   objective: string;
-  reward: RewardData;
+  baseXp: number;
+  rewardPreview: MissionRewardPreview;
   accentColor: number;
 };
 
@@ -72,7 +73,9 @@ export type MissionDefinition = {
   briefing: string[];
   prompt: string;
   objective: string;
-  reward: RewardData;
+  seed: number;
+  baseXp: number;
+  rewardPreview: MissionRewardPreview;
   stages: MissionStage[];
 };
 
@@ -129,12 +132,8 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Stabilize the watchpost before the darkness roots deeper into the relay shell.",
     objective: "Clear the generated route, use the safe rooms well, defeat the anchor brute, and extract.",
-    reward: {
-      credits: 180,
-      xp: 150,
-      item: "Relay Core Mk I",
-      itemId: "relay-core-mk1",
-    },
+    baseXp: 150,
+    rewardPreview: getMissionRewardPreview("ember-watch", 150),
     accentColor: 0x7de6ff,
   },
   {
@@ -150,12 +149,8 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Clear the relay spine before it becomes a stable launch route for the darkness.",
     objective: "Fight through a medium-threat randomized route, break the boss room, and return with salvage.",
-    reward: {
-      credits: 230,
-      xp: 195,
-      item: "Ember Capacitor",
-      itemId: "ember-capacitor",
-    },
+    baseXp: 195,
+    rewardPreview: getMissionRewardPreview("outpost-breach", 195),
     accentColor: 0xffcb79,
   },
   {
@@ -171,12 +166,8 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Descend into the wound, hold formation under pressure, and tear out the anchor before it matures.",
     objective: "Survive a hard randomized route, endure sparse rest access, destroy the anchor, and get out.",
-    reward: {
-      credits: 320,
-      xp: 260,
-      item: "Nightglass Shard",
-      itemId: "nightglass-shard",
-    },
+    baseXp: 260,
+    rewardPreview: getMissionRewardPreview("nightglass-abyss", 260),
     accentColor: 0xc8a7ff,
   },
 ] as const;
@@ -353,7 +344,9 @@ export function createMissionDefinition(contractId: string, seed = Date.now()): 
     briefing: [...contract.briefing],
     prompt: contract.prompt,
     objective: contract.objective,
-    reward: { ...contract.reward },
+    seed,
+    baseXp: contract.baseXp,
+    rewardPreview: { ...contract.rewardPreview, dropLines: [...contract.rewardPreview.dropLines] },
     stages,
   };
 }
