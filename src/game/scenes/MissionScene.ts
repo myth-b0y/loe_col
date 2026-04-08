@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { retroSfx } from "../audio/retroSfx";
 import {
   createMissionDefinition,
   FIRST_MISSION,
@@ -45,6 +46,7 @@ type Enemy = {
   maxShield: number;
   shieldRegenDelay: number;
   shieldRegenRate: number;
+  shieldRechargeStarted: boolean;
   radius: number;
   speed: number;
   attackCooldown: number;
@@ -108,6 +110,7 @@ type CompanionState = {
   shield: number;
   maxShield: number;
   shieldDelay: number;
+  shieldRechargeStarted: boolean;
   downed: boolean;
   reviveProgress: number;
   reviveHeld: boolean;
@@ -193,6 +196,7 @@ export class MissionScene extends Phaser.Scene {
   private playerShield = 60;
   private playerMaxShield = 60;
   private playerShieldDelay = 0;
+  private playerShieldRechargeStarted = false;
   private playerInvuln = 0;
   private fireCooldown = 0;
   private pulseCooldown = 0;
@@ -347,6 +351,7 @@ export class MissionScene extends Phaser.Scene {
     this.playerShield = 60;
     this.playerMaxShield = 60;
     this.playerShieldDelay = 0;
+    this.playerShieldRechargeStarted = false;
     this.playerInvuln = 0;
     this.fireCooldown = 0;
     this.pulseCooldown = 0;
@@ -448,6 +453,7 @@ export class MissionScene extends Phaser.Scene {
         shield: companion.maxShield,
         maxShield: companion.maxShield,
         shieldDelay: 0,
+        shieldRechargeStarted: false,
         downed: false,
         reviveProgress: 0,
         reviveHeld: false,
@@ -1268,12 +1274,28 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private updateShieldStates(dt: number): void {
-    if (this.playerShield < this.playerMaxShield && this.playerShieldDelay <= 0) {
+    const playerShouldRecharge = this.playerShield < this.playerMaxShield && this.playerShieldDelay <= 0;
+    if (playerShouldRecharge && !this.playerShieldRechargeStarted) {
+      retroSfx.play("shield-recharge", { volume: 0.8 });
+      this.playerShieldRechargeStarted = true;
+    } else if (!playerShouldRecharge) {
+      this.playerShieldRechargeStarted = false;
+    }
+
+    if (playerShouldRecharge) {
       this.playerShield = Math.min(this.playerMaxShield, this.playerShield + PLAYER_SHIELD_REGEN_RATE * dt);
     }
 
     this.companions.forEach((companion) => {
-      if (!companion.downed && companion.shield < companion.maxShield && companion.shieldDelay <= 0) {
+      const shouldRecharge = !companion.downed && companion.shield < companion.maxShield && companion.shieldDelay <= 0;
+      if (shouldRecharge && !companion.shieldRechargeStarted) {
+        retroSfx.play("shield-recharge", { volume: 0.45 });
+        companion.shieldRechargeStarted = true;
+      } else if (!shouldRecharge) {
+        companion.shieldRechargeStarted = false;
+      }
+
+      if (shouldRecharge) {
         companion.shield = Math.min(companion.maxShield, companion.shield + COMPANION_SHIELD_REGEN_RATE * dt);
       }
     });
@@ -1328,6 +1350,7 @@ export class MissionScene extends Phaser.Scene {
 
     this.fireCooldown = PRIMARY_FIRE_COOLDOWN;
     const direction = this.getCombatAimDirection();
+    retroSfx.play("player-fire", { pitch: Phaser.Math.FloatBetween(0.98, 1.04), volume: 0.9 });
     this.spawnBullet(this.player.x + direction.x * 24, this.player.y + direction.y * 24, direction, 560, 12, 5, "player", 0x7ee1ff);
   }
 
@@ -1467,6 +1490,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     companion.cooldown = 2.15;
+    retroSfx.play("heal-cast", { volume: 0.8 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.5, 240);
     this.drawSupportBeam(companion.sprite.x, companion.sprite.y, healTarget.x, healTarget.y, companion.projectileColor, 210, 8);
     this.applyCompanionHeal(healTarget, 20, 12);
@@ -1478,6 +1502,7 @@ export class MissionScene extends Phaser.Scene {
   private useHealerFallbackAttack(companion: CompanionState, target: Enemy): void {
     const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
     companion.cooldown = 1.2;
+    retroSfx.play("support-bolt", { volume: 0.62, pitch: 0.98 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.34, 180);
     this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 360, 7, 4, "companion", companion.projectileColor);
   }
@@ -1489,6 +1514,7 @@ export class MissionScene extends Phaser.Scene {
 
     if (allyShieldMissing && Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, this.player.x, this.player.y) <= 148) {
       companion.cooldown = 2.35;
+      retroSfx.play("guard-pulse", { volume: 0.84 });
       const guardPulse = this.add.circle(companion.sprite.x, companion.sprite.y, 24)
         .setStrokeStyle(5, companion.projectileColor, 0.94)
         .setDepth(12);
@@ -1507,12 +1533,14 @@ export class MissionScene extends Phaser.Scene {
     if (distanceToTarget > 176) {
       companion.cooldown = 1.38;
       const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
+      retroSfx.play("guard-shot", { volume: 0.72, pitch: 0.94 });
       this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.34, 180);
       this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 320, 9, 6, "companion", companion.projectileColor);
       return;
     }
 
     companion.cooldown = 1.4;
+    retroSfx.play("shield-bash", { volume: 0.78 });
     const shieldWave = this.add.circle(companion.sprite.x, companion.sprite.y, 20)
       .setStrokeStyle(5, companion.projectileColor, 0.92)
       .setDepth(12);
@@ -1543,6 +1571,7 @@ export class MissionScene extends Phaser.Scene {
 
     const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
     companion.cooldown = 1.05;
+    retroSfx.play("melee-slash", { volume: 0.82, pitch: 0.96 });
     companion.sprite.x = Phaser.Math.Clamp(target.sprite.x - direction.x * 34, this.playArea.x + companion.radius, this.playArea.right - companion.radius);
     companion.sprite.y = Phaser.Math.Clamp(target.sprite.y - direction.y * 34, this.playArea.y + companion.radius, this.playArea.bottom - companion.radius);
     const slash = this.add.rectangle(companion.sprite.x + direction.x * 18, companion.sprite.y + direction.y * 18, 104, 18, companion.projectileColor, 0.6)
@@ -1572,6 +1601,7 @@ export class MissionScene extends Phaser.Scene {
   private useCasterAbility(companion: CompanionState, target: Enemy): void {
     const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
     companion.cooldown = 1.18;
+    retroSfx.play("caster-arc", { volume: 0.76 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.44, 220);
     this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 470, 11, 5, "companion", companion.projectileColor);
     let chainCount = 0;
@@ -1598,6 +1628,7 @@ export class MissionScene extends Phaser.Scene {
   private useDemolitionAbility(companion: CompanionState, target: Enemy): void {
     const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
     companion.cooldown = 1.5;
+    retroSfx.play("demolition-shot", { volume: 0.82 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.5, 240);
     this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 300, 15, 8, "companion", companion.projectileColor, 96, 10);
   }
@@ -1605,6 +1636,7 @@ export class MissionScene extends Phaser.Scene {
   private useRangedAbility(companion: CompanionState, target: Enemy): void {
     const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
     companion.cooldown = 0.98;
+    retroSfx.play("ranged-volley", { volume: 0.66, pitch: 1.02 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.36, 180);
     [-0.14, 0, 0.14].forEach((spread) => {
       const shotDirection = direction.clone().rotate(spread);
@@ -1791,7 +1823,18 @@ export class MissionScene extends Phaser.Scene {
       enemy.damageFlash = Math.max(0, enemy.damageFlash - dt * 6);
       enemy.shieldRegenDelay = Math.max(0, enemy.shieldRegenDelay - dt);
       enemy.stateTimer += dt;
-      if (enemy.shield < enemy.maxShield && enemy.shieldRegenDelay <= 0) {
+      const shouldRecharge = enemy.shield < enemy.maxShield && enemy.shieldRegenDelay <= 0;
+      if (shouldRecharge && !enemy.shieldRechargeStarted) {
+        retroSfx.play("shield-recharge", {
+          volume: enemy.kind === "boss" ? 0.42 : 0.24,
+          pitch: enemy.kind === "boss" ? 0.88 : 0.95,
+        });
+        enemy.shieldRechargeStarted = true;
+      } else if (!shouldRecharge) {
+        enemy.shieldRechargeStarted = false;
+      }
+
+      if (shouldRecharge) {
         enemy.shield = Math.min(enemy.maxShield, enemy.shield + enemy.shieldRegenRate * dt);
       }
 
@@ -1850,6 +1893,7 @@ export class MissionScene extends Phaser.Scene {
 
         if (enemy.attackCooldown <= 0) {
           enemy.attackCooldown = 1.2 * difficulty.enemyCooldown;
+          retroSfx.play("enemy-shot", { volume: 0.5, pitch: 0.96 });
           this.spawnBullet(
             enemy.sprite.x,
             enemy.sprite.y,
@@ -1872,6 +1916,7 @@ export class MissionScene extends Phaser.Scene {
 
         if (enemy.specialCooldown <= 0) {
           enemy.specialCooldown = (enemy.hp < enemy.maxHp * 0.5 ? 1.8 : 2.6) * difficulty.enemyCooldown;
+          retroSfx.play("boss-burst", { volume: 0.9, pitch: enemy.hp < enemy.maxHp * 0.5 ? 1.06 : 1 });
           const burstCount = enemy.hp < enemy.maxHp * 0.5 ? 10 : 8;
           for (let burst = 0; burst < burstCount; burst += 1) {
             const angle = (Math.PI * 2 * burst) / burstCount;
@@ -2196,6 +2241,7 @@ export class MissionScene extends Phaser.Scene {
       maxShield: scaledShield,
       shieldRegenDelay: 0,
       shieldRegenRate: Math.max(10, scaledShield * 0.22),
+      shieldRechargeStarted: false,
       radius: config.radius,
       speed: config.speed * Math.min(stageIntensity, 1.35) * difficulty.enemySpeed,
       attackCooldown: Phaser.Math.FloatBetween(0.45, 1.05),
@@ -2241,6 +2287,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.pulseCooldown = PULSE_COOLDOWN;
+    retroSfx.play("pulse", { volume: 1 });
     if (gameSession.settings.graphics.screenShake) {
       this.cameras.main.shake(90, 0.0015);
     }
@@ -2269,6 +2316,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.arcCooldown = ARC_COOLDOWN;
+    retroSfx.play("arc-lance", { volume: 0.96 });
     const direction = this.getCombatAimDirection();
     this.spawnCombatLight(this.player.x, this.player.y, 0xffd16a, 0.52, 180);
     const beam = this.add.rectangle(this.player.x, this.player.y, 240, 12, 0xffd16a, 0.55).setOrigin(0, 0.5).setDepth(13);
@@ -2296,6 +2344,7 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.dashCooldown = DASH_COOLDOWN;
+    retroSfx.play("dash", { volume: 0.92 });
     const direction = this.moveVector.lengthSq() > 0.01
       ? this.moveVector.clone()
       : this.keyboardVector.lengthSq() > 0.01
@@ -2325,10 +2374,15 @@ export class MissionScene extends Phaser.Scene {
       this.endAllCompanionRevives();
     }
 
+    const previousShield = this.playerShield;
     const resolved = this.applyShieldDamage(this.playerShield, amount);
     this.playerShield = resolved.shield;
     if (this.playerMaxShield > 0 && amount > 0) {
       this.playerShieldDelay = SHIELD_REGEN_DELAY;
+      this.playerShieldRechargeStarted = false;
+    }
+    if (resolved.absorbed > 0) {
+      retroSfx.play(previousShield > 0 && this.playerShield <= 0 ? "shield-break" : "shield-hit", { volume: 0.72 });
     }
     this.playerInvuln = 0.45;
     this.playerHp = Math.max(0, this.playerHp - resolved.healthDamage);
@@ -2349,10 +2403,18 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    const previousShield = enemy.shield;
     const resolved = this.applyShieldDamage(enemy.shield, amount);
     enemy.shield = resolved.shield;
     if (enemy.maxShield > 0 && amount > 0) {
       enemy.shieldRegenDelay = SHIELD_REGEN_DELAY;
+      enemy.shieldRechargeStarted = false;
+    }
+    if (resolved.absorbed > 0) {
+      retroSfx.play(previousShield > 0 && enemy.shield <= 0 ? "shield-break" : "shield-hit", {
+        volume: enemy.kind === "boss" ? 0.62 : 0.38,
+        pitch: enemy.kind === "boss" ? 0.86 : 0.96,
+      });
     }
 
     enemy.hp -= resolved.healthDamage;
@@ -2383,10 +2445,15 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.endCompanionReviveHold(companion);
+    const previousShield = companion.shield;
     const resolved = this.applyShieldDamage(companion.shield, amount);
     companion.shield = resolved.shield;
     if (companion.maxShield > 0 && amount > 0) {
       companion.shieldDelay = SHIELD_REGEN_DELAY;
+      companion.shieldRechargeStarted = false;
+    }
+    if (resolved.absorbed > 0) {
+      retroSfx.play(previousShield > 0 && companion.shield <= 0 ? "shield-break" : "shield-hit", { volume: 0.52 });
     }
     companion.hp = Math.max(0, companion.hp - resolved.healthDamage);
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, resolved.healthDamage > 0 ? 0xffb08e : 0x7de6ff, 0.4, 180);
@@ -2408,6 +2475,7 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private spawnLootBurst(x: number, y: number): void {
+    retroSfx.play("loot-burst", { volume: 0.9 });
     const colors = [0xffd67a, 0x8fe8ff, 0xc8a7ff, 0xffb27d];
     for (let index = 0; index < 9; index += 1) {
       const angle = (Math.PI * 2 * index) / 9;
@@ -2449,12 +2517,14 @@ export class MissionScene extends Phaser.Scene {
     companion.hp = fromRestRoom ? companion.maxHp : Math.ceil(companion.maxHp * 0.55);
     companion.shield = fromRestRoom ? companion.maxShield : Math.ceil(companion.maxShield * 0.45);
     companion.shieldDelay = 0.4;
+    companion.shieldRechargeStarted = false;
     companion.sprite.setFillStyle(companion.coreColor, 1);
     companion.sprite.setAlpha(1);
     companion.sprite.setVisible(true);
     companion.revivePromptText.setVisible(false);
     companion.shieldRing.setVisible(companion.shield > 0.5);
     companion.guardPlate?.setVisible(true);
+    retroSfx.play("companion-revive", { volume: fromRestRoom ? 0.46 : 0.82 });
     if (!fromRestRoom) {
       this.messageText.setText(`${companion.name} is back on their feet. Formation restored.`);
     }
@@ -3306,6 +3376,7 @@ export class MissionScene extends Phaser.Scene {
       autoFire: gameSession.settings.controls.autoFire,
       autoAimTarget: this.autoAimTarget?.kind ?? null,
       selectedTarget: this.selectedTarget?.kind ?? null,
+      sfx: retroSfx.getDebugState(),
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       touchAttackHeld: this.attackPointerId !== null,
       playerHp: this.playerHp,

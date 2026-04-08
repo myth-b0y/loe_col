@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { retroSfx } from "./audio/retroSfx";
 import { getMissionContracts } from "./content/missions";
 import { gameSession } from "./core/session";
 import { BootScene } from "./scenes/BootScene";
@@ -32,6 +33,7 @@ function resolveRendererType(): number {
 }
 
 export function createGame(parent: string): Phaser.Game {
+  retroSfx.installAutoUnlock();
   const game = new Phaser.Game({
     type: resolveRendererType(),
     parent,
@@ -62,11 +64,13 @@ export function createGame(parent: string): Phaser.Game {
       __loeGame?: Phaser.Game;
       __loeSession?: typeof gameSession;
       __loeContracts?: ReturnType<typeof getMissionContracts>;
+      __loeSfx?: typeof retroSfx;
       render_game_to_text?: () => string;
     };
     debugWindow.__loeGame = game;
     debugWindow.__loeSession = gameSession;
     debugWindow.__loeContracts = getMissionContracts();
+    debugWindow.__loeSfx = retroSfx;
     debugWindow.render_game_to_text = () => {
       const activeScene = game.scene.getScenes(true).at(-1) as
         | (Phaser.Scene & { getDebugSnapshot?: () => unknown })
@@ -75,6 +79,7 @@ export function createGame(parent: string): Phaser.Game {
       return JSON.stringify({
         activeScene: activeScene?.scene.key ?? null,
         snapshot: activeScene?.getDebugSnapshot?.() ?? null,
+        sfx: retroSfx.getDebugState(),
       });
     };
   }
