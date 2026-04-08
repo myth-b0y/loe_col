@@ -79,15 +79,15 @@ export function createLightingRig(scene: Phaser.Scene, options: LightingRigOptio
     attenuation = 0.075,
   ): AnyLight => {
     if (!supported) {
-      return scene.add.circle(x, y, radius * 0.18, color, 0.26)
+      return scene.add.circle(x, y, radius * 0.16, color, 0.16)
         .setDepth(options.lightDepth ?? 10.8)
         .setBlendMode(Phaser.BlendModes.ADD);
     }
 
     const light = scene.add.pointlight(x, y, color, radius, intensity, attenuation)
       .setDepth(options.lightDepth ?? 10.8);
-    light.alpha = 0.14;
-    light.attenuation = Math.max(0.14, attenuation * 2.2);
+    light.alpha = 0.08;
+    light.attenuation = Math.max(0.16, attenuation * 2.6);
     return light;
   };
 
@@ -115,7 +115,7 @@ export function createLightingRig(scene: Phaser.Scene, options: LightingRigOptio
         }
 
         const falloff = 1 - Phaser.Math.Clamp(distance / (source.radius * 1.35), 0, 1);
-        const alpha = Phaser.Math.Clamp((source.intensity ?? 1) * 0.32 * falloff, 0.08, 0.34);
+        const alpha = Phaser.Math.Clamp((source.intensity ?? 1) * 0.22 * falloff, 0.05, 0.22);
         shadowGraphics.fillStyle(0x000000, alpha);
         shadowGraphics.fillPoints(shadow, true);
       });
@@ -189,11 +189,11 @@ export function setAnyLightIntensity(light: AnyLight | null | undefined, intensi
 
   if (light instanceof Phaser.GameObjects.PointLight) {
     light.intensity = intensity;
-    light.alpha = Phaser.Math.Clamp(0.08 + intensity * 0.05, 0.08, 0.24);
+    light.alpha = Phaser.Math.Clamp(0.05 + intensity * 0.03, 0.05, 0.14);
     return;
   }
 
-  light.setAlpha(Phaser.Math.Clamp(0.06 + intensity * 0.08, 0.06, 0.28));
+  light.setAlpha(Phaser.Math.Clamp(0.04 + intensity * 0.05, 0.04, 0.18));
 }
 
 function buildShadowPolygon(
