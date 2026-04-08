@@ -18,6 +18,7 @@ import {
   getFormationSlot,
   type CompanionAttackStyle,
   type CompanionId,
+  type CompanionKitId,
   type FormationSlotId,
 } from "../content/companions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
@@ -103,6 +104,7 @@ type CompanionHud = {
 
 type CompanionState = {
   id: CompanionId;
+  kitId: CompanionKitId;
   name: string;
   roleLabel: string;
   abilityLabel: string;
@@ -126,6 +128,8 @@ type CompanionState = {
   slotForward: number;
   slotLateral: number;
   aggroWeight: number;
+  guardBuff: number;
+  focusBuff: number;
   sprite: Phaser.GameObjects.Arc;
   shieldRing: Phaser.GameObjects.Arc;
   guardPlate?: Phaser.GameObjects.Rectangle;
@@ -141,6 +145,11 @@ type EnemyFocusTarget = {
   radius: number;
   companion?: CompanionState;
 };
+
+type SeparationActor =
+  | { kind: "player"; radius: number }
+  | { kind: "companion"; radius: number; companion: CompanionState }
+  | { kind: "enemy"; radius: number; enemy: Enemy };
 
 const BASE_STAGE_BOUNDS = new Phaser.Geom.Rectangle(110, 174, 1500, 338);
 const BASE_REST_BOUNDS = new Phaser.Geom.Rectangle(140, 150, 820, 420);
@@ -203,6 +212,8 @@ export class MissionScene extends Phaser.Scene {
   private playerMaxShield = 60;
   private playerShieldDelay = 0;
   private playerShieldRechargeStarted = false;
+  private playerGuardBuff = 0;
+  private playerFocusBuff = 0;
   private playerInvuln = 0;
   private fireCooldown = 0;
   private pulseCooldown = 0;
@@ -323,25 +334,32 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.fireCooldown = Math.max(0, this.fireCooldown - dt);
-    this.pulseCooldown = Math.max(0, this.pulseCooldown - dt);
-    this.dashCooldown = Math.max(0, this.dashCooldown - dt);
-    this.arcCooldown = Math.max(0, this.arcCooldown - dt);
+    const playerCooldownRate = this.playerFocusBuff > 0 ? 1.28 : 1;
+    this.fireCooldown = Math.max(0, this.fireCooldown - dt * playerCooldownRate);
+    this.pulseCooldown = Math.max(0, this.pulseCooldown - dt * playerCooldownRate);
+    this.dashCooldown = Math.max(0, this.dashCooldown - dt * playerCooldownRate);
+    this.arcCooldown = Math.max(0, this.arcCooldown - dt * playerCooldownRate);
     this.playerInvuln = Math.max(0, this.playerInvuln - dt);
+    this.playerGuardBuff = Math.max(0, this.playerGuardBuff - dt);
+    this.playerFocusBuff = Math.max(0, this.playerFocusBuff - dt);
     this.playerShieldDelay = Math.max(0, this.playerShieldDelay - dt);
     this.companions.forEach((companion) => {
-      companion.cooldown = Math.max(0, companion.cooldown - dt);
+      const cooldownRate = companion.focusBuff > 0 ? 1.28 : 1;
+      companion.cooldown = Math.max(0, companion.cooldown - dt * cooldownRate);
       companion.shieldDelay = Math.max(0, companion.shieldDelay - dt);
+      companion.guardBuff = Math.max(0, companion.guardBuff - dt);
+      companion.focusBuff = Math.max(0, companion.focusBuff - dt);
     });
 
     this.updateKeyboardVector();
     this.updateMovement(dt);
-    this.updateFacing();
     this.updateShieldStates(dt);
     this.updateCompanionRevive(dt);
     this.handleFiring();
     this.updateCompanions(dt);
     this.updateEnemies(dt);
+    this.applySoftActorSeparation();
+    this.updateFacing();
     this.updateBullets(dt);
     this.updateStageState();
     this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
@@ -373,6 +391,8 @@ export class MissionScene extends Phaser.Scene {
     this.playerMaxShield = 60;
     this.playerShieldDelay = 0;
     this.playerShieldRechargeStarted = false;
+    this.playerGuardBuff = 0;
+    this.playerFocusBuff = 0;
     this.playerInvuln = 0;
     this.fireCooldown = 0;
     this.pulseCooldown = 0;
@@ -463,6 +483,7 @@ export class MissionScene extends Phaser.Scene {
 
       return {
         id: companion.id,
+        kitId: companion.kitId,
         name: companion.name,
         roleLabel: getCompanionRoleDisplay(companion),
         abilityLabel: companion.abilityLabel,
@@ -486,6 +507,8 @@ export class MissionScene extends Phaser.Scene {
         slotForward,
         slotLateral,
         aggroWeight: companion.aggroWeight,
+        guardBuff: 0,
+        focusBuff: 0,
         sprite,
         shieldRing,
         guardPlate,
@@ -870,6 +893,8 @@ export class MissionScene extends Phaser.Scene {
       if (this.pointerOverUi(pointer)) {
         return;
       }
+
+      this.ensurePointerLockForGameplay();
 
       if (pointer.rightButtonDown()) {
         this.reportDesktopInput();
@@ -1306,7 +1331,8 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (playerShouldRecharge) {
-      this.playerShield = Math.min(this.playerMaxShield, this.playerShield + PLAYER_SHIELD_REGEN_RATE * dt);
+      const playerShieldRate = PLAYER_SHIELD_REGEN_RATE * (this.playerFocusBuff > 0 ? 1.22 : 1);
+      this.playerShield = Math.min(this.playerMaxShield, this.playerShield + playerShieldRate * dt);
     }
 
     this.companions.forEach((companion) => {
@@ -1319,7 +1345,8 @@ export class MissionScene extends Phaser.Scene {
       }
 
       if (shouldRecharge) {
-        companion.shield = Math.min(companion.maxShield, companion.shield + COMPANION_SHIELD_REGEN_RATE * dt);
+        const shieldRate = COMPANION_SHIELD_REGEN_RATE * (companion.focusBuff > 0 ? 1.24 : 1);
+        companion.shield = Math.min(companion.maxShield, companion.shield + shieldRate * dt);
       }
     });
   }
@@ -1443,18 +1470,44 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      if (companion.attackStyle === "healer") {
-        if (this.useHealerAbility(companion)) {
-          return;
-        }
+      if (companion.kitId === "tide-medic") {
+        this.useTideMedicAbility(companion);
+        return;
+      }
+
+      if (companion.kitId === "astral-weaver") {
+        this.useAstralWeaverAbility(companion);
+        return;
       }
 
       if (!target) {
         return;
       }
 
+      switch (companion.kitId) {
+        case "shield-vanguard":
+          this.useShieldAbility(companion, target);
+          return;
+        case "purge-warden":
+          this.useBulwarkAbility(companion, target);
+          return;
+        case "rift-skirmisher":
+          this.useMeleeAbility(companion, target);
+          return;
+        case "covering-fire":
+          this.useRangedAbility(companion, target);
+          return;
+        default:
+          break;
+      }
+
       if (companion.attackStyle === "shield") {
         this.useShieldAbility(companion, target);
+        return;
+      }
+
+      if (companion.attackStyle === "bulwark") {
+        this.useBulwarkAbility(companion, target);
         return;
       }
 
@@ -1473,11 +1526,6 @@ export class MissionScene extends Phaser.Scene {
         return;
       }
 
-      if (companion.attackStyle === "healer") {
-        this.useHealerFallbackAttack(companion, target);
-        return;
-      }
-
       this.useRangedAbility(companion, target);
     });
   }
@@ -1485,6 +1533,10 @@ export class MissionScene extends Phaser.Scene {
   private getCompanionAttackRange(style: CompanionAttackStyle): number {
     if (style === "shield") {
       return 340;
+    }
+
+    if (style === "bulwark") {
+      return 300;
     }
 
     if (style === "melee") {
@@ -1506,7 +1558,7 @@ export class MissionScene extends Phaser.Scene {
     return 430;
   }
 
-  private useHealerAbility(companion: CompanionState): boolean {
+  private useTideMedicAbility(companion: CompanionState): boolean {
     const healTarget = this.getCompanionHealTarget(companion);
     if (!healTarget) {
       return false;
@@ -1522,12 +1574,24 @@ export class MissionScene extends Phaser.Scene {
     return true;
   }
 
-  private useHealerFallbackAttack(companion: CompanionState, target: Enemy): void {
-    const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
-    companion.cooldown = 1.2;
-    retroSfx.play("support-bolt", { volume: 0.62, pitch: 0.98 });
-    this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.34, 180);
-    this.spawnBullet(companion.sprite.x, companion.sprite.y, direction, 360, 7, 4, "companion", companion.projectileColor);
+  private useAstralWeaverAbility(companion: CompanionState): boolean {
+    const anchorTarget = this.getAstralFocusTarget(companion);
+    if (!anchorTarget) {
+      return false;
+    }
+
+    companion.cooldown = 2.4;
+    retroSfx.play("heal-cast", { volume: 0.72, pitch: 1.06 });
+    this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.44, 220);
+    this.drawSupportBeam(companion.sprite.x, companion.sprite.y, anchorTarget.x, anchorTarget.y, companion.projectileColor, 220, 6);
+    this.applyCompanionHeal(anchorTarget, 10, 16);
+    this.applyFocusBuff(anchorTarget, 3.6);
+    this.getAlliedSupportTargetsNearPoint(anchorTarget.x, anchorTarget.y, 154, anchorTarget)
+      .forEach((ally) => {
+        this.applyCompanionHeal(ally, 5, 9);
+        this.applyFocusBuff(ally, 2.9);
+      });
+    return true;
   }
 
   private useShieldAbility(companion: CompanionState, target: Enemy): void {
@@ -1586,6 +1650,67 @@ export class MissionScene extends Phaser.Scene {
     });
   }
 
+  private useBulwarkAbility(companion: CompanionState, target: Enemy): void {
+    const direction = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y);
+    const distanceToTarget = direction.length();
+    if (distanceToTarget > 0) {
+      direction.normalize();
+    } else {
+      direction.set(1, 0);
+    }
+
+    companion.cooldown = 1.95;
+    const advanceDistance = distanceToTarget > 72 ? Math.min(62, distanceToTarget - 52) : 0;
+    companion.sprite.x = Phaser.Math.Clamp(
+      companion.sprite.x + direction.x * advanceDistance,
+      this.playArea.x + companion.radius,
+      this.playArea.right - companion.radius,
+    );
+    companion.sprite.y = Phaser.Math.Clamp(
+      companion.sprite.y + direction.y * advanceDistance,
+      this.playArea.y + companion.radius,
+      this.playArea.bottom - companion.radius,
+    );
+    retroSfx.play("shield-bash", { volume: 0.8, pitch: 0.92 });
+    this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.56, 220);
+    const shockwave = this.add.circle(companion.sprite.x, companion.sprite.y, 22)
+      .setStrokeStyle(5, companion.projectileColor, 0.94)
+      .setDepth(12);
+    this.tweens.add({
+      targets: shockwave,
+      scale: 3.8,
+      alpha: 0,
+      duration: 230,
+      onComplete: () => shockwave.destroy(),
+    });
+
+    this.enemies.slice().forEach((enemy) => {
+      const distance = Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, enemy.sprite.x, enemy.sprite.y);
+      if (distance <= 126) {
+        this.damageEnemy(enemy, 17);
+        enemy.attackCooldown = Math.max(enemy.attackCooldown, 0.8);
+        enemy.chargeTimer = 0;
+      }
+    });
+
+    this.applyGuardBuff({ side: "player" }, 2.35);
+    this.companions.forEach((ally) => {
+      if (ally.downed || ally === companion) {
+        return;
+      }
+
+      if (Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, ally.sprite.x, ally.sprite.y) > 164) {
+        return;
+      }
+
+      this.applyGuardBuff({ side: "companion", companion: ally }, 2.35);
+      ally.shield = Math.min(ally.maxShield, ally.shield + 6);
+      ally.shieldDelay = Math.max(0.4, ally.shieldDelay - 0.7);
+    });
+    this.playerShield = Math.min(this.playerMaxShield, this.playerShield + 8);
+    this.playerShieldDelay = Math.max(0.4, this.playerShieldDelay - 0.7);
+  }
+
   private useMeleeAbility(companion: CompanionState, target: Enemy): void {
     const distanceToTarget = Phaser.Math.Distance.Between(companion.sprite.x, companion.sprite.y, target.sprite.x, target.sprite.y);
     if (distanceToTarget > 238) {
@@ -1610,6 +1735,8 @@ export class MissionScene extends Phaser.Scene {
     });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.48, 190);
     this.damageEnemy(target, 20);
+    target.attackCooldown = Math.max(target.attackCooldown, 0.88);
+    target.chargeTimer = 0;
     this.enemies.slice().forEach((enemy) => {
       if (enemy === target) {
         return;
@@ -1661,6 +1788,7 @@ export class MissionScene extends Phaser.Scene {
     companion.cooldown = 0.98;
     retroSfx.play("ranged-volley", { volume: 0.66, pitch: 1.02 });
     this.spawnCombatLight(companion.sprite.x, companion.sprite.y, companion.projectileColor, 0.36, 180);
+    target.attackCooldown = Math.max(target.attackCooldown, 0.7);
     [-0.14, 0, 0.14].forEach((spread) => {
       const shotDirection = direction.clone().rotate(spread);
       this.spawnBullet(companion.sprite.x, companion.sprite.y, shotDirection, 430, 5, 4, "companion", companion.projectileColor);
@@ -1695,6 +1823,49 @@ export class MissionScene extends Phaser.Scene {
         x: ally.sprite.x,
         y: ally.sprite.y,
         score: missing + (ally === companion ? 1.5 : 0),
+      });
+    });
+
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0] ?? null;
+  }
+
+  private getAstralFocusTarget(
+    companion: CompanionState,
+  ): { side: ActorSide; companion?: CompanionState; x: number; y: number; score: number } | null {
+    const candidates: Array<{ side: ActorSide; companion?: CompanionState; x: number; y: number; score: number }> = [];
+
+    const playerNeed = (this.playerFocusBuff <= 0.8 ? 8 : 0)
+      + (this.playerMaxShield - this.playerShield) * 0.45
+      + (this.playerMaxHp - this.playerHp) * 0.25;
+    if (playerNeed > 6) {
+      candidates.push({
+        side: "player",
+        x: this.player.x,
+        y: this.player.y,
+        score: playerNeed + 2,
+      });
+    }
+
+    this.companions.forEach((ally) => {
+      if (ally.downed) {
+        return;
+      }
+
+      const need = (ally.focusBuff <= 0.8 ? 7 : 0)
+        + (ally.maxShield - ally.shield) * 0.45
+        + (ally.maxHp - ally.hp) * 0.25
+        + (ally === companion ? 0.4 : 0);
+      if (need <= 5) {
+        return;
+      }
+
+      candidates.push({
+        side: "companion",
+        companion: ally,
+        x: ally.sprite.x,
+        y: ally.sprite.y,
+        score: need,
       });
     });
 
@@ -1748,6 +1919,44 @@ export class MissionScene extends Phaser.Scene {
     return results;
   }
 
+  private getAlliedSupportTargetsNearPoint(
+    x: number,
+    y: number,
+    radius: number,
+    primaryTarget?: { side: ActorSide; companion?: CompanionState },
+  ): Array<{ side: ActorSide; companion?: CompanionState; x: number; y: number; score: number }> {
+    const results: Array<{ side: ActorSide; companion?: CompanionState; x: number; y: number; score: number }> = [];
+
+    if (primaryTarget?.side !== "player" && Phaser.Math.Distance.Between(x, y, this.player.x, this.player.y) <= radius) {
+      results.push({
+        side: "player",
+        x: this.player.x,
+        y: this.player.y,
+        score: this.playerFocusBuff <= 0.8 ? 3 : 1,
+      });
+    }
+
+    this.companions.forEach((ally) => {
+      if (ally.downed || (primaryTarget?.side === "companion" && primaryTarget.companion === ally)) {
+        return;
+      }
+
+      if (Phaser.Math.Distance.Between(x, y, ally.sprite.x, ally.sprite.y) > radius) {
+        return;
+      }
+
+      results.push({
+        side: "companion",
+        companion: ally,
+        x: ally.sprite.x,
+        y: ally.sprite.y,
+        score: ally.focusBuff <= 0.8 ? 3 : 1,
+      });
+    });
+
+    return results;
+  }
+
   private applyCompanionHeal(
     target: { side: ActorSide; companion?: CompanionState; x?: number; y?: number },
     hpAmount: number,
@@ -1769,6 +1978,36 @@ export class MissionScene extends Phaser.Scene {
     target.companion.shield = Math.min(target.companion.maxShield, target.companion.shield + shieldAmount);
     target.companion.shieldDelay = Math.max(0, target.companion.shieldDelay - 0.35);
     this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0x9be8ff, 0.46, 220);
+  }
+
+  private applyGuardBuff(target: { side: ActorSide; companion?: CompanionState }, duration: number): void {
+    if (target.side === "player") {
+      this.playerGuardBuff = Math.max(this.playerGuardBuff, duration);
+      this.spawnCombatLight(this.player.x, this.player.y, 0x8ff7d1, 0.28, 160);
+      return;
+    }
+
+    if (!target.companion) {
+      return;
+    }
+
+    target.companion.guardBuff = Math.max(target.companion.guardBuff, duration);
+    this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0x8ff7d1, 0.24, 150);
+  }
+
+  private applyFocusBuff(target: { side: ActorSide; companion?: CompanionState }, duration: number): void {
+    if (target.side === "player") {
+      this.playerFocusBuff = Math.max(this.playerFocusBuff, duration);
+      this.spawnCombatLight(this.player.x, this.player.y, 0xc4a7ff, 0.26, 160);
+      return;
+    }
+
+    if (!target.companion) {
+      return;
+    }
+
+    target.companion.focusBuff = Math.max(target.companion.focusBuff, duration);
+    this.spawnCombatLight(target.companion.sprite.x, target.companion.sprite.y, 0xc4a7ff, 0.24, 150);
   }
 
   private boostNearbyAllyShields(companion: CompanionState, shieldAmount: number, hpAmount: number, radius: number): void {
@@ -2074,6 +2313,121 @@ export class MissionScene extends Phaser.Scene {
         this.bullets.splice(index, 1);
       }
     }
+  }
+
+  private applySoftActorSeparation(): void {
+    const actors: SeparationActor[] = [
+      { kind: "player", radius: 18 },
+      ...this.companions
+        .filter((companion) => companion.sprite.visible)
+        .map((companion) => ({ kind: "companion" as const, radius: companion.radius, companion })),
+      ...this.enemies.map((enemy) => ({ kind: "enemy" as const, radius: enemy.radius, enemy })),
+    ];
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (let index = 0; index < actors.length; index += 1) {
+        for (let compareIndex = index + 1; compareIndex < actors.length; compareIndex += 1) {
+          const left = actors[index];
+          const right = actors[compareIndex];
+          const leftPosition = this.getSeparationActorPosition(left);
+          const rightPosition = this.getSeparationActorPosition(right);
+          const dx = rightPosition.x - leftPosition.x;
+          const dy = rightPosition.y - leftPosition.y;
+          const distanceSq = dx * dx + dy * dy;
+          const minimumDistance = left.radius + right.radius + 6;
+          if (distanceSq >= minimumDistance * minimumDistance) {
+            continue;
+          }
+
+          const distance = Math.max(1, Math.sqrt(distanceSq));
+          const overlap = minimumDistance - distance;
+          const nx = dx / distance;
+          const ny = dy / distance;
+          const leftMobility = this.getSeparationMobility(left);
+          const rightMobility = this.getSeparationMobility(right);
+          const totalMobility = Math.max(0.001, leftMobility + rightMobility);
+          const leftPush = overlap * (leftMobility / totalMobility);
+          const rightPush = overlap * (rightMobility / totalMobility);
+
+          this.moveSeparationActor(left, -nx * leftPush, -ny * leftPush);
+          this.moveSeparationActor(right, nx * rightPush, ny * rightPush);
+        }
+      }
+    }
+
+    this.syncActorAttachmentsAfterSeparation();
+  }
+
+  private getSeparationActorPosition(actor: SeparationActor): { x: number; y: number } {
+    if (actor.kind === "player") {
+      return { x: this.player.x, y: this.player.y };
+    }
+
+    if (actor.kind === "companion") {
+      return { x: actor.companion.sprite.x, y: actor.companion.sprite.y };
+    }
+
+    return { x: actor.enemy.sprite.x, y: actor.enemy.sprite.y };
+  }
+
+  private getSeparationMobility(actor: SeparationActor): number {
+    if (actor.kind === "player") {
+      return 0.34;
+    }
+
+    if (actor.kind === "companion") {
+      if (actor.companion.downed) {
+        return 0.16;
+      }
+
+      return actor.companion.attackStyle === "shield" || actor.companion.attackStyle === "bulwark"
+        ? 0.44
+        : 0.72;
+    }
+
+    return actor.enemy.kind === "boss" ? 0.2 : 0.62;
+  }
+
+  private moveSeparationActor(actor: SeparationActor, dx: number, dy: number): void {
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+      return;
+    }
+
+    if (actor.kind === "player") {
+      this.player.x = Phaser.Math.Clamp(this.player.x + dx, this.playArea.x + 18, this.playArea.right - 18);
+      this.player.y = Phaser.Math.Clamp(this.player.y + dy, this.playArea.y + 18, this.playArea.bottom - 18);
+      return;
+    }
+
+    if (actor.kind === "companion") {
+      actor.companion.sprite.x = Phaser.Math.Clamp(
+        actor.companion.sprite.x + dx,
+        this.playArea.x + actor.companion.radius,
+        this.playArea.right - actor.companion.radius,
+      );
+      actor.companion.sprite.y = Phaser.Math.Clamp(
+        actor.companion.sprite.y + dy,
+        this.playArea.y + actor.companion.radius,
+        this.playArea.bottom - actor.companion.radius,
+      );
+      return;
+    }
+
+    actor.enemy.sprite.x = Phaser.Math.Clamp(actor.enemy.sprite.x + dx, this.playArea.x + actor.enemy.radius, this.playArea.right - actor.enemy.radius);
+    actor.enemy.sprite.y = Phaser.Math.Clamp(actor.enemy.sprite.y + dy, this.playArea.y + actor.enemy.radius, this.playArea.bottom - actor.enemy.radius);
+  }
+
+  private syncActorAttachmentsAfterSeparation(): void {
+    this.playerShieldRing.setPosition(this.player.x, this.player.y);
+    this.companions.forEach((companion) => {
+      companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
+      companion.revivePromptText.setPosition(companion.sprite.x, companion.sprite.y - 38);
+      this.updateCompanionGuardPlate(companion);
+    });
+    this.enemies.forEach((enemy) => {
+      enemy.aura.setPosition(enemy.sprite.x, enemy.sprite.y);
+      enemy.shieldRing.setPosition(enemy.sprite.x, enemy.sprite.y);
+    });
   }
 
   private updateStageState(): void {
@@ -2411,10 +2765,11 @@ export class MissionScene extends Phaser.Scene {
       this.endAllCompanionRevives();
     }
 
+    const guardedAmount = this.playerGuardBuff > 0 ? Math.max(1, Math.round(amount * 0.72)) : amount;
     const previousShield = this.playerShield;
-    const resolved = this.applyShieldDamage(this.playerShield, amount);
+    const resolved = this.applyShieldDamage(this.playerShield, guardedAmount);
     this.playerShield = resolved.shield;
-    if (this.playerMaxShield > 0 && amount > 0) {
+    if (this.playerMaxShield > 0 && guardedAmount > 0) {
       this.playerShieldDelay = SHIELD_REGEN_DELAY;
       this.playerShieldRechargeStarted = false;
     }
@@ -2482,10 +2837,11 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.endCompanionReviveHold(companion);
+    const guardedAmount = companion.guardBuff > 0 ? Math.max(1, Math.round(amount * 0.72)) : amount;
     const previousShield = companion.shield;
-    const resolved = this.applyShieldDamage(companion.shield, amount);
+    const resolved = this.applyShieldDamage(companion.shield, guardedAmount);
     companion.shield = resolved.shield;
-    if (companion.maxShield > 0 && amount > 0) {
+    if (companion.maxShield > 0 && guardedAmount > 0) {
       companion.shieldDelay = SHIELD_REGEN_DELAY;
       companion.shieldRechargeStarted = false;
     }
@@ -2733,7 +3089,9 @@ export class MissionScene extends Phaser.Scene {
           ? this.canReviveCompanion(companion)
             ? `${companion.name} | Hold ${this.touchMode ? "Revive" : "F"} ${Math.max(0, COMPANION_REVIVE_HOLD_TIME - companion.reviveProgress).toFixed(1)}s`
             : `${companion.name} | Downed - Move Close`
-          : `${companion.name} | ${companion.abilityLabel} ${companion.cooldown <= 0 ? "Ready" : `${companion.cooldown.toFixed(1)}s`}`;
+          : `${companion.name} | ${companion.abilityLabel} ${companion.cooldown <= 0 ? "Ready" : `${companion.cooldown.toFixed(1)}s`}${
+            companion.guardBuff > 0.2 ? " | Guarded" : companion.focusBuff > 0.2 ? " | Focused" : ""
+          }`;
       this.setTextIfChanged(companion.hud.stateText, stateLabel);
       companion.shieldRing.setVisible(companion.downed || (this.canCompanionBeTargeted(companion) && companion.shield > 0.5));
     });
@@ -2887,11 +3245,28 @@ export class MissionScene extends Phaser.Scene {
     if (this.logbookOverlay?.isVisible()) {
       this.logbookOverlay.hide();
     }
+
+    if (typeof document !== "undefined" && document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+
     this.scene.launch("pause", {
       returnSceneKey: "mission",
       allowSave: false,
     });
     this.scene.pause();
+  }
+
+  private ensurePointerLockForGameplay(): void {
+    if (typeof document === "undefined" || this.touchMode || !document.fullscreenElement) {
+      return;
+    }
+
+    if (document.pointerLockElement === this.game.canvas) {
+      return;
+    }
+
+    this.game.canvas.requestPointerLock?.();
   }
 
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
@@ -3082,6 +3457,12 @@ export class MissionScene extends Phaser.Scene {
         : normalizedForward.clone();
       anchor.add(guardDirection.scale(target ? 36 : 18));
       anchor.add(perpendicular.clone().scale(companion.slotLateral >= 0 ? 8 : -8));
+    } else if (companion.attackStyle === "bulwark") {
+      const guardDirection = target
+        ? new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize()
+        : normalizedForward.clone();
+      anchor.add(guardDirection.scale(target ? 30 : 16));
+      anchor.add(perpendicular.clone().scale(Math.sin(this.time.now / 220 + motionSeed) * 8));
     } else if (companion.attackStyle === "melee" && target) {
       const lungeDirection = new Phaser.Math.Vector2(target.sprite.x - companion.sprite.x, target.sprite.y - companion.sprite.y).normalize();
       anchor.add(lungeDirection.scale(34));

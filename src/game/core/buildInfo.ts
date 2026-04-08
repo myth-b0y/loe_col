@@ -1,3 +1,3 @@
 export const GAME_CODE = "loe_col";
-export const GAME_VERSION = "v0.0.34";
-export const GAME_MILESTONE = "performance cleanup and datapad routing polish";
+export const GAME_VERSION = "v0.0.35";
+export const GAME_MILESTONE = "companion role pass and deploy/fullscreen qol";

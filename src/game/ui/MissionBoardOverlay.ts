@@ -172,7 +172,7 @@ export class MissionBoardOverlay {
       width: 180,
       label: "Accept All",
       onClick: () => {
-        gameSession.acceptAllMissions(contracts.map((contract) => contract.id));
+        gameSession.acceptAllMissions(this.getAvailableContracts().map((contract) => contract.id));
         this.refresh();
       },
       depth: 62,
@@ -241,8 +241,14 @@ export class MissionBoardOverlay {
     this.refresh();
   }
 
+  private getAvailableContracts(): MissionContractDefinition[] {
+    return getMissionContracts().filter((contract) =>
+      gameSession.isMissionUnlocked(contract.id) && !gameSession.isMissionCompleted(contract.id),
+    );
+  }
+
   private syncSelection(): void {
-    const contracts = getMissionContracts();
+    const contracts = this.getAvailableContracts();
     if (contracts.some((contract) => contract.id === this.selectedMissionId)) {
       return;
     }
@@ -254,7 +260,7 @@ export class MissionBoardOverlay {
   }
 
   private refresh(): void {
-    const contracts = getMissionContracts();
+    const contracts = this.getAvailableContracts();
     this.syncSelection();
     const selected = contracts.find((contract) => contract.id === this.selectedMissionId) ?? contracts[0];
     const acceptedMissionIds = gameSession.getAcceptedMissionIds();
@@ -265,20 +271,41 @@ export class MissionBoardOverlay {
 
     this.subtitle.setText("Review the current contracts, accept one or all of them, then use the Data Pad to choose which queued route becomes your active deployment.");
     this.statusText.setText(
-      acceptedMissionIds.length > 0
-        ? `${acceptedMissionIds.length} contract${acceptedMissionIds.length === 1 ? "" : "s"} queued. Active contract: ${selectedContract?.title ?? "none selected yet"}.`
-        : "No contracts queued yet. Accept a route to make it available in the Data Pad and at the deploy door.",
+      contracts.length === 0
+        ? "All current story contracts have been cleared. Check the Data Pad archive while we line up the next routes."
+        : acceptedMissionIds.length > 0
+          ? `${acceptedMissionIds.length} contract${acceptedMissionIds.length === 1 ? "" : "s"} queued. Active contract: ${selectedContract?.title ?? "none selected yet"}.`
+          : "No contracts queued yet. Accept a route to make it available in the Data Pad and at the deploy door.",
     );
 
     this.cards.forEach((card) => {
       const contract = contracts.find((entry) => entry.id === card.contractId);
       if (!contract) {
+        card.frame.setVisible(false);
+        card.badge.setVisible(false);
+        card.title.setVisible(false);
+        card.location.setVisible(false);
+        card.status.setVisible(false);
+        card.action.container.setVisible(false);
         return;
       }
 
+      card.frame.setVisible(true);
+      card.badge.setVisible(true);
+      card.title.setVisible(true);
+      card.location.setVisible(true);
+      card.status.setVisible(true);
+      card.action.container.setVisible(true);
+      const visibleIndex = contracts.findIndex((entry) => entry.id === card.contractId);
+      const y = 226 + visibleIndex * 148;
+      card.frame.setPosition(338, y);
+      card.badge.setPosition(182, y - 42);
+      card.title.setPosition(182, y - 10);
+      card.location.setPosition(182, y + 20);
+      card.status.setPosition(182, y + 46);
+      card.action.container.setPosition(456, y);
       const isSelected = selected?.id === card.contractId;
       const isAccepted = acceptedMissionIds.includes(card.contractId);
-      const isCompleted = gameSession.isMissionCompleted(card.contractId);
       card.frame.setFillStyle(isSelected ? 0x122334 : 0x0c1725, 0.98);
       card.frame.setStrokeStyle(2, isSelected ? contract.accentColor : 0x37577e, isSelected ? 0.98 : 0.78);
       card.status.setText(
@@ -286,18 +313,21 @@ export class MissionBoardOverlay {
           ? selectedMissionId === card.contractId
             ? "Queued | Active in Data Pad"
             : "Queued"
-          : isCompleted
-            ? "Previously cleared"
-            : "Ready to accept",
+          : "Ready to accept",
       );
       card.action.setLabel(isAccepted ? "Queued" : "Accept");
       card.action.setEnabled(!isAccepted);
     });
 
     if (!selected) {
-      this.detailTitle.setText("No Contract Selected");
-      this.detailBody.setText("Pick a contract card from the left rail.");
+      this.detailTitle.setText(contracts.length === 0 ? "Terminal Clear" : "No Contract Selected");
+      this.detailBody.setText(
+        contracts.length === 0
+          ? "Every currently unlocked story contract has been cleared. Completed routes now live in the Data Pad archive instead of staying on the terminal."
+          : "Pick a contract card from the left rail.",
+      );
       this.detailReward.setText("");
+      this.acceptAllButton.setEnabled(false);
       return;
     }
 
@@ -309,8 +339,8 @@ export class MissionBoardOverlay {
       "",
       `Objective: ${selected.objective}`,
       "",
-      `Dispatch Notes:`,
-      ...selected.briefing,
+      "Dispatch Notes",
+      selected.briefing[0] ?? "",
     ]);
     this.detailReward.setText([
       `Reward Projection`,
@@ -330,9 +360,9 @@ export class MissionBoardOverlay {
     this.acceptAllButton.setInputEnabled(enabled);
     this.closeButton.setInputEnabled(enabled);
     this.cards.forEach((card) => {
-      card.action.setInputEnabled(enabled);
+      card.action.setInputEnabled(enabled && card.action.container.visible);
       if (card.frame.input) {
-        card.frame.input.enabled = enabled;
+        card.frame.input.enabled = enabled && card.frame.visible;
       }
     });
   }

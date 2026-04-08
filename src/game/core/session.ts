@@ -523,6 +523,10 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return [...this.saveData.progression.completedMissionIds];
   }
 
+  isMissionUnlocked(missionId: string): boolean {
+    return this.saveData.progression.unlockedMissionIds.includes(missionId);
+  }
+
   isMissionAccepted(missionId: string): boolean {
     return this.saveData.missions.acceptedMissionIds.includes(missionId);
   }
@@ -532,7 +536,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   acceptMission(missionId: string): void {
-    if (!this.saveData.progression.unlockedMissionIds.includes(missionId)) {
+    if (!this.isMissionUnlocked(missionId) || this.isMissionCompleted(missionId)) {
       return;
     }
 
@@ -547,7 +551,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   acceptAllMissions(missionIds: string[]): void {
     const accepted = new Set(this.saveData.missions.acceptedMissionIds);
     missionIds.forEach((missionId) => {
-      if (this.saveData.progression.unlockedMissionIds.includes(missionId)) {
+      if (this.isMissionUnlocked(missionId) && !this.isMissionCompleted(missionId)) {
         accepted.add(missionId);
       }
     });

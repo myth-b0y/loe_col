@@ -444,7 +444,7 @@ export class LogbookOverlay {
             ? "This contract is the current deployment target for the ship door."
             : "Queued contract. Set it active here if you want the ship door to launch it next."
           : completed
-            ? "Archived clear. Completed missions stay here for review and can be accepted again from the mission terminal."
+            ? "Archived clear. Completed story missions stay here for review instead of remaining on the mission terminal."
             : "This route is not currently queued.",
     );
 

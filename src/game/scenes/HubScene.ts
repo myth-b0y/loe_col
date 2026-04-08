@@ -68,6 +68,8 @@ type DeployRosterCard = {
   title: Phaser.GameObjects.Text;
   detail: Phaser.GameObjects.Text;
   slotText: Phaser.GameObjects.Text;
+  infoButton: Phaser.GameObjects.Rectangle;
+  infoLabel: Phaser.GameObjects.Text;
 };
 
 type FormationSlotUi = {
@@ -142,10 +144,15 @@ export class HubScene extends Phaser.Scene {
   private deployLaunchButton?: MenuButton;
   private deployCloseButton?: MenuButton;
   private deployClearButton?: MenuButton;
+  private deployInfoDismissLayer?: Phaser.GameObjects.Rectangle;
+  private deployInfoPanel?: Phaser.GameObjects.Container;
+  private deployInfoTitle?: Phaser.GameObjects.Text;
+  private deployInfoBody?: Phaser.GameObjects.Text;
   private deployRosterCards: DeployRosterCard[] = [];
   private deploySlotUis: FormationSlotUi[] = [];
   private selectedDeployCompanionId: CompanionId | null = null;
   private hoveredDeployCompanionId: CompanionId | null = null;
+  private deployInfoCompanionId: CompanionId | null = null;
   private promptText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private rewardText?: Phaser.GameObjects.Text;
@@ -560,7 +567,14 @@ export class HubScene extends Phaser.Scene {
       .setDepth(40)
       .setVisible(false)
       .setInteractive();
-    backdrop.on("pointerdown", () => this.closeDeployOverlay());
+    backdrop.on("pointerdown", () => {
+      if (this.deployInfoCompanionId) {
+        this.hideDeployInfo();
+        return;
+      }
+
+      this.closeDeployOverlay();
+    });
 
     const shadow = this.add.rectangle(640, 360, 1144, 638, 0x000000, 0.36)
       .setDepth(41);
@@ -670,6 +684,30 @@ export class HubScene extends Phaser.Scene {
         align: "center",
         wordWrap: { width: cardWidth - 18 },
       }).setOrigin(0.5, 0).setDepth(45);
+      const infoButton = this.add.rectangle(cardWidth / 2 - 16, -cardHeight / 2 + 18, 24, 24, 0x102133, 0.96)
+        .setStrokeStyle(2, companion.trimColor, 0.5)
+        .setDepth(45)
+        .setInteractive({ useHandCursor: true });
+      const infoLabel = this.add.text(infoButton.x, infoButton.y - 1, "I", {
+        fontFamily: "Arial",
+        fontSize: "14px",
+        color: "#f7fbff",
+        fontStyle: "bold",
+      }).setOrigin(0.5).setDepth(46);
+
+      infoButton.on("pointerdown", (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+        event.stopPropagation();
+        this.toggleDeployInfo(companion.id);
+      });
+      infoButton.on("pointerover", () => {
+        infoButton.setFillStyle(0x183049, 0.98);
+        infoButton.setStrokeStyle(2, companion.trimColor, 0.8);
+      });
+      infoButton.on("pointerout", () => {
+        const active = this.deployInfoCompanionId === companion.id;
+        infoButton.setFillStyle(active ? 0x183049 : 0x102133, 0.96);
+        infoButton.setStrokeStyle(2, companion.trimColor, active ? 0.88 : 0.5);
+      });
 
       frame.on("pointerdown", () => this.handleDeployRosterSelect(companion.id));
       frame.on("pointerover", () => {
@@ -694,6 +732,8 @@ export class HubScene extends Phaser.Scene {
         titleText,
         detail,
         slotText,
+        infoButton,
+        infoLabel,
       ]).setDepth(42);
 
       return {
@@ -711,6 +751,8 @@ export class HubScene extends Phaser.Scene {
         title: titleText,
         detail,
         slotText,
+        infoButton,
+        infoLabel,
       };
     });
 
@@ -773,6 +815,39 @@ export class HubScene extends Phaser.Scene {
       wordWrap: { width: 470 },
     }).setDepth(42);
 
+    this.deployInfoDismissLayer = this.add.rectangle(640, 360, 1086, 580, 0x01040b, 0.001)
+      .setDepth(44)
+      .setVisible(false)
+      .setInteractive();
+    this.deployInfoDismissLayer.on("pointerdown", () => this.hideDeployInfo());
+
+    const infoPanelFrame = this.add.rectangle(894, 396, 356, 286, 0x07111b, 0.985)
+      .setDepth(45)
+      .setStrokeStyle(2, 0x78a8df, 0.82);
+    const infoPanelInset = this.add.rectangle(894, 396, 332, 260, 0x0b1622, 0.98)
+      .setDepth(45)
+      .setStrokeStyle(1, 0x223852, 0.72);
+    this.deployInfoTitle = this.add.text(736, 276, "", {
+      fontFamily: "Arial",
+      fontSize: "22px",
+      color: "#f7fbff",
+      fontStyle: "bold",
+      wordWrap: { width: 308 },
+    }).setDepth(46);
+    this.deployInfoBody = this.add.text(736, 330, "", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#d0e2fa",
+      lineSpacing: 6,
+      wordWrap: { width: 308 },
+    }).setDepth(46);
+    this.deployInfoPanel = this.add.container(0, 0, [
+      infoPanelFrame,
+      infoPanelInset,
+      this.deployInfoTitle,
+      this.deployInfoBody,
+    ]).setDepth(45).setVisible(false);
+
     this.deployCloseButton = createMenuButton({
       scene: this,
       x: 982,
@@ -830,6 +905,8 @@ export class HubScene extends Phaser.Scene {
       this.deployLaunchButton.container,
       ...rosterCards.flatMap((card) => [card.container]),
       ...slotUis.flatMap((slotUi) => [slotUi.circle, slotUi.label, slotUi.occupantText]),
+      this.deployInfoDismissLayer,
+      this.deployInfoPanel,
     ]).setDepth(40).setVisible(false);
 
     this.deployRosterCards = rosterCards;
@@ -1147,6 +1224,7 @@ export class HubScene extends Phaser.Scene {
     this.closeCommandOverlays();
     this.selectedDeployCompanionId = null;
     this.hoveredDeployCompanionId = null;
+    this.hideDeployInfo();
     this.deployOverlay?.setVisible(true);
     this.refreshDeployOverlay("Choose your squad and formation before launch.");
     this.syncSceneOverlayChrome();
@@ -1156,7 +1234,53 @@ export class HubScene extends Phaser.Scene {
     this.deployOverlay?.setVisible(false);
     this.selectedDeployCompanionId = null;
     this.hoveredDeployCompanionId = null;
+    this.hideDeployInfo();
     this.syncSceneOverlayChrome();
+  }
+
+  private toggleDeployInfo(companionId: CompanionId): void {
+    if (this.deployInfoCompanionId === companionId) {
+      this.hideDeployInfo();
+      return;
+    }
+
+    this.deployInfoCompanionId = companionId;
+    this.refreshDeployInfo();
+    this.refreshDeployOverlay();
+  }
+
+  private hideDeployInfo(): void {
+    this.deployInfoCompanionId = null;
+    this.refreshDeployInfo();
+    if (this.deployOverlay?.visible) {
+      this.refreshDeployOverlay();
+    }
+  }
+
+  private refreshDeployInfo(): void {
+    const companion = this.deployInfoCompanionId ? getCompanionDefinition(this.deployInfoCompanionId) : undefined;
+    const visible = Boolean(companion);
+    this.deployInfoDismissLayer?.setVisible(visible);
+    this.deployInfoPanel?.setVisible(visible);
+
+    if (!companion || !this.deployInfoTitle || !this.deployInfoBody) {
+      return;
+    }
+
+    this.deployInfoTitle.setText(`${companion.name}\n${getCompanionRoleDisplay(companion)}`);
+    this.deployInfoBody.setText([
+      companion.bio,
+      "",
+      "Attack",
+      companion.attackSummary,
+      "",
+      "Ability",
+      `${companion.abilityLabel}: ${companion.abilitySummary}`,
+      "",
+      "Loadout",
+      `${companion.primaryGear}`,
+      `${companion.supportGear}`,
+    ]);
   }
 
   private refreshDeployOverlay(statusMessage?: string): void {
@@ -1199,6 +1323,10 @@ export class HubScene extends Phaser.Scene {
       card.detail.setText(getCompanionRoleDisplay(card.companion));
       card.slotText.setColor(selected ? "#f4fbff" : assigned ? "#cfe4ff" : hovered ? "#bdd8f8" : "#7d90a8");
       card.slotText.setText(assigned ? `Assigned: ${slotLabel}` : selected ? "Choose a slot" : "Unassigned");
+      const infoActive = this.deployInfoCompanionId === card.companionId;
+      card.infoButton.setFillStyle(infoActive ? 0x183049 : 0x102133, 0.96);
+      card.infoButton.setStrokeStyle(2, card.companion.trimColor, infoActive ? 0.88 : hovered || selected ? 0.72 : 0.5);
+      card.infoLabel.setColor(infoActive ? "#ffffff" : "#dce8f8");
     });
 
     this.deploySlotUis.forEach((slotUi) => {
