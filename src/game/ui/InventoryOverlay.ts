@@ -8,6 +8,7 @@ import {
   getItemColor,
   getItemName,
   getItemShortLabel,
+  summarizeCombatProfile,
   type CraftingMaterials,
   type EquipmentLoadout,
   type EquipmentSlotId,
@@ -25,6 +26,7 @@ export type InventoryOverlaySnapshot = {
   cargo: Array<InventoryItem | null>;
   materials: CraftingMaterials;
   currencyLines?: string[];
+  statLines?: string[];
 };
 
 type InventoryOverlayOptions = {
@@ -65,6 +67,7 @@ export class InventoryOverlay {
   private readonly subtitle: Phaser.GameObjects.Text;
   private readonly statusText: Phaser.GameObjects.Text;
   private readonly currencyText: Phaser.GameObjects.Text;
+  private readonly statsText: Phaser.GameObjects.Text;
   private readonly characterWell: Phaser.GameObjects.Rectangle;
   private readonly characterRing: Phaser.GameObjects.Ellipse;
   private readonly equipmentSlots: EquipmentSlotUi[];
@@ -81,7 +84,7 @@ export class InventoryOverlay {
       .setDepth(PANEL_DEPTH)
       .setInteractive();
 
-    const panel = scene.add.rectangle(640, 360, 1120, 630, 0x08111b, 0.985)
+    const panel = scene.add.rectangle(640, 360, 1120, 670, 0x08111b, 0.985)
       .setDepth(PANEL_DEPTH + 1)
       .setStrokeStyle(2, FRAME_COLOR, FRAME_ALPHA);
 
@@ -91,10 +94,10 @@ export class InventoryOverlay {
     const characterSection = scene.add.rectangle(796, 310, 500, 286, SECTION_FILL, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setStrokeStyle(2, FRAME_COLOR, 0.66);
-    const cargoSection = scene.add.rectangle(640, 555, 1040, 168, SECTION_FILL, 0.98)
+    const cargoSection = scene.add.rectangle(640, 570, 1040, 156, SECTION_FILL, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setStrokeStyle(2, FRAME_COLOR, 0.66);
-    const footerBar = scene.add.rectangle(640, 651, 1040, 64, 0x091724, 0.98)
+    const footerBar = scene.add.rectangle(640, 674, 1040, 38, 0x091724, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setStrokeStyle(2, FRAME_COLOR, 0.54);
 
@@ -140,21 +143,34 @@ export class InventoryOverlay {
       fontStyle: "bold",
     }).setDepth(PANEL_DEPTH + 2);
 
-    this.characterWell = scene.add.rectangle(796, 310, 430, 238, 0x0a1520, 0.98)
+    this.characterWell = scene.add.rectangle(796, 294, 430, 206, 0x0a1520, 0.98)
       .setDepth(PANEL_DEPTH + 2)
       .setStrokeStyle(2, FRAME_COLOR, 0.44);
-    const characterBeam = scene.add.triangle(796, 256, 0, 138, 164, 138, 82, 0, 0x64a8ff, 0.12)
+    const characterBeam = scene.add.triangle(796, 246, 0, 138, 164, 138, 82, 0, 0x64a8ff, 0.12)
       .setDepth(PANEL_DEPTH + 2)
       .setAngle(180);
-    const characterHead = scene.add.circle(796, 278, 34, 0x10314f, 0.3)
+    const characterHead = scene.add.circle(796, 266, 34, 0x10314f, 0.3)
       .setDepth(PANEL_DEPTH + 3)
       .setStrokeStyle(4, 0xb7d5ff, 0.38);
-    const characterTorso = scene.add.rectangle(796, 356, 104, 132, 0x102842, 0.2)
+    const characterTorso = scene.add.rectangle(796, 334, 104, 126, 0x102842, 0.2)
       .setDepth(PANEL_DEPTH + 3)
       .setStrokeStyle(4, 0xb7d5ff, 0.38);
-    this.characterRing = scene.add.ellipse(796, 412, 116, 38, 0x4c9dff, 0.12)
+    this.characterRing = scene.add.ellipse(796, 388, 116, 38, 0x4c9dff, 0.12)
       .setDepth(PANEL_DEPTH + 2)
       .setStrokeStyle(2, 0x5ba8ff, 0.46);
+    const combatHeader = scene.add.text(548, 392, "Combat Readout", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#9ebce0",
+      fontStyle: "bold",
+    }).setDepth(PANEL_DEPTH + 2);
+    this.statsText = scene.add.text(548, 408, "", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#e2eefc",
+      lineSpacing: 2,
+      wordWrap: { width: 420 },
+    }).setDepth(PANEL_DEPTH + 2);
 
     const slotPositions: Record<EquipmentSlotId, { x: number; y: number; width: number; height: number }> = {
       head: { x: 176, y: 238, width: 106, height: 56 },
@@ -164,9 +180,9 @@ export class InventoryOverlay {
       belt: { x: 238, y: 398, width: 228, height: 56 },
       leftHand: { x: 176, y: 478, width: 106, height: 56 },
       rightHand: { x: 300, y: 478, width: 106, height: 56 },
-      accessory1: { x: 696, y: 468, width: 90, height: 46 },
-      accessory2: { x: 796, y: 468, width: 90, height: 46 },
-      accessory3: { x: 896, y: 468, width: 90, height: 46 },
+      accessory1: { x: 696, y: 480, width: 90, height: 46 },
+      accessory2: { x: 796, y: 480, width: 90, height: 46 },
+      accessory3: { x: 896, y: 480, width: 90, height: 46 },
     };
 
     this.equipmentSlots = EQUIPMENT_SLOTS.map((slot) => {
@@ -195,7 +211,7 @@ export class InventoryOverlay {
       return { slotId: slot.id, frame, slotLabel, itemLabel };
     });
 
-    const cargoHeader = scene.add.text(118, 494, "Cargo", {
+    const cargoHeader = scene.add.text(118, 502, "Cargo", {
       fontFamily: "Arial",
       fontSize: "20px",
       color: "#eef6ff",
@@ -206,8 +222,8 @@ export class InventoryOverlay {
       const column = index % 10;
       const row = Math.floor(index / 10);
       const x = 170 + column * 96;
-      const y = 560 + row * 74;
-      const frame = scene.add.rectangle(x, y, 72, 72, SLOT_FILL, 0.98)
+      const y = 554 + row * 68;
+      const frame = scene.add.rectangle(x, y, 64, 64, SLOT_FILL, 0.98)
         .setDepth(PANEL_DEPTH + 2)
         .setStrokeStyle(2, FRAME_COLOR, 0.62)
         .setInteractive({ useHandCursor: true });
@@ -217,9 +233,9 @@ export class InventoryOverlay {
         color: "#f5fbff",
         fontStyle: "bold",
         align: "center",
-        wordWrap: { width: 58 },
+        wordWrap: { width: 50 },
       }).setOrigin(0.5).setDepth(PANEL_DEPTH + 3);
-      const hotkeyLabel = scene.add.text(x - 30, y - 31, `${index + 1}`, {
+      const hotkeyLabel = scene.add.text(x - 26, y - 27, `${index + 1}`, {
         fontFamily: "Arial",
         fontSize: "10px",
         color: "#6f88a7",
@@ -231,16 +247,16 @@ export class InventoryOverlay {
       return { index, frame, itemLabel, hotkeyLabel };
     });
 
-    this.statusText = scene.add.text(120, 632, "No item selected.", {
+    this.statusText = scene.add.text(120, 661, "No item selected.", {
       fontFamily: "Arial",
-      fontSize: "14px",
+      fontSize: "13px",
       color: "#9eb7d7",
-      wordWrap: { width: 640 },
+      wordWrap: { width: 700 },
     }).setDepth(PANEL_DEPTH + 2);
 
-    this.currencyText = scene.add.text(1080, 630, "", {
+    this.currencyText = scene.add.text(1080, 657, "", {
       fontFamily: "Arial",
-      fontSize: "15px",
+      fontSize: "14px",
       color: "#d9e9fb",
       fontStyle: "bold",
       align: "right",
@@ -266,6 +282,8 @@ export class InventoryOverlay {
       characterHead,
       characterTorso,
       this.characterRing,
+      combatHeader,
+      this.statsText,
       cargoHeader,
       ...this.equipmentSlots.flatMap((slot) => [slot.frame, slot.slotLabel, slot.itemLabel]),
       ...this.cargoCells.flatMap((cell) => [cell.frame, cell.itemLabel, cell.hotkeyLabel]),
@@ -315,6 +333,7 @@ export class InventoryOverlay {
       `Credits: ${gameSession.saveData.profile.credits}`,
       materialSummary.length > 0 ? materialSummary.join(" | ") : "No crafting salvage",
     ]).join("\n"));
+    this.statsText.setText((this.currentSnapshot.statLines ?? summarizeCombatProfile(gameSession.getPlayerCombatProfile())).join("\n"));
 
     this.equipmentSlots.forEach((slot) => {
       const item = equipment[slot.slotId];
@@ -421,6 +440,7 @@ export class InventoryOverlay {
       cargo: gameSession.getCargoSlots(),
       materials: gameSession.getCraftingMaterials(),
       allowEquip: true,
+      statLines: summarizeCombatProfile(gameSession.getPlayerCombatProfile()),
     };
   }
 

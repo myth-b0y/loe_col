@@ -198,7 +198,13 @@ export class HubScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.drawBackdrop();
-    this.brightnessLayer = createBrightnessLayer(this);
+    this.brightnessLayer = createBrightnessLayer(this, {
+      ambientAlpha: 0.08,
+      tintColor: 0x03101a,
+      tintAlpha: 0.12,
+      edgeShadeAlpha: 0.12,
+      edgeThickness: 72,
+    });
     this.createActors();
     this.createStations();
     this.createHud();
@@ -233,7 +239,7 @@ export class HubScene extends Phaser.Scene {
   }
 
   private drawBackdrop(): void {
-    this.add.rectangle(640, 360, 1280, 720, 0x070d16).setDepth(-14);
+    this.add.rectangle(640, 360, 1280, 720, 0x04080f).setDepth(-14);
 
     const stars = this.add.graphics().setDepth(-13);
     stars.fillStyle(0xc8ddff, 0.92);
@@ -253,7 +259,7 @@ export class HubScene extends Phaser.Scene {
     this.add.rectangle(640, 64, 1144, 60, 0x10192a, 0.96)
       .setStrokeStyle(2, 0x4a6f9b, 0.82);
 
-    this.add.rectangle(HUB_ROOM.centerX, HUB_ROOM.centerY, HUB_ROOM.width, HUB_ROOM.height, 0x111e31, 0.98)
+    this.add.rectangle(HUB_ROOM.centerX, HUB_ROOM.centerY, HUB_ROOM.width, HUB_ROOM.height, 0x0c1625, 0.98)
       .setStrokeStyle(4, 0x6f9fd7, 0.82)
       .setDepth(-8);
 
@@ -282,7 +288,9 @@ export class HubScene extends Phaser.Scene {
       color: "#aecded",
     }).setOrigin(0.5).setDepth(-5);
 
-    this.airlockGlow = this.add.rectangle(1120, HUB_ROOM.centerY, 84, 166, 0x4abfff, 0.1).setDepth(4);
+    this.airlockGlow = this.add.rectangle(1120, HUB_ROOM.centerY, 84, 166, 0x4abfff, 0.16)
+      .setDepth(4)
+      .setBlendMode(Phaser.BlendModes.ADD);
     this.airlockDoor = this.add.rectangle(1120, HUB_ROOM.centerY, 60, 148, 0x173b5d, 0.92)
       .setStrokeStyle(3, 0x7ec4ff, 0.62)
       .setDepth(5)
@@ -367,7 +375,9 @@ export class HubScene extends Phaser.Scene {
       : id === "loadout"
         ? 0xffd36d
         : 0x8dc8ff;
-    const glow = this.add.ellipse(x, y + height * 0.1, width * 0.92, height * 0.5, accent, 0.08).setDepth(4);
+    const glow = this.add.ellipse(x, y + height * 0.1, width * 0.92, height * 0.5, accent, 0.12)
+      .setDepth(4)
+      .setBlendMode(Phaser.BlendModes.ADD);
     const shadow = this.add.ellipse(x, y + height * 0.34, width * 0.9, 18, 0x000000, 0.24).setDepth(4);
     const zone = this.add.rectangle(x, y, width, height, 0x17314f, 0.84)
       .setStrokeStyle(3, accent, 0.72)
@@ -1478,8 +1488,10 @@ export class HubScene extends Phaser.Scene {
       reward.materials.shardDust > 0,
       reward.materials.filament > 0,
     ].filter(Boolean).length;
+    const prefix = reward.xp > 0 ? "Mission reward" : "Recovered on extraction";
+    const xpSegment = reward.xp > 0 ? `+${reward.xp} XP | ` : "";
     this.rewardText.setText(
-      `Mission reward: +${reward.xp} XP | +${reward.credits} credits | ${reward.items.length} gear drop${reward.items.length === 1 ? "" : "s"} | ${materialCount} salvage bundle${materialCount === 1 ? "" : "s"}`,
+      `${prefix}: ${xpSegment}+${reward.credits} credits | ${reward.items.length} gear drop${reward.items.length === 1 ? "" : "s"} | ${materialCount} salvage bundle${materialCount === 1 ? "" : "s"}`,
     );
     this.rewardText.setVisible(true);
 

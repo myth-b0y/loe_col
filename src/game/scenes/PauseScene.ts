@@ -185,11 +185,16 @@ export class PauseScene extends Phaser.Scene {
   }
 
   private abandonMission(): void {
-    const missionId = gameSession.activeMissionId;
-    gameSession.leaveMission({
-      missionId,
-      requeue: Boolean(missionId),
-    });
+    const missionScene = this.scene.get("mission") as Phaser.Scene & { extractMissionLootToShip?: () => void };
+    if (typeof missionScene.extractMissionLootToShip === "function") {
+      missionScene.extractMissionLootToShip();
+    } else {
+      const missionId = gameSession.activeMissionId;
+      gameSession.leaveMission({
+        missionId,
+        requeue: Boolean(missionId),
+      });
+    }
     this.leaveToHub();
   }
 

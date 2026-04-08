@@ -23,7 +23,13 @@ import {
   type CompanionKitId,
   type FormationSlotId,
 } from "../content/companions";
-import { cloneInventoryItem, type CraftingMaterials, type InventoryItem, type ItemRarity } from "../content/items";
+import {
+  cloneInventoryItem,
+  summarizeCombatProfile,
+  type CraftingMaterials,
+  type InventoryItem,
+  type ItemRarity,
+} from "../content/items";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -409,6 +415,9 @@ export class MissionScene extends Phaser.Scene {
   private objectiveText!: Phaser.GameObjects.Text;
   private stageText!: Phaser.GameObjects.Text;
   private messageText!: Phaser.GameObjects.Text;
+  private pickupBannerFrame!: Phaser.GameObjects.Rectangle;
+  private pickupBannerText!: Phaser.GameObjects.Text;
+  private pickupBannerHideTimer?: Phaser.Time.TimerEvent;
   private progressDots: Phaser.GameObjects.Arc[] = [];
   private selectedTarget: Enemy | null = null;
   private autoAimTarget: Enemy | null = null;
@@ -440,7 +449,13 @@ export class MissionScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.cameras.main.setBackgroundColor("#050911");
-    this.brightnessLayer = createBrightnessLayer(this);
+    this.brightnessLayer = createBrightnessLayer(this, {
+      ambientAlpha: 0.16,
+      tintColor: 0x020913,
+      tintAlpha: 0.18,
+      edgeShadeAlpha: 0.18,
+      edgeThickness: 88,
+    });
     this.createActors();
     this.createHud();
     this.createTouchUi();
@@ -745,6 +760,17 @@ export class MissionScene extends Phaser.Scene {
       color: "#d7e8ff",
       align: "center",
     }).setOrigin(0.5));
+
+    this.pickupBannerFrame = this.pin(this.add.rectangle(640, 124, 412, 34, 0x07111d, 0.9)
+      .setStrokeStyle(2, 0x6fa8ef, 0.62)
+      .setVisible(false));
+    this.pickupBannerText = this.pin(this.add.text(640, 124, "", {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#eef8ff",
+      fontStyle: "bold",
+      align: "center",
+    }).setOrigin(0.5).setVisible(false));
 
     this.pin(this.add.rectangle(166, 112, PLAYER_BAR_WIDTH + 8, 18, 0x08111c, 0.96).setStrokeStyle(2, 0x6ea2e5, 0.8));
     this.hpFill = this.pin(this.add.rectangle(86, 112, PLAYER_BAR_WIDTH, 10, 0x47c56c, 0.96).setOrigin(0, 0.5));
@@ -1285,12 +1311,24 @@ export class MissionScene extends Phaser.Scene {
       : stage.type === "boss"
         ? 0x9f6fff
         : 0x4aa8ff;
-    const ambientHalo = this.add.circle(this.playArea.centerX, this.playArea.centerY, Math.max(this.playArea.width, this.playArea.height) * 0.22, ambientColor, 0.05)
-      .setDepth(-6);
-    const floorShadow = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x010309, 0.18)
+    const haloRadius = Math.max(this.playArea.width, this.playArea.height);
+    const ambientHalo = this.add.circle(this.playArea.centerX, this.playArea.centerY, haloRadius * 0.24, ambientColor, 0.09)
+      .setDepth(-6)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    const ambientCore = this.add.circle(this.playArea.centerX, this.playArea.centerY, haloRadius * 0.11, ambientColor, 0.07)
+      .setDepth(-5)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    const floorShadow = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x010309, 0.3)
       .setDepth(-7)
-      .setStrokeStyle(2, ambientColor, 0.08);
-    this.stageObjects.push(ambientHalo, floorShadow);
+      .setStrokeStyle(2, ambientColor, 0.12);
+    const flow = this.currentStage ? this.getStageFlow(this.currentStage) : "right";
+    const edgeShadeA = flow === "up"
+      ? this.add.rectangle(this.playArea.centerX, this.playArea.y + 40, this.playArea.width - 18, 96, 0x000000, 0.24).setDepth(-6)
+      : this.add.rectangle(this.playArea.x + 40, this.playArea.centerY, 96, this.playArea.height - 18, 0x000000, 0.22).setDepth(-6);
+    const edgeShadeB = flow === "up"
+      ? this.add.rectangle(this.playArea.centerX, this.playArea.bottom - 40, this.playArea.width - 18, 96, 0x000000, 0.24).setDepth(-6)
+      : this.add.rectangle(this.playArea.right - 40, this.playArea.centerY, 96, this.playArea.height - 18, 0x000000, 0.22).setDepth(-6);
+    this.stageObjects.push(ambientHalo, ambientCore, floorShadow, edgeShadeA, edgeShadeB);
   }
 
   private getPlayerBaseThreat(): number {
@@ -2614,6 +2652,7 @@ export class MissionScene extends Phaser.Scene {
       color,
       0.38,
     ).setDepth(12);
+    beam.setBlendMode(Phaser.BlendModes.ADD);
     beam.setRotation(Phaser.Math.Angle.Between(fromX, fromY, toX, toY));
     beam.setStrokeStyle(1, color, 0.88);
     this.tweens.add({
@@ -2633,10 +2672,11 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const outer = this.add.circle(x, y, 32, color, 0.14).setDepth(13);
-    const core = this.add.circle(x, y, 18, color, 0.3).setDepth(14);
+    const outer = this.add.circle(x, y, 38, color, 0.18).setDepth(13).setBlendMode(Phaser.BlendModes.ADD);
+    const core = this.add.circle(x, y, 22, color, 0.34).setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
+    const ring = this.add.circle(x, y, 18).setDepth(14).setBlendMode(Phaser.BlendModes.ADD).setStrokeStyle(3, color, 0.74);
     this.tweens.add({
-      targets: [outer, core],
+      targets: [outer, core, ring],
       alpha: 0,
       scaleX: 1 + scale * 1.18,
       scaleY: 1 + scale * 1.18,
@@ -2644,6 +2684,7 @@ export class MissionScene extends Phaser.Scene {
       onComplete: () => {
         outer.destroy();
         core.destroy();
+        ring.destroy();
         this.releaseTransientEffect();
       },
     });
@@ -2654,6 +2695,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    const glow = this.add.circle(x, y, 18, color, 0.14).setDepth(14).setBlendMode(Phaser.BlendModes.ADD);
     const graphics = this.add.graphics().setDepth(15);
     graphics.lineStyle(3, color, 0.92);
 
@@ -2682,12 +2724,13 @@ export class MissionScene extends Phaser.Scene {
     }
 
     this.tweens.add({
-      targets: graphics,
+      targets: [graphics, glow],
       alpha: 0,
       y: y - 10,
       duration: 260,
       onComplete: () => {
         graphics.destroy();
+        glow.destroy();
         this.releaseTransientEffect();
       },
     });
@@ -2698,15 +2741,27 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const ring = this.add.circle(x, y, 20).setStrokeStyle(4, color, 0.92).setDepth(15);
+    const glow = this.add.circle(x, y, 22, color, 0.16 + strength * 0.14)
+      .setDepth(14)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    const ring = this.add.circle(x, y, 20)
+      .setStrokeStyle(4, color, 0.92)
+      .setDepth(15)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    const secondaryRing = this.add.circle(x, y, 14)
+      .setStrokeStyle(2, color, 0.74)
+      .setDepth(15)
+      .setBlendMode(Phaser.BlendModes.ADD);
     this.tweens.add({
-      targets: ring,
+      targets: [glow, ring, secondaryRing],
       scaleX: 1.6 + strength,
       scaleY: 1.6 + strength,
       alpha: 0,
       duration: 220,
       onComplete: () => {
+        glow.destroy();
         ring.destroy();
+        secondaryRing.destroy();
         this.releaseTransientEffect();
       },
     });
@@ -3578,20 +3633,36 @@ export class MissionScene extends Phaser.Scene {
     this.setExitDoorOpen(false, "Complete");
     this.lockBracket.clear();
     this.releaseMissionControls();
-    const reward = buildMissionRewardBundle({
-      missionId: this.mission.id,
-      difficulty: this.mission.difficulty,
-      raceId: gameSession.getPlayerRaceId(),
-      xp: this.mission.baseXp,
-      credits: this.missionCreditsEarned,
-      materials: this.missionMaterialsEarned,
-      items: this.missionItemsEarned,
-      seed: this.mission.seed,
-    });
+    const reward = this.buildCurrentRewardBundle(this.mission.baseXp);
     this.scene.start("mission-result", {
       missionId: this.mission.id,
       missionTitle: this.mission.title,
       reward,
+    });
+  }
+
+  extractMissionLootToShip(): void {
+    const reward = this.buildCurrentRewardBundle(0);
+    if (reward.credits > 0 || reward.items.length > 0 || reward.materials.alloy > 0 || reward.materials.shardDust > 0 || reward.materials.filament > 0) {
+      gameSession.extractMissionLoot(reward);
+    }
+    gameSession.leaveMission({
+      missionId: this.mission.id,
+      requeue: true,
+      preservePendingReward: true,
+    });
+  }
+
+  private buildCurrentRewardBundle(xp: number) {
+    return buildMissionRewardBundle({
+      missionId: this.mission.id,
+      difficulty: this.mission.difficulty,
+      raceId: gameSession.getPlayerRaceId(),
+      xp,
+      credits: this.missionCreditsEarned,
+      materials: this.missionMaterialsEarned,
+      items: this.missionItemsEarned,
+      seed: this.mission.seed,
     });
   }
 
@@ -4134,8 +4205,9 @@ export class MissionScene extends Phaser.Scene {
     item?: InventoryItem;
   }): void {
     const shadow = this.add.ellipse(options.x, options.y + 18, 34, 16, 0x000000, 0.26).setDepth(6);
-    const halo = this.add.circle(options.x, options.y, options.shape === "item" ? 22 : 18, options.color, 0.22)
+    const halo = this.add.circle(options.x, options.y, options.shape === "item" ? 26 : 22, options.color, 0.28)
       .setDepth(11)
+      .setBlendMode(Phaser.BlendModes.ADD)
       .setStrokeStyle(options.rarity === "Legendary" || options.rarity === "Mythic" ? 3 : 2, options.color, 0.78);
     const sprite = options.shape === "credits"
       ? this.add.circle(options.x, options.y, 9, 0xfff4bf, 0.96).setDepth(12)
@@ -4195,15 +4267,22 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const flash = this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 18 : 24, pickup.color, 0.26).setDepth(15);
+    const flash = this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 18 : 24, pickup.color, 0.32)
+      .setDepth(15)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    const ring = this.add.circle(pickup.baseX, pickup.baseY, pickup.kind === "credits" ? 10 : 16)
+      .setDepth(15)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setStrokeStyle(3, pickup.color, 0.9);
     this.tweens.add({
-      targets: flash,
+      targets: [flash, ring],
       scaleX: 2.8,
       scaleY: 2.8,
       alpha: 0,
       duration: 240,
       onComplete: () => {
         flash.destroy();
+        ring.destroy();
         this.releaseTransientEffect();
       },
     });
@@ -4263,6 +4342,30 @@ export class MissionScene extends Phaser.Scene {
       default:
         return materialKind;
     }
+  }
+
+  private showPickupBanner(text: string, color: number): void {
+    this.pickupBannerHideTimer?.remove(false);
+    this.tweens.killTweensOf([this.pickupBannerFrame, this.pickupBannerText]);
+    this.pickupBannerFrame.setVisible(true);
+    this.pickupBannerText.setVisible(true);
+    this.pickupBannerFrame.setAlpha(0.94);
+    this.pickupBannerText.setAlpha(1);
+    this.pickupBannerFrame.setStrokeStyle(2, color, 0.86);
+    this.pickupBannerText.setColor(Phaser.Display.Color.IntegerToColor(color).rgba);
+    this.pickupBannerText.setText(text);
+
+    this.pickupBannerHideTimer = this.time.delayedCall(2000, () => {
+      this.tweens.add({
+        targets: [this.pickupBannerFrame, this.pickupBannerText],
+        alpha: 0,
+        duration: 220,
+        onComplete: () => {
+          this.pickupBannerFrame.setVisible(false);
+          this.pickupBannerText.setVisible(false);
+        },
+      });
+    });
   }
 
   private reviveCompanion(companion: CompanionState, fromRestRoom: boolean): void {
@@ -4682,6 +4785,7 @@ export class MissionScene extends Phaser.Scene {
       equipment,
       cargo,
       materials,
+      statLines: summarizeCombatProfile(gameSession.getPlayerCombatProfile()),
       currencyLines: [
         `Credits: ${gameSession.saveData.profile.credits} | Run +${this.missionCreditsEarned}`,
         `Recovered gear: ${this.missionItemsEarned.length} | Salvage cache updated live`,
@@ -4927,7 +5031,7 @@ export class MissionScene extends Phaser.Scene {
       pickup.halo.setPosition(pickup.baseX, pickup.baseY + bob);
       pickup.promptText.setPosition(pickup.baseX, pickup.baseY - 34 + bob);
       pickup.promptText.setVisible(!pickup.autoPickup && pickup === nearestInteractPickup);
-      pickup.halo.setAlpha(pickup === nearestInteractPickup ? 0.34 : pickup.autoPickup ? 0.2 : 0.24);
+      pickup.halo.setAlpha(pickup === nearestInteractPickup ? 0.46 : pickup.autoPickup ? 0.26 : 0.34);
       pickup.shadow.setScale(1, pickup === nearestInteractPickup ? 1.08 : 1);
 
       if (pickup.autoPickup) {
@@ -4950,18 +5054,18 @@ export class MissionScene extends Phaser.Scene {
     if (pickup.kind === "credits") {
       this.missionCreditsEarned += pickup.amount ?? 0;
       retroSfx.play("credit-pickup", { volume: 0.68 });
-      this.messageText.setText(`Recovered ${pickup.amount ?? 0} credits.`);
+      this.showPickupBanner(`Recovered ${pickup.amount ?? 0} credits`, 0xffd36d);
     } else if (pickup.kind === "material" && pickup.materialKind) {
       const amount = pickup.amount ?? 0;
       this.missionMaterialsEarned[pickup.materialKind] += amount;
       retroSfx.play(this.getLootPickupCue(pickup.rarity), { volume: 0.72 });
-      this.messageText.setText(`Recovered ${this.getMaterialLabel(pickup.materialKind)} x${amount}.`);
+      this.showPickupBanner(`Recovered ${this.getMaterialLabel(pickup.materialKind)} x${amount}`, pickup.color);
     } else if (pickup.kind === "item" && pickup.item) {
       this.missionItemsEarned.push(pickup.item);
       retroSfx.play(this.getLootPickupCue(pickup.rarity), {
         volume: pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 0.95 : 0.78,
       });
-      this.messageText.setText(`Picked up ${pickup.item.name}.`);
+      this.showPickupBanner(`Picked up ${pickup.item.name}`, pickup.color);
     }
 
     this.spawnPickupCollectFlash(pickup);

@@ -58,6 +58,19 @@ export type DifficultyProfile = {
 
 export type RewardData = MissionRewardBundle;
 
+function rewardHasValue(reward: RewardData | null | undefined): boolean {
+  if (!reward) {
+    return false;
+  }
+
+  return reward.credits > 0
+    || reward.xp > 0
+    || reward.items.length > 0
+    || (reward.materials.alloy ?? 0) > 0
+    || (reward.materials.shardDust ?? 0) > 0
+    || (reward.materials.filament ?? 0) > 0;
+}
+
 export const INPUT_MODE_OPTIONS: InputModePreference[] = ["Auto", "Desktop", "Touch"];
 export const DIFFICULTY_OPTIONS: GameplayDifficulty[] = ["Novice", "Knight", "Legend", "Mythic"];
 
@@ -759,15 +772,28 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.emit("save-changed", this.saveData);
   }
 
+  extractMissionLoot(reward: RewardData): void {
+    this.activeMissionId = null;
+    this.saveData.profile.credits += reward.credits;
+    this.saveData.loadout.crafting = addCraftingMaterials(this.saveData.loadout.crafting, reward.materials);
+    reward.items.forEach((item) => {
+      this.addItemToCargo(item);
+    });
+    this.pendingReward = rewardHasValue(reward) ? clone(reward) : null;
+    this.emit("save-changed", this.saveData);
+  }
+
   refreshMissionBoard(): void {
     this.saveData.progression.exhaustedMissionIds = [];
     this.emit("save-changed", this.saveData);
   }
 
-  leaveMission(options?: { missionId?: string | null; requeue?: boolean }): void {
+  leaveMission(options?: { missionId?: string | null; requeue?: boolean; preservePendingReward?: boolean }): void {
     const missionId = options?.missionId ?? this.activeMissionId;
     this.activeMissionId = null;
-    this.pendingReward = null;
+    if (!options?.preservePendingReward) {
+      this.pendingReward = null;
+    }
 
     if (options?.requeue && missionId) {
       this.saveData.missions.acceptedMissionIds = [

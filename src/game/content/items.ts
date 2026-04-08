@@ -552,6 +552,14 @@ export function calculatePlayerCombatProfile(loadout: EquipmentLoadout): PlayerC
   };
 }
 
+export function summarizeCombatProfile(profile: PlayerCombatProfile): string[] {
+  return [
+    `HP ${profile.maxHp} | Shield ${profile.shieldCapacity}`,
+    `Primary ${profile.primaryFireDamage} | Pulse ${profile.pulseDamage} | Arc ${profile.arcDamage}`,
+    `Move ${Math.round(profile.moveSpeedMultiplier * 100)}% | Guard ${Math.round(profile.guardMitigation * 100)}% | Rhythm ${Math.round(profile.abilityCooldownMultiplier * 100)}%`,
+  ];
+}
+
 export function createLegendarySetPiece(slot: "head" | "chest" | "legs", raceTag: RaceId, seed: number): GearItemInstance {
   const labelPrefix = RACE_LABELS[raceTag];
   const baseConfig = slot === "head"
