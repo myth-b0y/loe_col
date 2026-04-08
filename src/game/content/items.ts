@@ -262,3 +262,40 @@ export function getItemDefinition(itemId: string | null | undefined): ItemDefini
 
   return ITEM_REGISTRY[itemId] ?? null;
 }
+
+export function canItemEquipToSlot(itemOrId: ItemDefinition | string | null | undefined, slotId: EquipmentSlotId): boolean {
+  const item = typeof itemOrId === "string" ? getItemDefinition(itemOrId) : itemOrId;
+  if (!item) {
+    return false;
+  }
+
+  if (item.category === "accessory") {
+    return slotId.startsWith("accessory");
+  }
+
+  if (item.category === "belt") {
+    return slotId === "belt";
+  }
+
+  if (item.category === "back") {
+    return slotId === "back";
+  }
+
+  if (item.category === "armor") {
+    return item.slot === slotId;
+  }
+
+  if (item.category === "weapon" || item.category === "shield") {
+    if (!item.slot) {
+      return slotId === "leftHand" || slotId === "rightHand";
+    }
+
+    return item.slot === slotId;
+  }
+
+  return false;
+}
+
+export function getCompatibleEquipmentSlots(itemOrId: ItemDefinition | string | null | undefined): Array<{ id: EquipmentSlotId; label: string }> {
+  return EQUIPMENT_SLOTS.filter((slot) => canItemEquipToSlot(itemOrId, slot.id));
+}

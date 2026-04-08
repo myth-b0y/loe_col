@@ -14,8 +14,11 @@ import {
   DEFAULT_CARGO_SLOTS,
   DEFAULT_CRAFTING_MATERIALS,
   DEFAULT_EQUIPMENT,
+  canItemEquipToSlot,
+  getItemDefinition,
   type CraftingMaterials,
   type EquipmentLoadout,
+  type EquipmentSlotId,
 } from "../content/items";
 import {
   DEFAULT_RUN_CONFIG,
@@ -485,6 +488,25 @@ export class GameSession extends Phaser.Events.EventEmitter {
     }
 
     cargo[openIndex] = itemId;
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  equipCargoItemToSlot(cargoIndex: number, slotId: EquipmentSlotId): boolean {
+    const cargo = this.saveData.loadout.cargo;
+    if (cargoIndex < 0 || cargoIndex >= cargo.length) {
+      return false;
+    }
+
+    const itemId = cargo[cargoIndex];
+    const item = getItemDefinition(itemId);
+    if (!item || !canItemEquipToSlot(item, slotId)) {
+      return false;
+    }
+
+    const equippedItem = this.saveData.loadout.equipment[slotId];
+    this.saveData.loadout.equipment[slotId] = item.id;
+    cargo[cargoIndex] = equippedItem ?? null;
     this.emit("save-changed", this.saveData);
     return true;
   }
