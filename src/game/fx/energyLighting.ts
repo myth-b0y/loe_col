@@ -43,6 +43,39 @@ export type LightingRig = {
 
 type AnyLight = Phaser.GameObjects.PointLight | Phaser.GameObjects.Arc;
 
+export const LIGHTING_PRESETS = {
+  heroUnderlight: {
+    player: {
+      radius: 88,
+      intensity: 0.22,
+      yOffset: 14,
+    },
+    companion: {
+      radius: 58,
+      intensity: 0.14,
+      yOffset: 12,
+    },
+  },
+  roomFixture: {
+    mission: {
+      radius: 74,
+      intensity: 0.11,
+      attenuation: 0.1,
+    },
+    hub: {
+      radius: 82,
+      intensity: 0.1,
+      attenuation: 0.1,
+    },
+  },
+  shield: {
+    fillAlphaIdle: 0.03,
+    fillAlphaRecharge: 0.07,
+    strokeAlphaIdle: 0.68,
+    strokeAlphaRecharge: 0.92,
+  },
+} as const;
+
 export function createLightingRig(scene: Phaser.Scene, options: LightingRigOptions): LightingRig {
   const supported = scene.game.renderer.type === Phaser.WEBGL;
   if (supported) {

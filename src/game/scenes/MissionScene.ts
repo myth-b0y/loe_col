@@ -35,6 +35,7 @@ import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import {
   createLightingRig,
+  LIGHTING_PRESETS,
   setAnyLightColor,
   setAnyLightIntensity,
   setAnyLightPosition,
@@ -474,9 +475,9 @@ export class MissionScene extends Phaser.Scene {
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.cameras.main.setBackgroundColor("#050911");
     this.brightnessLayer = createBrightnessLayer(this, {
-      ambientAlpha: 0.2,
+      ambientAlpha: 0.16,
       tintColor: 0x01060f,
-      tintAlpha: 0.24,
+      tintAlpha: 0.18,
       edgeShadeAlpha: 0.24,
       edgeThickness: 88,
     });
@@ -485,7 +486,7 @@ export class MissionScene extends Phaser.Scene {
       y: this.playArea.y,
       width: this.playArea.width,
       height: this.playArea.height,
-      ambientAlpha: 0.44,
+      ambientAlpha: 0.38,
       darkColor: 0x010308,
       veilDepth: 10,
       shadowDepth: 10.35,
@@ -673,9 +674,17 @@ export class MissionScene extends Phaser.Scene {
     this.playerShadow = this.add.ellipse(210, 352, 34, 16, 0x000000, 0.28).setDepth(7);
     this.player = this.add.circle(210, 342, 18, PLAYER_CORE_COLOR).setDepth(10);
     this.player.setStrokeStyle(4, PLAYER_TRIM_COLOR, 1);
-    this.playerLight = this.lightingRig?.createPointLight(this.player.x, this.player.y, PLAYER_TRIM_COLOR, 92, 0.58, 0.1);
-    setAnyLightVisible(this.playerLight, false);
+    this.playerLight = this.lightingRig?.createPointLight(
+      this.player.x,
+      this.player.y + LIGHTING_PRESETS.heroUnderlight.player.yOffset,
+      PLAYER_TRIM_COLOR,
+      LIGHTING_PRESETS.heroUnderlight.player.radius,
+      LIGHTING_PRESETS.heroUnderlight.player.intensity,
+      0.1,
+    );
+    setAnyLightVisible(this.playerLight, true);
     this.playerShieldRing = this.add.circle(this.player.x, this.player.y, 26)
+      .setFillStyle(0x65d8ff, LIGHTING_PRESETS.shield.fillAlphaIdle)
       .setStrokeStyle(4, 0x65d8ff, 0.82)
       .setDepth(9);
 
@@ -703,15 +712,16 @@ export class MissionScene extends Phaser.Scene {
         .setDepth(7);
       const light = this.lightingRig?.createPointLight(
         sprite.x,
-        sprite.y,
-        companion.projectileColor,
-        companion.attackStyle === "healer" ? 74 : companion.attackStyle === "shield" ? 70 : 64,
-        companion.attackStyle === "healer" ? 0.38 : 0.3,
+        sprite.y + LIGHTING_PRESETS.heroUnderlight.companion.yOffset,
+        companion.trimColor,
+        LIGHTING_PRESETS.heroUnderlight.companion.radius,
+        LIGHTING_PRESETS.heroUnderlight.companion.intensity,
         0.1,
       );
-      setAnyLightVisible(light, false);
+      setAnyLightVisible(light, true);
 
       const shieldRing = this.add.circle(sprite.x, sprite.y, companion.radius + 7)
+        .setFillStyle(0x7de6ff, LIGHTING_PRESETS.shield.fillAlphaIdle)
         .setStrokeStyle(3, 0x7de6ff, 0.78)
         .setDepth(8);
       shieldRing.setVisible(gameSession.getModeRules().companionsEnabled);
@@ -1364,15 +1374,15 @@ export class MissionScene extends Phaser.Scene {
         ? 0xa97bff
         : 0x6caeff;
     const flow = this.currentStage ? this.getStageFlow(this.currentStage) : "right";
-    const floorShade = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x02060c, 0.46)
+    const floorShade = this.add.rectangle(this.playArea.centerX, this.playArea.centerY, this.playArea.width, this.playArea.height, 0x02060c, 0.4)
       .setDepth(-7)
       .setStrokeStyle(2, ambientColor, 0.06);
     const laneShadeA = flow === "up"
-      ? this.add.rectangle(this.playArea.centerX, this.playArea.y + 32, this.playArea.width - 18, 72, 0x000000, 0.34).setDepth(-6)
-      : this.add.rectangle(this.playArea.x + 32, this.playArea.centerY, 72, this.playArea.height - 18, 0x000000, 0.3).setDepth(-6);
+      ? this.add.rectangle(this.playArea.centerX, this.playArea.y + 32, this.playArea.width - 18, 72, 0x000000, 0.26).setDepth(-6)
+      : this.add.rectangle(this.playArea.x + 32, this.playArea.centerY, 72, this.playArea.height - 18, 0x000000, 0.22).setDepth(-6);
     const laneShadeB = flow === "up"
-      ? this.add.rectangle(this.playArea.centerX, this.playArea.bottom - 32, this.playArea.width - 18, 72, 0x000000, 0.34).setDepth(-6)
-      : this.add.rectangle(this.playArea.right - 32, this.playArea.centerY, 72, this.playArea.height - 18, 0x000000, 0.3).setDepth(-6);
+      ? this.add.rectangle(this.playArea.centerX, this.playArea.bottom - 32, this.playArea.width - 18, 72, 0x000000, 0.26).setDepth(-6)
+      : this.add.rectangle(this.playArea.right - 32, this.playArea.centerY, 72, this.playArea.height - 18, 0x000000, 0.22).setDepth(-6);
     this.stageObjects.push(floorShade, laneShadeA, laneShadeB);
 
     this.lightingRig?.setRegion(this.playArea.x - 80, this.playArea.y - 80, this.playArea.width + 160, this.playArea.height + 160);
@@ -1405,6 +1415,22 @@ export class MissionScene extends Phaser.Scene {
         .setDepth(6)
         .setStrokeStyle(2, ambientColor, 0.24);
       this.stageObjects.push(housing);
+      const light = this.lightingRig?.createPointLight(
+        fixture.x,
+        fixture.y + (flow === "up" ? 14 : 10),
+        ambientColor,
+        LIGHTING_PRESETS.roomFixture.mission.radius,
+        stage.type === "boss"
+          ? LIGHTING_PRESETS.roomFixture.mission.intensity + 0.03
+          : stage.type === "rest"
+            ? LIGHTING_PRESETS.roomFixture.mission.intensity - 0.02
+            : LIGHTING_PRESETS.roomFixture.mission.intensity,
+        LIGHTING_PRESETS.roomFixture.mission.attenuation,
+      );
+      if (light) {
+        setAnyLightVisible(light, true);
+        this.stageLights.push(light);
+      }
     });
   }
 
@@ -1981,11 +2007,12 @@ export class MissionScene extends Phaser.Scene {
       if (companion.downed) {
         companion.sprite.setVisible(true);
         companion.shieldRing.setVisible(true);
-      companion.guardPlate?.setVisible(false);
-      companion.shieldRing.setStrokeStyle(3, 0xffd36d, 0.55 + 0.35 * (companion.reviveProgress / COMPANION_REVIVE_HOLD_TIME));
-      companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
-      companion.sprite.setFillStyle(0x5b4d3b, 0.92);
-      companion.sprite.setAlpha(0.62 + Math.sin(this.time.now / 180 + index) * 0.08);
+        companion.guardPlate?.setVisible(false);
+        companion.shieldRing.setStrokeStyle(3, 0xffd36d, 0.55 + 0.35 * (companion.reviveProgress / COMPANION_REVIVE_HOLD_TIME));
+        companion.shieldRing.setFillStyle(0xffd36d, 0.03);
+        companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
+        companion.sprite.setFillStyle(0x5b4d3b, 0.92);
+        companion.sprite.setAlpha(0.62 + Math.sin(this.time.now / 180 + index) * 0.08);
         return;
       }
 
@@ -2014,7 +2041,8 @@ export class MissionScene extends Phaser.Scene {
       companion.sprite.setAlpha(1);
       companion.shieldRing.setStrokeStyle(3, 0x7de6ff, 0.78);
       companion.shieldRing.setVisible(companion.shield > 0.5 || companion.aegisTimer > 0.2);
-      companion.shieldRing.setAlpha(companion.aegisTimer > 0.2 ? 0.96 : 0.78);
+      companion.shieldRing.setAlpha(companion.aegisTimer > 0.2 ? 0.96 : companion.shieldRechargeStarted ? LIGHTING_PRESETS.shield.strokeAlphaRecharge : LIGHTING_PRESETS.shield.strokeAlphaIdle);
+      companion.shieldRing.setScale(companion.shieldRechargeStarted ? 1.02 + Math.sin(this.time.now / 120 + index) * 0.03 : 1);
       companion.shieldRing.setPosition(companion.sprite.x, companion.sprite.y);
       const movementAmount = Phaser.Math.Clamp(
         Phaser.Math.Distance.Between(beforeX, beforeY, companion.sprite.x, companion.sprite.y) / Math.max(1, MOVE_SPEED * dt),
@@ -3210,7 +3238,14 @@ export class MissionScene extends Phaser.Scene {
       enemy.sprite.setFillStyle(0x050608, enemy.damageFlash > 0 && gameSession.settings.graphics.hitFlash ? 0.5 : 1);
       enemy.shieldRing.setPosition(enemy.sprite.x, enemy.sprite.y);
       enemy.shieldRing.setVisible(enemy.shield > 0.5);
-      enemy.shieldRing.setAlpha(enemy.damageFlash > 0 ? 0.96 : 0.74);
+      enemy.shieldRing.setFillStyle(
+        0x7ce8ff,
+        enemy.shieldRechargeStarted
+          ? LIGHTING_PRESETS.shield.fillAlphaRecharge
+          : LIGHTING_PRESETS.shield.fillAlphaIdle,
+      );
+      enemy.shieldRing.setAlpha(enemy.damageFlash > 0 ? 0.96 : enemy.shieldRechargeStarted ? LIGHTING_PRESETS.shield.strokeAlphaRecharge : LIGHTING_PRESETS.shield.strokeAlphaIdle);
+      enemy.shieldRing.setScale(enemy.shieldRechargeStarted ? 1.02 + Math.sin(enemy.stateTimer * 12) * 0.03 : 1);
 
       const target = this.getEnemyFocusTarget(enemy);
       const toTarget = new Phaser.Math.Vector2(target.x - enemy.sprite.x, target.y - enemy.sprite.y);
@@ -3948,6 +3983,7 @@ export class MissionScene extends Phaser.Scene {
     const aura = this.add.circle(spawnX, spawnY, config.radius + 7, config.color, 0).setDepth(8);
     aura.setStrokeStyle(2, config.color, 0.16);
     const shieldRing = this.add.circle(spawnX, spawnY, config.radius + 12)
+      .setFillStyle(0x7ce8ff, LIGHTING_PRESETS.shield.fillAlphaIdle)
       .setStrokeStyle(3, 0x7ce8ff, 0.78)
       .setVisible(scaledShield > 0)
       .setDepth(8);
@@ -4766,7 +4802,18 @@ export class MissionScene extends Phaser.Scene {
       slowDebuff: this.playerSlowDebuff,
     }));
     this.playerShieldRing.setVisible(this.playerShield > 0.5);
-    this.playerShieldRing.setAlpha(this.playerShield > 0 ? 0.84 : 0);
+    this.playerShieldRing.setFillStyle(
+      0x65d8ff,
+      this.playerShieldRechargeStarted
+        ? LIGHTING_PRESETS.shield.fillAlphaRecharge
+        : LIGHTING_PRESETS.shield.fillAlphaIdle,
+    );
+    this.playerShieldRing.setAlpha(this.playerShield > 0
+      ? this.playerShieldRechargeStarted
+        ? LIGHTING_PRESETS.shield.strokeAlphaRecharge
+        : LIGHTING_PRESETS.shield.strokeAlphaIdle
+      : 0);
+    this.playerShieldRing.setScale(this.playerShieldRechargeStarted ? 1.02 + Math.sin(this.time.now / 110) * 0.03 : 1);
     this.companions.forEach((companion) => {
       companion.hud.hpFill.width = companionsEnabled ? COMPANION_BAR_WIDTH * (companion.hp / Math.max(1, companion.maxHp)) : 0;
       companion.hud.shieldFill.width = companionsEnabled ? COMPANION_BAR_WIDTH * (companion.shield / Math.max(1, companion.maxShield)) : 0;
@@ -4789,6 +4836,12 @@ export class MissionScene extends Phaser.Scene {
       this.setTextIfChanged(companion.hud.effectText, this.getActorEffectLabel(companion));
       companion.shieldRing.setVisible(
         companion.downed || (this.canCompanionBeTargeted(companion) && (companion.shield > 0.5 || companion.aegisTimer > 0.2)),
+      );
+      companion.shieldRing.setFillStyle(
+        companion.downed ? 0xffd36d : 0x7de6ff,
+        companion.shieldRechargeStarted
+          ? LIGHTING_PRESETS.shield.fillAlphaRecharge
+          : LIGHTING_PRESETS.shield.fillAlphaIdle,
       );
     });
 
@@ -5304,13 +5357,34 @@ export class MissionScene extends Phaser.Scene {
     this.missionShadowSources = [];
 
     if (this.playerLight) {
-      setAnyLightPosition(this.playerLight, this.player.x, this.player.y);
-      setAnyLightVisible(this.playerLight, false);
+      setAnyLightPosition(this.playerLight, this.player.x, this.player.y + LIGHTING_PRESETS.heroUnderlight.player.yOffset);
+      setAnyLightColor(this.playerLight, PLAYER_TRIM_COLOR);
+      setAnyLightRadius(this.playerLight, LIGHTING_PRESETS.heroUnderlight.player.radius);
+      setAnyLightIntensity(this.playerLight, LIGHTING_PRESETS.heroUnderlight.player.intensity);
+      setAnyLightVisible(this.playerLight, true);
+      this.missionShadowSources.push({
+        x: this.player.x,
+        y: this.player.y + LIGHTING_PRESETS.heroUnderlight.player.yOffset,
+        radius: LIGHTING_PRESETS.heroUnderlight.player.radius,
+        intensity: LIGHTING_PRESETS.heroUnderlight.player.intensity,
+      });
     }
 
     this.companions.forEach((companion) => {
-      setAnyLightPosition(companion.light, companion.sprite.x, companion.sprite.y);
-      setAnyLightVisible(companion.light, false);
+      setAnyLightPosition(companion.light, companion.sprite.x, companion.sprite.y + LIGHTING_PRESETS.heroUnderlight.companion.yOffset);
+      setAnyLightColor(companion.light, companion.trimColor);
+      setAnyLightRadius(companion.light, LIGHTING_PRESETS.heroUnderlight.companion.radius);
+      setAnyLightIntensity(companion.light, LIGHTING_PRESETS.heroUnderlight.companion.intensity);
+      const visible = gameSession.getModeRules().companionsEnabled && !companion.downed;
+      setAnyLightVisible(companion.light, visible);
+      if (visible) {
+        this.missionShadowSources.push({
+          x: companion.sprite.x,
+          y: companion.sprite.y + LIGHTING_PRESETS.heroUnderlight.companion.yOffset,
+          radius: LIGHTING_PRESETS.heroUnderlight.companion.radius,
+          intensity: LIGHTING_PRESETS.heroUnderlight.companion.intensity,
+        });
+      }
     });
 
     this.enemies.forEach((enemy) => {
@@ -5347,6 +5421,22 @@ export class MissionScene extends Phaser.Scene {
           intensity: pickup.kind === "credits" ? 0.14 : pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 0.28 : pickup.item?.kind === "junk" ? 0.14 : 0.18,
         });
       }
+    });
+
+    this.stageLights.forEach((light) => {
+      setAnyLightVisible(light, true);
+      if (!light.visible) {
+        return;
+      }
+
+      const radius = light instanceof Phaser.GameObjects.PointLight ? light.radius : light.radius * 5.4;
+      const intensity = light instanceof Phaser.GameObjects.PointLight ? light.intensity : light.alpha * 2.4;
+      this.missionShadowSources.push({
+        x: light.x,
+        y: light.y,
+        radius,
+        intensity,
+      });
     });
 
     this.transientShadowLights.forEach((source) => {

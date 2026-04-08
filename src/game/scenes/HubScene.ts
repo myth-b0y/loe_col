@@ -17,7 +17,11 @@ import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
 import {
   createLightingRig,
+  LIGHTING_PRESETS,
+  setAnyLightColor,
+  setAnyLightIntensity,
   setAnyLightPosition,
+  setAnyLightRadius,
   setAnyLightVisible,
   type LightingRig,
   type ShadowSource,
@@ -56,6 +60,7 @@ type HubCompanionActor = {
   name: string;
   roleLabel: string;
   attackStyle: CompanionDefinition["attackStyle"];
+  trimColor: number;
   primaryGear: string;
   supportGear: string;
   anchor: Phaser.Math.Vector2;
@@ -217,7 +222,7 @@ export class HubScene extends Phaser.Scene {
       y: HUB_ROOM.y,
       width: HUB_ROOM.width,
       height: HUB_ROOM.height,
-      ambientAlpha: 0.46,
+      ambientAlpha: 0.4,
       darkColor: 0x010309,
       veilDepth: 9,
       shadowDepth: 9.35,
@@ -338,15 +343,27 @@ export class HubScene extends Phaser.Scene {
       fontStyle: "bold",
     });
 
+    this.createAmbientFixture(188, 168, 0x7ebaff);
+    this.createAmbientFixture(482, 168, 0x59c9ff);
+    this.createAmbientFixture(798, 168, 0xffd36d);
+    this.createAmbientFixture(1120, 164, 0x6fd0ff);
+
   }
 
   private createActors(): void {
     this.playerShadow = this.add.ellipse(304, HUB_ROOM.centerY + 14, 38, 16, 0x000000, 0.28).setDepth(6);
     this.player = this.add.circle(304, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
-    this.playerLight = this.lightingRig?.createPointLight(this.player.x, this.player.y, 0x92c8ff, 118, 0.72, 0.09)
+    this.playerLight = this.lightingRig?.createPointLight(
+      this.player.x,
+      this.player.y + LIGHTING_PRESETS.heroUnderlight.player.yOffset,
+      0x92c8ff,
+      LIGHTING_PRESETS.heroUnderlight.player.radius,
+      LIGHTING_PRESETS.heroUnderlight.player.intensity,
+      0.09,
+    )
       ?? this.add.circle(this.player.x, this.player.y, 22, 0x92c8ff, 0.22).setDepth(10).setBlendMode(Phaser.BlendModes.ADD);
-    setAnyLightVisible(this.playerLight, false);
+    setAnyLightVisible(this.playerLight, true);
 
     this.crew = STORY_COMPANIONS.map((companion, index) => {
       const anchor = new Phaser.Math.Vector2(companion.hubPosition.x, companion.hubPosition.y);
@@ -356,13 +373,13 @@ export class HubScene extends Phaser.Scene {
       sprite.setStrokeStyle(3, companion.trimColor, 1);
       const light = this.lightingRig?.createPointLight(
         anchor.x,
-        anchor.y,
-        companion.projectileColor,
-        companion.attackStyle === "healer" ? 78 : companion.attackStyle === "shield" || companion.attackStyle === "bulwark" ? 70 : 62,
-        companion.attackStyle === "healer" ? 0.42 : 0.3,
+        anchor.y + LIGHTING_PRESETS.heroUnderlight.companion.yOffset,
+        companion.trimColor,
+        LIGHTING_PRESETS.heroUnderlight.companion.radius,
+        LIGHTING_PRESETS.heroUnderlight.companion.intensity,
         0.1,
       ) ?? this.add.circle(anchor.x, anchor.y, 16, companion.projectileColor, 0.18).setDepth(9).setBlendMode(Phaser.BlendModes.ADD);
-      setAnyLightVisible(light, false);
+      setAnyLightVisible(light, true);
 
       const shieldPlate = companion.attackStyle === "shield"
         ? this.add.rectangle(anchor.x + companion.radius + 8, anchor.y, 10, 28, 0x335e48, 0.96)
@@ -383,6 +400,7 @@ export class HubScene extends Phaser.Scene {
         name: companion.name,
         roleLabel: getCompanionRoleDisplay(companion),
         attackStyle: companion.attackStyle,
+        trimColor: companion.trimColor,
         primaryGear: companion.primaryGear,
         supportGear: companion.supportGear,
         anchor,
@@ -1169,13 +1187,31 @@ export class HubScene extends Phaser.Scene {
 
     this.hubShadowSources = [];
     if (this.playerLight) {
-      setAnyLightPosition(this.playerLight, this.player.x, this.player.y);
-      setAnyLightVisible(this.playerLight, false);
+      setAnyLightPosition(this.playerLight, this.player.x, this.player.y + LIGHTING_PRESETS.heroUnderlight.player.yOffset);
+      setAnyLightColor(this.playerLight, 0x92c8ff);
+      setAnyLightRadius(this.playerLight, LIGHTING_PRESETS.heroUnderlight.player.radius);
+      setAnyLightIntensity(this.playerLight, LIGHTING_PRESETS.heroUnderlight.player.intensity);
+      setAnyLightVisible(this.playerLight, true);
+      this.hubShadowSources.push({
+        x: this.player.x,
+        y: this.player.y + LIGHTING_PRESETS.heroUnderlight.player.yOffset,
+        radius: LIGHTING_PRESETS.heroUnderlight.player.radius,
+        intensity: LIGHTING_PRESETS.heroUnderlight.player.intensity,
+      });
     }
 
     this.crew.forEach((companion) => {
-      setAnyLightPosition(companion.light, companion.sprite.x, companion.sprite.y);
-      setAnyLightVisible(companion.light, false);
+      setAnyLightPosition(companion.light, companion.sprite.x, companion.sprite.y + LIGHTING_PRESETS.heroUnderlight.companion.yOffset);
+      setAnyLightColor(companion.light, companion.trimColor);
+      setAnyLightRadius(companion.light, LIGHTING_PRESETS.heroUnderlight.companion.radius);
+      setAnyLightIntensity(companion.light, LIGHTING_PRESETS.heroUnderlight.companion.intensity);
+      setAnyLightVisible(companion.light, true);
+      this.hubShadowSources.push({
+        x: companion.sprite.x,
+        y: companion.sprite.y + LIGHTING_PRESETS.heroUnderlight.companion.yOffset,
+        radius: LIGHTING_PRESETS.heroUnderlight.companion.radius,
+        intensity: LIGHTING_PRESETS.heroUnderlight.companion.intensity,
+      });
     });
 
     this.stations.forEach((station) => {
@@ -1183,7 +1219,21 @@ export class HubScene extends Phaser.Scene {
       setAnyLightVisible(station.light, false);
     });
 
-    this.ambientLights.forEach((light) => setAnyLightVisible(light, false));
+    this.ambientLights.forEach((light) => {
+      setAnyLightVisible(light, true);
+      if (!light.visible) {
+        return;
+      }
+
+      const radius = light instanceof Phaser.GameObjects.PointLight ? light.radius : light.radius * 5.4;
+      const intensity = light instanceof Phaser.GameObjects.PointLight ? light.intensity : light.alpha * 2.4;
+      this.hubShadowSources.push({
+        x: light.x,
+        y: light.y,
+        radius,
+        intensity,
+      });
+    });
     this.lightingRig.refreshShadows(this.hubShadowSources, this.hubShadowCasters, 260);
   }
 
@@ -1781,6 +1831,24 @@ export class HubScene extends Phaser.Scene {
 
   private registerHubCaster(x: number, y: number, width: number, height: number): void {
     this.hubShadowCasters.push(new Phaser.Geom.Rectangle(x - width / 2, y - height / 2, width, height));
+  }
+
+  private createAmbientFixture(x: number, y: number, color: number): void {
+    this.add.rectangle(x, y - 18, 44, 14, 0x16263a, 0.96)
+      .setStrokeStyle(2, color, 0.24)
+      .setDepth(5);
+    const light = this.lightingRig?.createPointLight(
+      x,
+      y + 18,
+      color,
+      LIGHTING_PRESETS.roomFixture.hub.radius,
+      LIGHTING_PRESETS.roomFixture.hub.intensity,
+      LIGHTING_PRESETS.roomFixture.hub.attenuation,
+    );
+    if (light) {
+      setAnyLightVisible(light, true);
+      this.ambientLights.push(light);
+    }
   }
 
   getDebugSnapshot(): Record<string, unknown> {
