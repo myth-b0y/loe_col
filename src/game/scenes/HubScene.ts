@@ -352,6 +352,7 @@ export class HubScene extends Phaser.Scene {
     this.player.setStrokeStyle(4, 0x7caeff, 1);
     this.playerLight = this.lightingRig?.createPointLight(this.player.x, this.player.y, 0x92c8ff, 118, 0.72, 0.09)
       ?? this.add.circle(this.player.x, this.player.y, 22, 0x92c8ff, 0.22).setDepth(10).setBlendMode(Phaser.BlendModes.ADD);
+    setAnyLightVisible(this.playerLight, false);
 
     this.crew = STORY_COMPANIONS.map((companion, index) => {
       const anchor = new Phaser.Math.Vector2(companion.hubPosition.x, companion.hubPosition.y);
@@ -367,6 +368,7 @@ export class HubScene extends Phaser.Scene {
         companion.attackStyle === "healer" ? 0.42 : 0.3,
         0.1,
       ) ?? this.add.circle(anchor.x, anchor.y, 16, companion.projectileColor, 0.18).setDepth(9).setBlendMode(Phaser.BlendModes.ADD);
+      setAnyLightVisible(light, false);
 
       const shieldPlate = companion.attackStyle === "shield"
         ? this.add.rectangle(anchor.x + companion.radius + 8, anchor.y, 10, 28, 0x335e48, 0.96)
@@ -422,7 +424,7 @@ export class HubScene extends Phaser.Scene {
       : id === "loadout"
         ? 0xffd36d
         : 0x8dc8ff;
-    const glow = this.add.ellipse(x, y + height * 0.1, width * 0.92, height * 0.5, accent, 0.08)
+    const glow = this.add.ellipse(x, y + height * 0.1, width * 0.88, height * 0.42, accent, 0.04)
       .setDepth(4)
       .setBlendMode(Phaser.BlendModes.ADD);
     const shadow = this.add.ellipse(x, y + height * 0.34, width * 0.9, 18, 0x000000, 0.24).setDepth(4);
@@ -431,7 +433,7 @@ export class HubScene extends Phaser.Scene {
       .setDepth(5)
       .setInteractive();
     this.registerHubCaster(x, y, width, height);
-    const light = this.lightingRig?.createPointLight(x, y + height * 0.1, accent, Math.max(112, width * 0.74), 0.48, 0.09)
+    const light = this.lightingRig?.createPointLight(x, y + height * 0.1, accent, Math.max(92, width * 0.62), 0.34, 0.1)
       ?? this.add.circle(x, y + height * 0.1, 24, accent, 0.18).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
 
     const title = this.add.text(x, y - 14, label, {
@@ -1175,45 +1177,24 @@ export class HubScene extends Phaser.Scene {
     this.hubShadowSources = [];
     if (this.playerLight) {
       setAnyLightPosition(this.playerLight, this.player.x, this.player.y);
-      setAnyLightIntensity(this.playerLight, 0.68);
-      setAnyLightVisible(this.playerLight, true);
-      this.hubShadowSources.push({
-        x: this.player.x,
-        y: this.player.y,
-        radius: 118,
-        intensity: 0.78,
-      });
+      setAnyLightVisible(this.playerLight, false);
     }
 
     this.crew.forEach((companion) => {
       setAnyLightPosition(companion.light, companion.sprite.x, companion.sprite.y);
-      setAnyLightIntensity(
-        companion.light,
-        companion.attackStyle === "healer"
-          ? 0.42
-          : companion.attackStyle === "shield" || companion.attackStyle === "bulwark"
-            ? 0.34
-            : 0.28,
-      );
-      setAnyLightVisible(companion.light, true);
-      this.hubShadowSources.push({
-        x: companion.sprite.x,
-        y: companion.sprite.y,
-        radius: companion.attackStyle === "healer" ? 78 : 68,
-        intensity: companion.attackStyle === "healer" ? 0.42 : 0.3,
-      });
+      setAnyLightVisible(companion.light, false);
     });
 
     this.stations.forEach((station) => {
       const highlighted = this.nearestStation?.id === station.id;
       setAnyLightPosition(station.light, station.zone.x, station.zone.y + station.zone.height * 0.08);
-      setAnyLightIntensity(station.light, highlighted ? 0.64 : 0.42);
+      setAnyLightIntensity(station.light, highlighted ? 0.48 : 0.28);
       setAnyLightVisible(station.light, true);
       this.hubShadowSources.push({
         x: station.zone.x,
         y: station.zone.y + station.zone.height * 0.08,
-        radius: Math.max(112, station.zone.width * 0.74),
-        intensity: highlighted ? 0.66 : 0.42,
+        radius: Math.max(92, station.zone.width * 0.62),
+        intensity: highlighted ? 0.48 : 0.3,
       });
     });
 
@@ -1830,7 +1811,7 @@ export class HubScene extends Phaser.Scene {
       .setStrokeStyle(2, color, 0.45)
       .setDepth(5);
     const beam = this.add.graphics().setDepth(5.5).setBlendMode(Phaser.BlendModes.ADD);
-    beam.fillStyle(color, alpha);
+    beam.fillStyle(color, alpha * 0.45);
     beam.fillPoints([
       new Phaser.Geom.Point(x - width * 0.18, topY - 10),
       new Phaser.Geom.Point(x + width * 0.18, topY - 10),
@@ -1838,14 +1819,14 @@ export class HubScene extends Phaser.Scene {
       new Phaser.Geom.Point(x - width * 0.5, bottomY),
     ], true);
     const beamCore = this.add.graphics().setDepth(5.6).setBlendMode(Phaser.BlendModes.ADD);
-    beamCore.fillStyle(0xffffff, alpha * 0.18);
+    beamCore.fillStyle(0xffffff, alpha * 0.08);
     beamCore.fillPoints([
       new Phaser.Geom.Point(x - width * 0.08, topY - 12),
       new Phaser.Geom.Point(x + width * 0.08, topY - 12),
       new Phaser.Geom.Point(x + width * 0.22, bottomY),
       new Phaser.Geom.Point(x - width * 0.22, bottomY),
     ], true);
-    const light = this.lightingRig?.createPointLight(x, bottomY - 10, color, Math.max(118, lightRadius * 0.78), 0.44, 0.09);
+    const light = this.lightingRig?.createPointLight(x, bottomY - 10, color, Math.max(96, lightRadius * 0.62), 0.28, 0.11);
     if (light) {
       this.ambientLights.push(light);
     }
