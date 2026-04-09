@@ -641,11 +641,15 @@ export class HubScene extends Phaser.Scene {
     this.logbookOverlay = new LogbookOverlay({
       scene: this,
       onClose: () => this.handleCommandOverlayClosed(),
+      onOpenSettings: () => this.openPauseMenu(),
+      onRequestTab: (tab) => this.openDataPadTab(tab),
     });
 
     this.inventoryOverlay = new InventoryOverlay({
       scene: this,
       onClose: () => this.handleCommandOverlayClosed(),
+      onOpenSettings: () => this.openPauseMenu(),
+      onRequestTab: (tab) => this.openDataPadTab(tab),
     });
   }
 
@@ -1315,8 +1319,7 @@ export class HubScene extends Phaser.Scene {
     }
 
     if (id === "loadout") {
-      this.inventoryOverlay?.show();
-      this.syncSceneOverlayChrome();
+      this.openDataPadTab("inventory");
       return;
     }
 
@@ -1583,9 +1586,22 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
+    this.openDataPadTab("missions");
+  }
+
+  private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
     this.closeCommandOverlays();
-    this.logbookOverlay?.show();
-    this.syncSceneOverlayChrome();
+
+    if (tab === "missions") {
+      this.logbookOverlay?.show();
+      this.syncSceneOverlayChrome();
+      return;
+    }
+
+    if (tab === "inventory") {
+      this.inventoryOverlay?.show();
+      this.syncSceneOverlayChrome();
+    }
   }
 
   private syncSceneOverlayChrome(): void {

@@ -988,6 +988,8 @@ export class MissionScene extends Phaser.Scene {
       onClose: () => {
         this.fireHeld = false;
       },
+      onOpenSettings: () => this.openPauseMenu(),
+      onRequestTab: (tab) => this.openDataPadTab(tab),
     });
     this.inventoryOverlay = new InventoryOverlay({
       scene: this,
@@ -995,6 +997,8 @@ export class MissionScene extends Phaser.Scene {
         this.fireHeld = false;
       },
       getSnapshot: () => this.getMissionInventorySnapshot(),
+      onOpenSettings: () => this.openPauseMenu(),
+      onRequestTab: (tab) => this.openDataPadTab(tab),
     });
   }
 
@@ -5107,8 +5111,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.inventoryOverlay?.hide();
-    this.logbookOverlay?.show();
+    this.openDataPadTab("missions");
   }
 
   private toggleInventoryOverlay(): void {
@@ -5119,8 +5122,23 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    this.logbookOverlay?.hide();
-    this.inventoryOverlay?.show();
+    this.openDataPadTab("inventory");
+  }
+
+  private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
+    this.fireHeld = false;
+    this.releaseMissionControls();
+
+    if (tab === "missions") {
+      this.inventoryOverlay?.hide();
+      this.logbookOverlay?.show();
+      return;
+    }
+
+    if (tab === "inventory") {
+      this.logbookOverlay?.hide();
+      this.inventoryOverlay?.show();
+    }
   }
 
   private openPauseMenu(): void {
