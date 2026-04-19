@@ -1,15 +1,21 @@
-import Phaser from "phaser";
+﻿import Phaser from "phaser";
 
 import { gameSession } from "../core/session";
 import { createMenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
 
+type GameOverMode = "mission" | "space";
+
 type GameOverSceneData = {
-  missionId: string;
+  missionId?: string | null;
+  mode?: GameOverMode;
+  routeTitle?: string;
 };
 
 export class GameOverScene extends Phaser.Scene {
-  private missionId = "";
+  private missionId: string | null = null;
+  private mode: GameOverMode = "mission";
+  private routeTitle = "Free roam launch";
   private statusText?: Phaser.GameObjects.Text;
   private saveSlotsOverlay?: SaveSlotsOverlay;
 
@@ -17,8 +23,17 @@ export class GameOverScene extends Phaser.Scene {
     super("game-over");
   }
 
-  create(data: GameOverSceneData): void {
-    this.missionId = data.missionId;
+  create(data: GameOverSceneData = {}): void {
+    this.missionId = typeof data.missionId === "string" && data.missionId.length > 0
+      ? data.missionId
+      : null;
+    this.mode = data.mode ?? "mission";
+    this.routeTitle = data.routeTitle ?? "Free roam launch";
+
+    const subtitle = this.mode === "space"
+      ? "The ship was destroyed in space, but the route can still be retried."
+      : "The mission failed, but the contract is still active.";
+    const continueLabel = this.mode === "space" ? "Continue?" : "Continue?";
 
     this.add.rectangle(640, 360, 1280, 720, 0x02060b, 0.76);
     this.add.rectangle(640, 360, 560, 520, 0x120916, 0.98).setStrokeStyle(3, 0xc96a88, 0.82);
@@ -30,10 +45,12 @@ export class GameOverScene extends Phaser.Scene {
       fontStyle: "bold",
     }).setOrigin(0.5);
 
-    this.add.text(640, 214, "The mission failed, but the contract is still active.", {
+    this.add.text(640, 214, subtitle, {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#f2c8d5",
+      wordWrap: { width: 420 },
+      align: "center",
     }).setOrigin(0.5);
 
     createMenuButton({
@@ -41,8 +58,8 @@ export class GameOverScene extends Phaser.Scene {
       x: 640,
       y: 294,
       width: 280,
-      label: "Continue?",
-      onClick: () => this.restartMission(),
+      label: continueLabel,
+      onClick: () => this.restartFlow(),
       depth: 12,
       accentColor: 0x7b3651,
     });
@@ -107,25 +124,51 @@ export class GameOverScene extends Phaser.Scene {
   getDebugSnapshot(): Record<string, unknown> {
     return {
       missionId: this.missionId,
+      mode: this.mode,
+      routeTitle: this.routeTitle,
       hasSaves: gameSession.hasSaveData(),
       status: this.statusText?.text ?? "",
     };
   }
 
-  private restartMission(): void {
+  private restartFlow(): void {
+    if (this.mode === "space") {
+      this.scene.start("space", {
+        missionId: this.missionId,
+      });
+      return;
+    }
+
+    if (!this.missionId) {
+      this.statusText?.setText("No active mission route is available.");
+      return;
+    }
+
     gameSession.startMission(this.missionId);
     this.scene.start("mission", { missionId: this.missionId });
   }
 
   private returnToShip(): void {
+    if (this.mode === "space") {
+      gameSession.clearShipTravel();
+      this.scene.start("hub");
+      return;
+    }
+
     gameSession.leaveMission({
       missionId: this.missionId,
-      requeue: true,
+      requeue: Boolean(this.missionId),
     });
     this.scene.start("hub");
   }
 
   private quitToMenu(): void {
+    if (this.mode === "space") {
+      gameSession.clearShipTravel();
+      this.scene.start("main-menu");
+      return;
+    }
+
     gameSession.leaveMission({
       missionId: this.missionId,
       requeue: false,

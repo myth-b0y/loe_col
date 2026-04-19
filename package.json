@@ -1,11 +1,14 @@
 {
   "name": "loe-col",
   "private": true,
-  "version": "0.0.50",
+  "version": "0.0.57",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "build:pages": "npm run typecheck && node tools/build_pages.mjs",
+    "verify:pages-build": "node tools/verify_pages_build.mjs",
     "preview": "vite preview --host"
   },
   "dependencies": {

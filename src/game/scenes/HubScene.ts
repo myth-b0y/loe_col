@@ -1,4 +1,4 @@
-import Phaser from "phaser";
+﻿import Phaser from "phaser";
 
 import {
   FORMATION_SLOTS,
@@ -31,7 +31,14 @@ import { InventoryOverlay } from "../ui/InventoryOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { MissionBoardOverlay } from "../ui/MissionBoardOverlay";
 
-type StationId = "cockpit" | "mission" | "loadout";
+type StationId =
+  | "pilotSeat"
+  | "shipSystems"
+  | "mission"
+  | "cargo"
+  | "forge"
+  | "repair"
+  | "crew";
 type InteractionTargetKind = "station" | "airlock";
 type SceneLight = Phaser.GameObjects.PointLight | Phaser.GameObjects.Arc;
 
@@ -99,6 +106,21 @@ type FormationSlotUi = {
 };
 
 const HUB_ROOM = new Phaser.Geom.Rectangle(68, 110, 1144, 520);
+const HUB_PLAYER_RADIUS = 22;
+const HUB_PLAYER_SPAWN = { x: 640, y: 430 };
+const HUB_WALK_ZONES = [
+  new Phaser.Geom.Rectangle(510, 126, 260, 504),
+  new Phaser.Geom.Rectangle(250, 334, 332, 220),
+  new Phaser.Geom.Rectangle(698, 334, 332, 220),
+];
+const HUB_CREW_ANCHORS = [
+  { x: 838, y: 386 },
+  { x: 886, y: 386 },
+  { x: 838, y: 442 },
+  { x: 886, y: 442 },
+  { x: 838, y: 498 },
+  { x: 886, y: 498 },
+] as const;
 const HUB_SPEED = 250;
 const STICK_RADIUS = 72;
 const STICK_DEADZONE = 18;
@@ -141,6 +163,78 @@ function getBoardFormationLabel(slotId: FormationSlotId): string {
   }
 }
 
+function getStationAccent(id: StationId): number {
+  switch (id) {
+    case "mission":
+      return 0x62eb62;
+    case "cargo":
+      return 0xffdc59;
+    case "forge":
+      return 0xff922b;
+    case "repair":
+      return 0xff5757;
+    case "crew":
+      return 0xc47dff;
+    case "pilotSeat":
+    case "shipSystems":
+    default:
+      return 0x7ec4ff;
+  }
+}
+
+function getStationButtonLabel(id: StationId): string {
+  switch (id) {
+    case "pilotSeat":
+      return "Pilot";
+    case "shipSystems":
+      return "Scan";
+    case "cargo":
+      return "Cargo";
+    case "forge":
+      return "Forge";
+    case "repair":
+      return "Repair";
+    case "crew":
+      return "Crew";
+    case "mission":
+    default:
+      return "Use";
+  }
+}
+
+function getShipSystemLabel(systemId: string): string {
+  switch (systemId) {
+    case "hull":
+      return "Hull";
+    case "reactor":
+      return "Reactor";
+    case "engines":
+      return "Engines";
+    case "lifeSupport":
+      return "Life Support";
+    case "navigation":
+      return "Navigation";
+    default:
+      return systemId;
+  }
+}
+
+function getShipTravelStatusLabel(status: string): string {
+  switch (status) {
+    case "in-transit":
+      return "In Transit";
+    case "arrived":
+      return "Arrived";
+    case "docked":
+    default:
+      return "Docked";
+  }
+}
+
+function countFilledSlots(slots: Array<unknown | null>): number {
+  return slots.filter((slot) => slot !== null).length;
+}
+
 export class HubScene extends Phaser.Scene {
   private lightingRig?: LightingRig;
   private playerShadow!: Phaser.GameObjects.Ellipse;
@@ -154,6 +248,7 @@ export class HubScene extends Phaser.Scene {
   private hubShadowSources: ShadowSource[] = [];
   private nearestStation: Station | null = null;
   private panel?: Phaser.GameObjects.Container;
+  private panelTitle?: Phaser.GameObjects.Text;
   private panelBody?: Phaser.GameObjects.Text;
   private panelFooter?: Phaser.GameObjects.Text;
   private panelAction?: MenuButton;
@@ -190,6 +285,7 @@ export class HubScene extends Phaser.Scene {
   private interactionHintFrame?: Phaser.GameObjects.Rectangle;
   private interactionHintText?: Phaser.GameObjects.Text;
   private deploying = false;
+  private spaceLaunching = false;
   private touchCapable = false;
   private touchMode = false;
   private currentInteraction: InteractionTarget | null = null;
@@ -214,7 +310,13 @@ export class HubScene extends Phaser.Scene {
 
   create(): void {
     this.deploying = false;
+    this.spaceLaunching = false;
     this.currentInteraction = null;
+    this.movePointerId = null;
+    this.touchUiObjects = [];
+    this.ambientLights = [];
+    this.hubShadowCasters = [];
+    this.hubShadowSources = [];
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.lightingRig = createLightingRig(this, {
@@ -252,6 +354,10 @@ export class HubScene extends Phaser.Scene {
       this.crew.forEach((companion) => companion.light.destroy());
       this.stations.forEach((station) => station.light.destroy());
       this.ambientLights.forEach((light) => light.destroy());
+      this.touchUiObjects = [];
+      this.ambientLights = [];
+      this.hubShadowCasters = [];
+      this.hubShadowSources = [];
       this.lightingRig?.destroy();
     });
   }
@@ -288,71 +394,136 @@ export class HubScene extends Phaser.Scene {
     this.add.rectangle(640, 64, 1144, 60, 0x10192a, 0.96)
       .setStrokeStyle(2, 0x4a6f9b, 0.82);
 
-    this.add.rectangle(HUB_ROOM.centerX, HUB_ROOM.centerY, HUB_ROOM.width, HUB_ROOM.height, 0x0c1625, 0.98)
-      .setStrokeStyle(4, 0x6f9fd7, 0.82)
-      .setDepth(-8);
+    const addDeckBlock = (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      fill: number,
+      stroke: number,
+    ): void => {
+      this.add.rectangle(x, y, width, height, fill, 0.98)
+        .setStrokeStyle(4, stroke, 0.82)
+        .setDepth(-8);
+    };
 
-    this.add.rectangle(HUB_ROOM.centerX, 214, HUB_ROOM.width - 110, 12, 0x1f3552, 0.82).setDepth(-7);
-    this.add.rectangle(HUB_ROOM.centerX, 360, HUB_ROOM.width - 150, 6, 0x223a58, 0.74).setDepth(-7);
-    this.add.rectangle(HUB_ROOM.centerX, 520, HUB_ROOM.width - 110, 12, 0x1f3552, 0.82).setDepth(-7);
+    const addWallBlock = (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      stroke = 0x93a3b8,
+    ): void => {
+      this.add.rectangle(x, y, width, height, 0x09121d, 0.98)
+        .setStrokeStyle(2, stroke, 0.58)
+        .setDepth(-6);
+      this.registerHubCaster(x, y, width, height);
+    };
 
-    this.add.rectangle(182, 368, 94, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
-    this.add.rectangle(1098, 368, 134, HUB_ROOM.height - 78, 0x0a1523, 0.95).setDepth(-7);
-    this.add.rectangle(186, 360, 68, 176, 0x123354, 0.94)
-      .setStrokeStyle(3, 0x7ebaff, 0.82)
-      .setDepth(-5);
-    this.registerHubCaster(182, 368, 94, HUB_ROOM.height - 78);
-    this.registerHubCaster(1098, 368, 134, HUB_ROOM.height - 78);
-    this.registerHubCaster(186, 360, 68, 176);
+    const addDoorFrame = (
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      accent: number,
+    ): void => {
+      this.add.rectangle(x, y, width, height, 0x0d1520, 0.12)
+        .setStrokeStyle(2, accent, 0.48)
+        .setDepth(-5);
+      this.add.rectangle(x - width / 2 + 5, y, 4, Math.max(10, height - 10), accent, 0.68)
+        .setDepth(-4);
+      this.add.rectangle(x + width / 2 - 5, y, 4, Math.max(10, height - 10), accent, 0.68)
+        .setDepth(-4);
+      this.add.rectangle(x, y - height / 2 + 4, Math.max(18, width - 12), 4, accent, 0.34)
+        .setDepth(-4);
+    };
 
-    this.add.rectangle(708, 546, 532, 136, 0x132a40, 0.88)
-      .setStrokeStyle(2, 0x7aa9dd, 0.72)
-      .setDepth(-6);
-    this.registerHubCaster(708, 546, 532, 136);
-    this.add.text(708, 484, "Crew Quarters", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#d7e8ff",
-      fontStyle: "bold",
-    }).setOrigin(0.5).setDepth(-5);
-    this.add.text(708, 506, "Roster on deck and ready for formation assignment", {
-      fontFamily: "Arial",
-      fontSize: "14px",
-      color: "#aecded",
-    }).setOrigin(0.5).setDepth(-5);
+    this.add.rectangle(HUB_ROOM.centerX, HUB_ROOM.centerY + 18, HUB_ROOM.width - 64, HUB_ROOM.height + 18, 0x050a11, 0.38)
+      .setDepth(-11);
 
-    this.airlockGlow = this.add.rectangle(1120, HUB_ROOM.centerY, 84, 166, 0x4abfff, 0)
-      .setDepth(4);
-    this.airlockDoor = this.add.rectangle(1120, HUB_ROOM.centerY, 60, 148, 0x173b5d, 0.92)
-      .setStrokeStyle(3, 0x7ec4ff, 0.62)
-      .setDepth(5)
-      .setInteractive({ useHandCursor: true });
-    this.registerHubCaster(1120, HUB_ROOM.centerY, 60, 148);
-    this.airlockDoor.on("pointerdown", () => this.tryActivateAirlock());
-    this.airlockLabel = this.add.text(1070, 192, "Deploy Door", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#c8ddff",
-      fontStyle: "bold",
-    }).setDepth(6);
+    addDeckBlock(640, 118, 144, 32, 0x1b3f65, 0x84c9ff);
+    addDeckBlock(640, 187, 260, 122, 0x173758, 0x84c9ff);
+    addDeckBlock(640, 417, 260, 338, 0x173822, 0x9ef088);
+    addDeckBlock(390, 444, 280, 220, 0x472d1d, 0xffc28b);
+    addDeckBlock(890, 444, 280, 220, 0x37214d, 0xd59aff);
+    addDeckBlock(640, 595, 128, 44, 0x173822, 0x9ef088);
 
-    this.add.text(108, 46, "Lumen Carrier - Command Deck", {
+    this.add.rectangle(640, 417, 214, 286, 0x0f2418, 0.22).setDepth(-7);
+    this.add.rectangle(640, 330, 220, 6, 0x304e37, 0.42).setDepth(-7);
+    this.add.rectangle(640, 490, 220, 6, 0x304e37, 0.42).setDepth(-7);
+
+    addWallBlock(550, 260, 72, 18, 0x84c9ff);
+    addWallBlock(730, 260, 72, 18, 0x84c9ff);
+    addDoorFrame(640, 265, 92, 24, 0x84c9ff);
+
+    addWallBlock(518, 382, 16, 86, 0xffc28b);
+    addWallBlock(518, 524, 16, 88, 0xffc28b);
+    addDoorFrame(518, 455, 20, 86, 0xffc28b);
+
+    addWallBlock(762, 382, 16, 86, 0xd59aff);
+    addWallBlock(762, 524, 16, 88, 0xd59aff);
+    addDoorFrame(762, 455, 20, 86, 0xd59aff);
+
+    this.add.text(108, 46, "Lumen Carrier - Ship Hub", {
       fontFamily: "Arial",
       fontSize: "25px",
       color: "#f5fbff",
       fontStyle: "bold",
     });
 
-    this.createAmbientFixture(188, 168, 0x7ebaff);
-    this.createAmbientFixture(482, 168, 0x59c9ff);
-    this.createAmbientFixture(798, 168, 0xffd36d);
-    this.createAmbientFixture(1120, 164, 0x6fd0ff);
+    this.add.text(640, 156, "Cockpit", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#d7e8ff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(-4);
 
+    this.add.text(640, 306, "Main Bay", {
+      fontFamily: "Arial",
+      fontSize: "20px",
+      color: "#ebf7df",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(-4);
+
+    this.add.text(390, 372, "Engineering", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#ffe0bb",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(-4);
+
+    this.add.text(890, 372, "Crew Quarters", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#ecd8ff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(-4);
+
+    this.airlockGlow = this.add.rectangle(640, 618, 168, 36, 0x4abfff, 0)
+      .setDepth(4);
+    this.airlockDoor = this.add.rectangle(640, 618, 132, 28, 0x173b5d, 0.96)
+      .setStrokeStyle(3, 0x7ec4ff, 0.62)
+      .setDepth(5)
+      .setInteractive({ useHandCursor: true });
+    this.registerHubCaster(640, 618, 132, 28);
+    this.airlockDoor.on("pointerdown", () => this.tryActivateAirlock());
+    this.airlockLabel = this.add.text(640, 584, "Exit Hatch", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#c8ddff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(6);
+
+    this.createAmbientFixture(640, 170, 0x84c9ff);
+    this.createAmbientFixture(640, 316, 0x9ef088);
+    this.createAmbientFixture(390, 386, 0xffc28b);
+    this.createAmbientFixture(890, 386, 0xd59aff);
+    this.createAmbientFixture(640, 586, 0x9ef088);
   }
 
   private createActors(): void {
-    this.playerShadow = this.add.ellipse(304, HUB_ROOM.centerY + 14, 38, 16, 0x000000, 0.28).setDepth(6);
-    this.player = this.add.circle(304, HUB_ROOM.centerY, 20, 0xf2f7ff).setDepth(8);
+    this.playerShadow = this.add.ellipse(HUB_PLAYER_SPAWN.x, HUB_PLAYER_SPAWN.y + 14, 38, 16, 0x000000, 0.28).setDepth(6);
+    this.player = this.add.circle(HUB_PLAYER_SPAWN.x, HUB_PLAYER_SPAWN.y, 20, 0xf2f7ff).setDepth(8);
     this.player.setStrokeStyle(4, 0x7caeff, 1);
     this.playerLight = this.lightingRig?.createPointLight(
       this.player.x,
@@ -366,7 +537,8 @@ export class HubScene extends Phaser.Scene {
     setAnyLightVisible(this.playerLight, true);
 
     this.crew = STORY_COMPANIONS.map((companion, index) => {
-      const anchor = new Phaser.Math.Vector2(companion.hubPosition.x, companion.hubPosition.y);
+      const anchorSeed = HUB_CREW_ANCHORS[index] ?? companion.hubPosition;
+      const anchor = new Phaser.Math.Vector2(anchorSeed.x, anchorSeed.y);
       const shadow = this.add.ellipse(anchor.x, anchor.y + companion.radius * 0.72, companion.radius * 1.9, companion.radius * 0.9, 0x000000, 0.24)
         .setDepth(6);
       const sprite = this.add.circle(anchor.x, anchor.y, companion.radius, companion.coreColor).setDepth(7);
@@ -387,9 +559,10 @@ export class HubScene extends Phaser.Scene {
           .setDepth(8)
         : undefined;
 
-      const label = this.add.text(anchor.x, anchor.y + 26, `${companion.name}\n${getCompanionRoleDisplay(companion)}`, {
+      const label = this.add.text(anchor.x, anchor.y + 22, `${companion.name}
+${getCompanionRoleDisplay(companion)}`, {
         fontFamily: "Arial",
-        fontSize: "12px",
+        fontSize: "10px",
         color: "#e8f3ff",
         fontStyle: "bold",
         align: "center",
@@ -416,9 +589,13 @@ export class HubScene extends Phaser.Scene {
 
   private createStations(): void {
     this.stations = [
-      this.createStation("cockpit", 188, 360, 86, 176, "Cockpit", "Future space bridge"),
-      this.createStation("mission", 482, 252, 230, 120, "Mission Terminal", "Queue contracts"),
-      this.createStation("loadout", 798, 252, 230, 120, "Loadout Bench", "Gear + crafting"),
+      this.createStation("pilotSeat", 640, 182, 128, 38, "Pilot Seat", "Space helm"),
+      this.createStation("shipSystems", 640, 232, 144, 38, "Systems Terminal", "Hull / reactor / nav"),
+      this.createStation("mission", 640, 366, 92, 48, "Mission Terminal", "Contracts"),
+      this.createStation("cargo", 640, 504, 110, 52, "Cargo Crates", "Ship storage"),
+      this.createStation("forge", 266, 432, 84, 84, "Forge", "Crafting bay"),
+      this.createStation("repair", 334, 528, 90, 34, "Repair Terminal", "Restore systems"),
+      this.createStation("crew", 970, 436, 84, 84, "Crew Terminal", "Roster / formation"),
     ];
   }
 
@@ -431,36 +608,33 @@ export class HubScene extends Phaser.Scene {
     label: string,
     hintText: string,
   ): Station {
-    const accent = id === "mission"
-      ? 0x59c9ff
-      : id === "loadout"
-        ? 0xffd36d
-        : 0x8dc8ff;
-    const glow = this.add.ellipse(x, y + height * 0.1, width * 0.88, height * 0.42, accent, 0)
+    const accent = getStationAccent(id);
+    const glow = this.add.ellipse(x, y + Math.min(height * 0.1, 10), width * 0.86, Math.max(18, height * 0.26), accent, 0)
       .setDepth(4);
-    const shadow = this.add.ellipse(x, y + height * 0.34, width * 0.9, 18, 0x000000, 0.24).setDepth(4);
+    const shadow = this.add.ellipse(x, y + height * 0.34, width * 0.88, 14, 0x000000, 0.22).setDepth(4);
     const zone = this.add.rectangle(x, y, width, height, 0x17314f, 0.84)
-      .setStrokeStyle(3, accent, 0.72)
+      .setStrokeStyle(2, accent, 0.72)
       .setDepth(5)
       .setInteractive();
     this.registerHubCaster(x, y, width, height);
-    const light = this.lightingRig?.createPointLight(x, y + height * 0.1, accent, Math.max(92, width * 0.62), 0.34, 0.1)
-      ?? this.add.circle(x, y + height * 0.1, 24, accent, 0.18).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
+    const light = this.lightingRig?.createPointLight(x, y + height * 0.08, accent, Math.max(72, width * 0.52), 0.26, 0.1)
+      ?? this.add.circle(x, y + height * 0.08, 18, accent, 0.16).setDepth(8).setBlendMode(Phaser.BlendModes.ADD);
 
-    const title = this.add.text(x, y - 14, label, {
+    const title = this.add.text(x, y - (height >= 72 ? height * 0.15 : 12), label, {
       fontFamily: "Arial",
-      fontSize: id === "cockpit" ? "20px" : "22px",
+      fontSize: width <= 92 ? "15px" : id === "pilotSeat" ? "17px" : "16px",
       color: "#f3f8ff",
       fontStyle: "bold",
       align: "center",
+      wordWrap: { width: Math.max(76, width - 14) },
     }).setOrigin(0.5).setDepth(6);
 
-    const hint = this.add.text(x, y + 24, hintText, {
+    const hint = this.add.text(x, y + (height >= 72 ? height * 0.15 : 13), hintText, {
       fontFamily: "Arial",
-      fontSize: "14px",
+      fontSize: width <= 92 ? "10px" : "11px",
       color: "#bed4f1",
       align: "center",
-      wordWrap: { width: width - 24 },
+      wordWrap: { width: Math.max(66, width - 18) },
     }).setOrigin(0.5).setDepth(6);
 
     const station: Station = {
@@ -472,7 +646,7 @@ export class HubScene extends Phaser.Scene {
       label: title,
       hint,
       light,
-      interactionRadius: 112,
+      interactionRadius: Math.max(98, Math.max(width, height) * 0.72),
     };
 
     zone.on("pointerdown", () => this.tryInteractStation(station));
@@ -573,7 +747,7 @@ export class HubScene extends Phaser.Scene {
       .setStrokeStyle(3, 0x79abed, 0.85)
       .setDepth(20);
 
-    const title = this.add.text(672, 282, "", {
+    this.panelTitle = this.add.text(672, 282, "", {
       fontFamily: "Arial",
       fontSize: "26px",
       color: "#f5fbff",
@@ -620,7 +794,7 @@ export class HubScene extends Phaser.Scene {
 
     this.panel = this.add.container(0, 0, [
       background,
-      title,
+      this.panelTitle,
       this.panelBody,
       this.panelFooter,
       this.panelClose.container,
@@ -628,8 +802,6 @@ export class HubScene extends Phaser.Scene {
     ]).setDepth(20);
 
     this.panel.setVisible(false);
-    this.panel.setDataEnabled();
-    this.panel.data?.set("title", title);
   }
 
   private createCommandOverlays(): void {
@@ -1166,9 +1338,32 @@ export class HubScene extends Phaser.Scene {
     }
 
     const move = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
-    this.player.x = Phaser.Math.Clamp(this.player.x + move.x * HUB_SPEED * dt, HUB_ROOM.x + 22, HUB_ROOM.right - 22);
-    this.player.y = Phaser.Math.Clamp(this.player.y + move.y * HUB_SPEED * dt, HUB_ROOM.y + 22, HUB_ROOM.bottom - 22);
+    if (move.lengthSq() <= 0) {
+      this.playerShadow.setPosition(this.player.x, this.player.y + 14);
+      return;
+    }
+
+    const nextX = this.player.x + move.x * HUB_SPEED * dt;
+    const nextY = this.player.y + move.y * HUB_SPEED * dt;
+
+    if (this.isWalkablePoint(nextX, this.player.y)) {
+      this.player.x = nextX;
+    }
+
+    if (this.isWalkablePoint(this.player.x, nextY)) {
+      this.player.y = nextY;
+    }
+
     this.playerShadow.setPosition(this.player.x, this.player.y + 14);
+  }
+
+  private isWalkablePoint(x: number, y: number): boolean {
+    return HUB_WALK_ZONES.some((zone) => (
+      x >= zone.x + HUB_PLAYER_RADIUS
+      && x <= zone.right - HUB_PLAYER_RADIUS
+      && y >= zone.y + HUB_PLAYER_RADIUS
+      && y <= zone.bottom - HUB_PLAYER_RADIUS
+    ));
   }
 
   private updateCrew(dt: number): void {
@@ -1223,13 +1418,18 @@ export class HubScene extends Phaser.Scene {
       setAnyLightVisible(station.light, false);
     });
 
-    this.ambientLights.forEach((light) => {
-      setAnyLightVisible(light, true);
-      if (!light.visible) {
-        return;
+    this.ambientLights = this.ambientLights.filter((light) => {
+      const pointLight = light as Phaser.GameObjects.PointLight & { geom?: { radius: number } | null };
+      if (light instanceof Phaser.GameObjects.PointLight && !pointLight.geom) {
+        return false;
       }
 
-      const radius = light instanceof Phaser.GameObjects.PointLight ? light.radius : light.radius * 5.4;
+      setAnyLightVisible(light, true);
+      if (!light.visible) {
+        return true;
+      }
+
+      const radius = light instanceof Phaser.GameObjects.PointLight ? (pointLight.geom?.radius ?? 0) : light.radius * 5.4;
       const intensity = light instanceof Phaser.GameObjects.PointLight ? light.intensity : light.alpha * 2.4;
       this.hubShadowSources.push({
         x: light.x,
@@ -1237,6 +1437,7 @@ export class HubScene extends Phaser.Scene {
         radius,
         intensity,
       });
+      return true;
     });
     this.lightingRig.refreshShadows(this.hubShadowSources, this.hubShadowCasters, 260);
   }
@@ -1285,8 +1486,8 @@ export class HubScene extends Phaser.Scene {
     if (this.isNearAirlock()) {
       const selectedMission = gameSession.getSelectedMissionId();
       this.promptText.setText(selectedMission
-        ? "Activate the deploy door to assign the squad and launch the active contract."
-        : "Activate the deploy door to assign the squad. Launch unlocks once the Data Pad has an active contract.");
+        ? "Activate the exit hatch to review crew staging and start the current ground contract."
+        : "Activate the exit hatch to review crew staging. Launch unlocks once the Data Pad has an active contract.");
       return;
     }
 
@@ -1304,41 +1505,164 @@ export class HubScene extends Phaser.Scene {
   }
 
   private openStation(id: StationId): void {
-    if (!this.panel || !this.panelBody || !this.panelFooter || !this.panelAction) {
-      return;
-    }
-
-    this.closeCommandOverlays();
-    const title = this.panel.data?.get("title") as Phaser.GameObjects.Text | undefined;
-    this.panel.setVisible(id === "cockpit");
+    const activeMissionId = gameSession.getSelectedMissionId();
+    const activeMission = activeMissionId ? getMissionContract(activeMissionId) : null;
 
     if (id === "mission") {
+      this.closeCommandOverlays();
       this.missionBoardOverlay?.show();
       this.syncSceneOverlayChrome();
       return;
     }
 
-    if (id === "loadout") {
-      this.openDataPadTab("inventory");
+    if (id === "crew") {
+      this.openDeployOverlay();
+      this.refreshDeployOverlay("Crew terminal online. Formation and mission-ready roster can be staged here.");
       return;
     }
 
-    if (id === "cockpit") {
-      title?.setText("Cockpit Bridge");
-      this.panelBody.setText([
-        "The flight bridge is the future space layer entry point.",
-        "",
-        "You will eventually launch into space from here, travel to mission waypoints, discover secrets, and decide when to dock or deploy.",
-        "",
-        "For this milestone, the right-side deploy door is still acting as the temporary shortcut into ground missions.",
-      ]);
-      this.panelFooter.setText("Space flight is not live yet, but the bridge door is now in place so the command deck layout matches the longer-term plan.");
-      this.panelClose?.setLabel("Close");
-      this.panelAction.setLabel("Bridge Offline");
-      this.panelAction.setEnabled(false);
-      this.syncSceneOverlayChrome();
+    if (id === "cargo") {
+      const shipStorage = gameSession.getShipStorageSlots();
+      const carriedCargo = gameSession.saveData.loadout.cargo;
+      this.showConsolePanel({
+        title: "Cargo Storage",
+        body: [
+          "Ship storage access is wired in.",
+          "",
+          `Ship crates occupied: ${countFilledSlots(shipStorage)}/${shipStorage.length}`,
+          `Player cargo occupied: ${countFilledSlots(carriedCargo)}/${carriedCargo.length}`,
+          "",
+          "Dedicated ship-to-player transfer controls have not landed yet, but the cargo room now has a fixed access point.",
+        ],
+        footer: "Open the Data Pad inventory for carried gear. Cargo-transfer UI can land next without moving this room.",
+        actionLabel: "Open Inventory",
+        actionEnabled: true,
+        onAction: () => this.openDataPadTab("inventory"),
+      });
       return;
     }
+
+    if (id === "forge") {
+      this.showConsolePanel({
+        title: "Forge Terminal",
+        body: [
+          "Forge link is active.",
+          "",
+          "Crafting and upgrade UI will live here.",
+          "Blueprints, recipes, and material-specific outcomes are intentionally deferred for this slice.",
+        ],
+        footer: "The station exists and is connected. Crafting depth can drop in later without changing the ship layout.",
+        actionLabel: "Forge Standby",
+        actionEnabled: false,
+      });
+      return;
+    }
+
+    if (id === "shipSystems") {
+      const travel = gameSession.getShipTravelState();
+      gameSession.inspectShipSystems();
+      this.showConsolePanel({
+        title: "Ship Systems",
+        body: [
+          "Diagnostic summary",
+          "",
+          ...this.getShipSystemConsoleLines(),
+          "",
+          `Travel state: ${getShipTravelStatusLabel(travel.status)}`,
+        ],
+        footer: gameSession.hasShipSystemDamage()
+          ? "Damage is present. Move to the repair terminal to restore the carrier."
+          : "All tracked ship systems are nominal.",
+        actionLabel: "Refresh Scan",
+        actionEnabled: true,
+        onAction: () => this.openStation("shipSystems"),
+      });
+      return;
+    }
+
+    if (id === "repair") {
+      const damagedSystems = gameSession.getDamagedShipSystemIds();
+      this.showConsolePanel({
+        title: "Repair Terminal",
+        body: [
+          "Field repair console",
+          "",
+          ...this.getShipSystemConsoleLines(),
+        ],
+        footer: damagedSystems.length > 0
+          ? `${damagedSystems.length} system${damagedSystems.length === 1 ? "" : "s"} need attention.`
+          : "Repair terminal is online. Nothing currently needs work.",
+        actionLabel: damagedSystems.length > 0 ? "Repair All" : "All Systems Nominal",
+        actionEnabled: damagedSystems.length > 0,
+        onAction: () => {
+          gameSession.repairAllShipSystems();
+          this.statusText?.setText("Repair cycle complete. All ship systems restored.");
+          this.openStation("repair");
+        },
+      });
+      return;
+    }
+
+    const travel = gameSession.getShipTravelState();
+    this.showConsolePanel({
+      title: "Pilot Seat",
+      body: [
+        "Helm link is active.",
+        "",
+        activeMission
+          ? `Route staged: ${activeMission.title}`
+          : "No mission route is staged. You can still launch a free-roam space test flight.",
+        `Ship travel: ${getShipTravelStatusLabel(travel.status)}`,
+        "",
+        "This first space pass supports launch, free flight, shooting, destructible asteroids, and clean return to the ship.",
+      ],
+      footer: activeMission
+        ? "Launch starts the current route's space test. Landing is not wired yet, so return from space will bring you back into the ship interior."
+        : "Mission routing is optional for this foundation pass. Launching now enters the space field immediately.",
+      actionLabel: "Launch Into Space",
+      actionEnabled: !this.spaceLaunching,
+      onAction: () => this.launchIntoSpace(activeMissionId ?? null),
+    });
+  }
+
+  private showConsolePanel({
+    title,
+    body,
+    footer,
+    actionLabel,
+    actionEnabled = false,
+    onAction,
+  }: {
+    title: string;
+    body: string[];
+    footer: string;
+    actionLabel: string;
+    actionEnabled?: boolean;
+    onAction?: () => void;
+  }): void {
+    if (!this.panel || !this.panelTitle || !this.panelBody || !this.panelFooter || !this.panelAction) {
+      return;
+    }
+
+    this.closeCommandOverlays();
+    this.panelTitle.setText(title);
+    this.panelBody.setText(body);
+    this.panelFooter.setText(footer);
+    this.panelClose?.setLabel("Close");
+    this.panelAction.setLabel(actionLabel);
+    this.panelAction.setEnabled(actionEnabled);
+    this.panelAction.setOnClick(onAction ?? (() => undefined));
+    this.panel.setVisible(true);
+    this.syncSceneOverlayChrome();
+  }
+
+  private getShipSystemConsoleLines(): string[] {
+    const systems = gameSession.getShipSystemsState();
+    const systemIds = ["hull", "reactor", "engines", "lifeSupport", "navigation"] as const;
+    return systemIds.map((systemId) => {
+      const system = systems[systemId];
+      return `${getShipSystemLabel(systemId)}: ${system.integrity}% | ${system.online ? "Online" : "Offline"}`;
+    });
   }
 
   private closePanel(): void {
@@ -1555,16 +1879,18 @@ export class HubScene extends Phaser.Scene {
     const activeMissionId = gameSession.getSelectedMissionId();
     const activeMission = activeMissionId ? getMissionContract(activeMissionId) : null;
     const queuedCount = gameSession.getAcceptedMissionIds().length;
+    const travel = gameSession.getShipTravelState();
     this.missionText?.setText(activeMission
-      ? `Active contract: ${activeMission.title} | ${queuedCount} queued`
-      : "No active contract. Queue missions at the terminal, then make one active in the Data Pad.");
+      ? `Active contract: ${activeMission.title} | ${queuedCount} queued | Pilot seat launch ready`
+      : "No active contract. Queue missions at the mission terminal, then use the pilot seat for a free-roam or staged route launch.");
     this.statusText?.setText(activeMission
-      ? `${activeMission.prompt}`
-      : "Mission Terminal queues routes. Data Pad picks the active one. Deploy Door launches it once your squad is set.");
+      ? `${activeMission.prompt} Pilot seat launch is now live. The exit hatch remains a temporary direct ground-deploy shortcut until landing is built.`
+      : `Ship travel: ${getShipTravelStatusLabel(travel.status)}. Pilot seat now launches the space field, while the exit hatch remains the temporary ground-combat shortcut.`);
 
     this.airlockDoor?.setFillStyle(activeMission ? 0x1d5c8d : 0x173b5d, activeMission ? 0.98 : 0.9);
     this.airlockDoor?.setStrokeStyle(3, activeMission ? 0x8be4ff : 0x7ec4ff, activeMission ? 0.96 : 0.62);
     this.airlockGlow?.setFillStyle(0x4abfff, 0);
+    this.airlockLabel?.setText(activeMission ? "Exit Hatch Ready" : "Exit Hatch");
     this.airlockLabel?.setColor(activeMission ? "#f4fbff" : "#c8ddff");
     if (!activeMission) {
       this.deploying = false;
@@ -1638,6 +1964,25 @@ export class HubScene extends Phaser.Scene {
     });
   }
 
+  private launchIntoSpace(missionId: string | null): void {
+    if (this.spaceLaunching) {
+      return;
+    }
+
+    this.spaceLaunching = true;
+    this.closeCommandOverlays();
+    this.statusText?.setText(missionId
+      ? "Launching from the pilot seat. Route staged for the space test flight."
+      : "Launching from the pilot seat into the local space field.");
+    if (missionId) {
+      gameSession.startShipTravel(missionId);
+    }
+    this.cameras.main.fadeOut(220, 8, 12, 18);
+    this.time.delayedCall(220, () => {
+      this.scene.start("space", { missionId });
+    });
+  }
+
   private deployAcceptedMission(): void {
     if (!this.airlockDoor || this.deploying) {
       return;
@@ -1651,7 +1996,7 @@ export class HubScene extends Phaser.Scene {
 
     this.deploying = true;
     this.closeDeployOverlay();
-    this.statusText?.setText("Deploying through the temporary airlock shortcut.");
+    this.statusText?.setText("Moving through the exit hatch.");
     this.cameras.main.fadeOut(220, 8, 12, 18);
     this.time.delayedCall(220, () => {
       gameSession.startMission(missionId);
@@ -1671,11 +2016,7 @@ export class HubScene extends Phaser.Scene {
           kind: "station" as const,
           x: this.nearestStation.zone.x,
           y: this.nearestStation.zone.getBounds().top - 26,
-          buttonLabel: this.nearestStation.id === "mission"
-            ? "Use"
-            : this.nearestStation.id === "cockpit"
-              ? "Bridge"
-              : "Loadout",
+          buttonLabel: getStationButtonLabel(this.nearestStation.id),
           station: this.nearestStation,
         }
       : null;
@@ -1732,7 +2073,7 @@ export class HubScene extends Phaser.Scene {
 
   private tryActivateAirlock(): void {
     if (!this.isNearAirlock()) {
-      this.statusText?.setText("Move closer to the deploy door.");
+      this.statusText?.setText("Move closer to the exit hatch.");
       return;
     }
 
@@ -1744,7 +2085,7 @@ export class HubScene extends Phaser.Scene {
       return false;
     }
 
-    return Phaser.Math.Distance.Between(this.player.x, this.player.y, this.airlockDoor.x, this.airlockDoor.y) < 108;
+    return Phaser.Math.Distance.Between(this.player.x, this.player.y, this.airlockDoor.x, this.airlockDoor.y) < 96;
   }
 
   private openPauseMenu(): void {
@@ -1887,7 +2228,15 @@ export class HubScene extends Phaser.Scene {
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       squadAssignments: gameSession.getSquadAssignments(),
       activeSlot: gameSession.getActiveSlotIndex(),
+      shipTravel: gameSession.getShipTravelState(),
       prompt: this.promptText?.text ?? "",
     };
   }
 }
+
+
+
+
+
+
+

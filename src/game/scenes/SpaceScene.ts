@@ -1,0 +1,1411 @@
+import Phaser from "phaser";
+
+import { retroSfx } from "../audio/retroSfx";
+import { getMissionContract } from "../content/missions";
+import {
+  SPACE_FACTIONS,
+  SPACE_SECTORS,
+  SPACE_WORLD_CONFIG,
+  createSpaceFactionShipSeeds,
+  createSpaceFieldSeeds,
+  getSpaceSectorAtPosition,
+  isFactionHostileByDefault,
+  type SpaceFactionId,
+  type SpaceFactionShipSeed,
+  type SpaceFieldObjectKind,
+  type SpaceFieldObjectSeed,
+  type SpaceSectorConfig,
+} from "../content/space";
+import { gameSession } from "../core/session";
+import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
+import { createMenuButton, type MenuButton } from "../ui/buttons";
+
+type SpaceSceneData = {
+  missionId?: string | null;
+};
+
+type SpaceFieldObject = {
+  id: string;
+  kind: SpaceFieldObjectKind;
+  root: Phaser.GameObjects.Container;
+  damageRing: Phaser.GameObjects.Arc;
+  velocity: Phaser.Math.Vector2;
+  radius: number;
+  hp: number;
+  maxHp: number;
+  spin: number;
+  flash: number;
+};
+
+type SpaceFactionShip = {
+  id: string;
+  factionId: SpaceFactionId;
+  sectorId: string;
+  root: Phaser.GameObjects.Container;
+  thruster: Phaser.GameObjects.Ellipse;
+  damageRing: Phaser.GameObjects.Arc;
+  velocity: Phaser.Math.Vector2;
+  aimDirection: Phaser.Math.Vector2;
+  patrolTarget: Phaser.Math.Vector2;
+  radius: number;
+  hp: number;
+  maxHp: number;
+  flash: number;
+  fireCooldown: number;
+  provokedByPlayer: boolean;
+  provokedByShips: Set<string>;
+  aggressionTimer: number;
+  strafeSign: number;
+};
+
+type SpaceProjectile = {
+  id: string;
+  ownerKind: "player" | "faction";
+  ownerShipId: string | null;
+  ownerFactionId: SpaceFactionId | null;
+  sprite: Phaser.GameObjects.Arc;
+  glow: Phaser.GameObjects.Arc;
+  velocity: Phaser.Math.Vector2;
+  life: number;
+  radius: number;
+  damage: number;
+  canHitPlayer: boolean;
+};
+
+type SpaceBurstParticle = {
+  sprite: Phaser.GameObjects.Shape;
+  velocity: Phaser.Math.Vector2;
+  rotationSpeed: number;
+  life: number;
+  maxLife: number;
+};
+
+type SpaceDamageSource =
+  | { kind: "player" }
+  | { kind: "ship"; shipId: string | null; factionId: SpaceFactionId | null };
+
+const PLAYER_RADIUS = 22;
+const PLAYER_MAX_HULL = 8;
+const PLAYER_ACCELERATION = 720;
+const PLAYER_COAST_DRAG = 2.1;
+const PLAYER_THRUST_DRAG = 0.85;
+const PLAYER_MAX_SPEED = 420;
+const PLAYER_BULLET_SPEED = 880;
+const PLAYER_FIRE_COOLDOWN = 0.14;
+const PLAYER_PROJECTILE_LIFETIME = 1.25;
+const FACTION_PROJECTILE_LIFETIME = 1.8;
+const FACTION_DAMAGE = 1;
+const PLAYER_DAMAGE = 1;
+const AGGRESSION_DURATION = 12;
+const STAR_COLORS = [0xffffff, 0xb9d8ff, 0x7fb7ff] as const;
+
+function randomBetween(min: number, max: number): number {
+  return min + (max - min) * Math.random();
+}
+
+function createRockPoints(radius: number): number[] {
+  const points: number[] = [];
+  const pointCount = radius >= 42 ? 9 : 7;
+
+  for (let index = 0; index < pointCount; index += 1) {
+    const angle = (index / pointCount) * Math.PI * 2;
+    const pointRadius = radius * randomBetween(0.74, 1);
+    points.push(Math.cos(angle) * pointRadius, Math.sin(angle) * pointRadius);
+  }
+
+  return points;
+}
+
+function clampToBounds(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function angleToDirection(rotation: number): Phaser.Math.Vector2 {
+  return new Phaser.Math.Vector2(
+    Math.cos(rotation - Math.PI * 0.5),
+    Math.sin(rotation - Math.PI * 0.5),
+  ).normalize();
+}
+
+export class SpaceScene extends Phaser.Scene {
+  private shipRoot!: Phaser.GameObjects.Container;
+  private shipThruster!: Phaser.GameObjects.Ellipse;
+  private shipDamageRing!: Phaser.GameObjects.Arc;
+  private shipVelocity = new Phaser.Math.Vector2();
+  private moveDirection = new Phaser.Math.Vector2();
+  private aimDirection = new Phaser.Math.Vector2(1, 0);
+  private pointerWorld = new Phaser.Math.Vector2();
+  private asteroids: SpaceFieldObject[] = [];
+  private factionShips: SpaceFactionShip[] = [];
+  private shots: SpaceProjectile[] = [];
+  private burstParticles: SpaceBurstParticle[] = [];
+  private routeMissionId: string | null = null;
+  private routeTitle = "Free roam launch";
+  private destroyedObjects = 0;
+  private destroyedFactionShips = 0;
+  private playerHull = PLAYER_MAX_HULL;
+  private playerFlash = 0;
+  private fireCooldown = 0;
+  private thrusting = false;
+  private returningToShip = false;
+  private playerDestroyed = false;
+  private routeText?: Phaser.GameObjects.Text;
+  private statusText?: Phaser.GameObjects.Text;
+  private contactText?: Phaser.GameObjects.Text;
+  private returnButton?: MenuButton;
+  private inputKeys?: {
+    up: Phaser.Input.Keyboard.Key;
+    down: Phaser.Input.Keyboard.Key;
+    left: Phaser.Input.Keyboard.Key;
+    right: Phaser.Input.Keyboard.Key;
+    fire: Phaser.Input.Keyboard.Key;
+    returnToShip: Phaser.Input.Keyboard.Key;
+    cancel: Phaser.Input.Keyboard.Key;
+  };
+
+  constructor() {
+    super("space");
+  }
+
+  init(data: SpaceSceneData = {}): void {
+    this.routeMissionId = typeof data.missionId === "string" && data.missionId.length > 0
+      ? data.missionId
+      : null;
+    this.routeTitle = this.routeMissionId
+      ? getMissionContract(this.routeMissionId)?.title ?? "Route staged"
+      : "Free roam launch";
+  }
+
+  create(): void {
+    this.asteroids = [];
+    this.factionShips = [];
+    this.shots = [];
+    this.burstParticles = [];
+    this.destroyedObjects = 0;
+    this.destroyedFactionShips = 0;
+    this.playerHull = PLAYER_MAX_HULL;
+    this.playerFlash = 0;
+    this.fireCooldown = 0;
+    this.shipVelocity.set(0, 0);
+    this.moveDirection.set(0, 0);
+    this.aimDirection.set(1, 0);
+    this.thrusting = false;
+    this.returningToShip = false;
+    this.playerDestroyed = false;
+
+    this.cameras.main.setBackgroundColor("#040810");
+    this.input.mouse?.disableContextMenu();
+
+    this.drawWorldBackdrop();
+    this.createPlayerShip();
+    this.createFieldObjects();
+    this.createFactionShips();
+    this.createHud();
+    this.bindKeyboard();
+    this.configureCamera();
+    this.refreshHud();
+  }
+
+  update(_time: number, delta: number): void {
+    const dt = Math.min(delta / 1000, 0.05);
+
+    if (this.inputKeys && !this.playerDestroyed && (
+      Phaser.Input.Keyboard.JustDown(this.inputKeys.returnToShip)
+      || Phaser.Input.Keyboard.JustDown(this.inputKeys.cancel)
+    )) {
+      this.returnToShip();
+      return;
+    }
+
+    if (this.returningToShip || this.playerDestroyed) {
+      return;
+    }
+
+    this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+    this.playerFlash = Math.max(0, this.playerFlash - (dt * 4));
+    this.updateAimDirection();
+    this.updatePlayerShip(dt);
+    this.updateFieldObjects(dt);
+    this.updateFactionShips(dt);
+    this.resolveFactionShipCollisions();
+    this.updateProjectiles(dt);
+    this.updateBurstParticles(dt);
+    this.refreshHud();
+  }
+
+  private drawWorldBackdrop(): void {
+    this.add.rectangle(
+      SPACE_WORLD_CONFIG.width * 0.5,
+      SPACE_WORLD_CONFIG.height * 0.5,
+      SPACE_WORLD_CONFIG.width,
+      SPACE_WORLD_CONFIG.height,
+      0x040810,
+      1,
+    ).setDepth(-30);
+
+    const nebulae = this.add.graphics().setDepth(-28);
+    nebulae.fillStyle(0x15304d, 0.18);
+    nebulae.fillCircle(SPACE_WORLD_CONFIG.width * 0.28, SPACE_WORLD_CONFIG.height * 0.34, 1100);
+    nebulae.fillStyle(0x291942, 0.16);
+    nebulae.fillCircle(SPACE_WORLD_CONFIG.width * 0.76, SPACE_WORLD_CONFIG.height * 0.62, 960);
+    nebulae.fillStyle(0x12333a, 0.14);
+    nebulae.fillCircle(SPACE_WORLD_CONFIG.width * 0.54, SPACE_WORLD_CONFIG.height * 0.78, 740);
+
+    const stars = this.add.graphics().setDepth(-24);
+    for (let index = 0; index < SPACE_WORLD_CONFIG.starCount; index += 1) {
+      const color = STAR_COLORS[index % STAR_COLORS.length];
+      stars.fillStyle(color, index % 14 === 0 ? 0.95 : index % 6 === 0 ? 0.78 : 0.56);
+      stars.fillCircle(
+        randomBetween(0, SPACE_WORLD_CONFIG.width),
+        randomBetween(0, SPACE_WORLD_CONFIG.height),
+        index % 16 === 0 ? randomBetween(1.6, 2.4) : randomBetween(0.55, 1.45),
+      );
+    }
+
+    this.add.rectangle(
+      SPACE_WORLD_CONFIG.width * 0.5,
+      SPACE_WORLD_CONFIG.height * 0.5,
+      SPACE_WORLD_CONFIG.width,
+      SPACE_WORLD_CONFIG.height,
+      0x000000,
+      0,
+    ).setStrokeStyle(3, 0x183552, 0.42).setDepth(-22);
+  }
+
+  private createPlayerShip(): void {
+    const shadow = this.add.ellipse(4, 8, 42, 24, 0x000000, 0.22);
+    const leftPod = this.add.rectangle(-18, 4, 12, 22, 0x3e5676, 0.96).setStrokeStyle(1, 0x7cb5ff, 0.26);
+    const rightPod = this.add.rectangle(18, 4, 12, 22, 0x3e5676, 0.96).setStrokeStyle(1, 0x7cb5ff, 0.26);
+    const body = this.add.rectangle(0, 2, 28, 34, 0x4e6c90, 0.98).setStrokeStyle(2, 0xcfe5ff, 0.7);
+    const cockpit = this.add.triangle(0, -18, 0, -24, -10, -2, 10, -2, 0x8fe3ff, 0.96).setStrokeStyle(1, 0xeaf8ff, 0.6);
+    const fin = this.add.rectangle(0, 20, 10, 12, 0x345172, 0.96).setStrokeStyle(1, 0x8bb5e8, 0.38);
+    this.shipThruster = this.add.ellipse(0, 23, 14, 24, 0x76dfff, 0.24).setStrokeStyle(1, 0xc5f2ff, 0.3);
+    this.shipDamageRing = this.add.circle(0, 0, 26, 0xff9f74, 0).setStrokeStyle(2, 0xffdbbc, 0);
+
+    this.shipRoot = this.add.container(SPACE_WORLD_CONFIG.spawn.x, SPACE_WORLD_CONFIG.spawn.y, [
+      shadow,
+      this.shipDamageRing,
+      this.shipThruster,
+      leftPod,
+      rightPod,
+      fin,
+      body,
+      cockpit,
+    ]).setDepth(20);
+    this.shipRoot.setSize(62, 58);
+  }
+
+  private createFieldObjects(): void {
+    const seeds = createSpaceFieldSeeds();
+    this.asteroids = seeds.map((seed, index) => this.createFieldObject(seed, index));
+  }
+
+  private createFieldObject(seed: SpaceFieldObjectSeed, index: number): SpaceFieldObject {
+    const hullColor = seed.kind === "asteroid" ? 0x6e7e93 : 0x877864;
+    const strokeColor = seed.kind === "asteroid" ? 0xc2d4eb : 0xcbb185;
+    const rockPoints = createRockPoints(seed.radius);
+    const shadow = this.add.ellipse(5, 7, seed.radius * 1.7, seed.radius * 1.24, 0x000000, 0.16);
+    const hull = this.add.polygon(0, 0, rockPoints, hullColor, 0.98).setStrokeStyle(2, strokeColor, 0.66);
+    const craterA = this.add.circle(-seed.radius * 0.18, seed.radius * 0.14, Math.max(4, seed.radius * 0.16), 0x34404d, 0.24);
+    const craterB = this.add.circle(seed.radius * 0.2, -seed.radius * 0.1, Math.max(3, seed.radius * 0.12), 0x2f3945, 0.18);
+    const damageRing = this.add.circle(0, 0, seed.radius * 0.76, 0xff8f57, 0).setStrokeStyle(2, 0xffcc92, 0);
+    const root = this.add.container(seed.x, seed.y, [shadow, hull, craterA, craterB, damageRing]).setDepth(8);
+    root.rotation = seed.rotation;
+    root.setSize(seed.radius * 2.2, seed.radius * 2.2);
+
+    return {
+      id: `field-${index}`,
+      kind: seed.kind,
+      root,
+      damageRing,
+      velocity: new Phaser.Math.Vector2(seed.velocityX, seed.velocityY),
+      radius: seed.radius,
+      hp: seed.hp,
+      maxHp: seed.hp,
+      spin: seed.spin,
+      flash: 0,
+    };
+  }
+
+  private createFactionShips(): void {
+    const seeds = createSpaceFactionShipSeeds();
+    this.factionShips = seeds.map((seed, index) => this.createFactionShip(seed, index));
+  }
+
+  private createFactionShip(seed: SpaceFactionShipSeed, index: number): SpaceFactionShip {
+    const faction = SPACE_FACTIONS[seed.factionId];
+    const children: Phaser.GameObjects.GameObject[] = [];
+    const shadow = this.add.ellipse(3, 7, faction.radius * 1.9, faction.radius, 0x000000, 0.2);
+    const damageRing = this.add.circle(0, 0, faction.radius * 0.92, faction.glowColor, 0).setStrokeStyle(2, 0xf8fbff, 0);
+    const thruster = this.add.ellipse(0, faction.radius - 1, 12, 20, faction.glowColor, 0.2).setStrokeStyle(1, faction.trimColor, 0.28);
+    children.push(shadow, damageRing, thruster);
+
+    if (seed.factionId === "empire") {
+      children.push(
+        this.add.rectangle(-14, 4, 10, 24, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.36),
+        this.add.rectangle(14, 4, 10, 24, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.36),
+        this.add.rectangle(0, 3, 24, 32, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.74),
+        this.add.triangle(0, -18, 0, -24, -10, -2, 10, -2, faction.trimColor, 0.96).setStrokeStyle(1, 0xf7fbff, 0.48),
+        this.add.rectangle(0, 20, 12, 10, 0x2b3648, 0.96).setStrokeStyle(1, faction.trimColor, 0.28),
+      );
+    } else if (seed.factionId === "republic") {
+      children.push(
+        this.add.rectangle(-18, 5, 14, 22, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.3),
+        this.add.rectangle(18, 5, 14, 22, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.3),
+        this.add.rectangle(0, 3, 30, 30, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.78),
+        this.add.triangle(0, -17, 0, -23, -11, -2, 11, -2, faction.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.42),
+        this.add.rectangle(0, 19, 18, 9, 0x203652, 0.96).setStrokeStyle(1, faction.trimColor, 0.28),
+      );
+    } else if (seed.factionId === "pirate") {
+      const leftWing = this.add.rectangle(-16, 7, 8, 24, faction.color, 0.96).setStrokeStyle(1, faction.trimColor, 0.3);
+      leftWing.rotation = -0.26;
+      const rightWing = this.add.rectangle(16, 7, 8, 24, faction.color, 0.96).setStrokeStyle(1, faction.trimColor, 0.3);
+      rightWing.rotation = 0.26;
+      children.push(
+        leftWing,
+        rightWing,
+        this.add.rectangle(0, 4, 20, 28, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.72),
+        this.add.triangle(0, -18, 0, -25, -10, 0, 10, 0, faction.trimColor, 0.95).setStrokeStyle(1, 0xfff3c5, 0.4),
+        this.add.rectangle(0, 20, 14, 8, 0x473c1d, 0.96).setStrokeStyle(1, faction.trimColor, 0.3),
+      );
+    } else {
+      children.push(
+        this.add.rectangle(-16, 6, 10, 20, 0x555d68, 0.98).setStrokeStyle(1, faction.trimColor, 0.24),
+        this.add.rectangle(16, 6, 10, 20, 0x555d68, 0.98).setStrokeStyle(1, faction.trimColor, 0.24),
+        this.add.rectangle(0, 5, 26, 30, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.7),
+        this.add.triangle(0, -16, 0, -22, -9, -2, 9, -2, faction.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.42),
+        this.add.rectangle(0, 21, 20, 10, 0x4a515c, 0.96).setStrokeStyle(1, faction.trimColor, 0.24),
+      );
+    }
+
+    const root = this.add.container(seed.x, seed.y, children).setDepth(13);
+    root.rotation = seed.rotation;
+    root.setSize(faction.radius * 2.4, faction.radius * 2.4);
+
+    return {
+      id: `faction-${index}`,
+      factionId: seed.factionId,
+      sectorId: seed.sectorId,
+      root,
+      thruster,
+      damageRing,
+      velocity: new Phaser.Math.Vector2(seed.velocityX, seed.velocityY),
+      aimDirection: angleToDirection(seed.rotation),
+      patrolTarget: new Phaser.Math.Vector2(seed.patrolX, seed.patrolY),
+      radius: faction.radius,
+      hp: faction.maxHull,
+      maxHp: faction.maxHull,
+      flash: 0,
+      fireCooldown: randomBetween(0, faction.fireCooldown),
+      provokedByPlayer: false,
+      provokedByShips: new Set<string>(),
+      aggressionTimer: 0,
+      strafeSign: Math.random() > 0.5 ? 1 : -1,
+    };
+  }
+
+  private createHud(): void {
+    this.add.rectangle(236, 100, 412, 140, 0x07111d, 0.84)
+      .setStrokeStyle(2, 0x365983, 0.72)
+      .setScrollFactor(0)
+      .setDepth(50);
+
+    this.add.text(38, 34, "SPACE TEST FIELD", {
+      fontFamily: "Arial",
+      fontSize: "22px",
+      color: "#f3fbff",
+      fontStyle: "bold",
+    }).setScrollFactor(0).setDepth(51);
+
+    this.routeText = this.add.text(38, 64, "", {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#8fd4ff",
+      wordWrap: { width: 376 },
+    }).setScrollFactor(0).setDepth(51);
+
+    this.statusText = this.add.text(38, 90, "", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#d7eaff",
+      wordWrap: { width: 376 },
+    }).setScrollFactor(0).setDepth(51);
+
+    this.contactText = this.add.text(38, 114, "", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#c8def9",
+      wordWrap: { width: 376 },
+    }).setScrollFactor(0).setDepth(51);
+
+    this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB / Space fire  |  X / Esc return to ship", {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#dcecff",
+      backgroundColor: "#09131fcc",
+      padding: { x: 12, y: 6 },
+    }).setOrigin(0.5, 0.5).setScrollFactor(0).setDepth(51);
+
+    this.returnButton = createMenuButton({
+      scene: this,
+      x: GAME_WIDTH - 110,
+      y: 44,
+      width: 184,
+      height: 40,
+      label: "Return To Ship",
+      onClick: () => this.returnToShip(),
+      depth: 52,
+      accentColor: 0x234566,
+    });
+  }
+
+  private bindKeyboard(): void {
+    const keyboard = this.input.keyboard;
+    if (!keyboard) {
+      return;
+    }
+
+    this.inputKeys = keyboard.addKeys({
+      up: Phaser.Input.Keyboard.KeyCodes.W,
+      down: Phaser.Input.Keyboard.KeyCodes.S,
+      left: Phaser.Input.Keyboard.KeyCodes.A,
+      right: Phaser.Input.Keyboard.KeyCodes.D,
+      fire: Phaser.Input.Keyboard.KeyCodes.SPACE,
+      returnToShip: Phaser.Input.Keyboard.KeyCodes.X,
+      cancel: Phaser.Input.Keyboard.KeyCodes.ESC,
+    }) as SpaceScene["inputKeys"];
+  }
+
+  private configureCamera(): void {
+    this.cameras.main.setBounds(0, 0, SPACE_WORLD_CONFIG.width, SPACE_WORLD_CONFIG.height);
+    this.cameras.main.startFollow(this.shipRoot, true, 1, 1);
+    this.cameras.main.setRoundPixels(true);
+  }
+
+  private updateAimDirection(): void {
+    const pointer = this.input.activePointer;
+    this.cameras.main.getWorldPoint(pointer.x, pointer.y, this.pointerWorld);
+    const dx = this.pointerWorld.x - this.shipRoot.x;
+    const dy = this.pointerWorld.y - this.shipRoot.y;
+    if ((dx * dx) + (dy * dy) < 64) {
+      return;
+    }
+
+    this.aimDirection.set(dx, dy).normalize();
+    this.shipRoot.rotation = Math.atan2(this.aimDirection.y, this.aimDirection.x) + Math.PI * 0.5;
+  }
+
+  private updatePlayerShip(dt: number): void {
+    if (!this.inputKeys) {
+      return;
+    }
+
+    this.moveDirection.set(0, 0);
+    if (this.inputKeys.left.isDown) {
+      this.moveDirection.x -= 1;
+    }
+    if (this.inputKeys.right.isDown) {
+      this.moveDirection.x += 1;
+    }
+    if (this.inputKeys.up.isDown) {
+      this.moveDirection.y -= 1;
+    }
+    if (this.inputKeys.down.isDown) {
+      this.moveDirection.y += 1;
+    }
+
+    this.thrusting = this.moveDirection.lengthSq() > 0;
+    if (this.thrusting) {
+      this.moveDirection.normalize();
+      this.shipVelocity.x += this.moveDirection.x * PLAYER_ACCELERATION * dt;
+      this.shipVelocity.y += this.moveDirection.y * PLAYER_ACCELERATION * dt;
+      this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_THRUST_DRAG * dt)));
+    } else {
+      this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_COAST_DRAG * dt)));
+    }
+
+    if (this.shipVelocity.length() > PLAYER_MAX_SPEED) {
+      this.shipVelocity.setLength(PLAYER_MAX_SPEED);
+    }
+
+    this.shipRoot.x += this.shipVelocity.x * dt;
+    this.shipRoot.y += this.shipVelocity.y * dt;
+    this.shipRoot.x = clampToBounds(this.shipRoot.x, PLAYER_RADIUS, SPACE_WORLD_CONFIG.width - PLAYER_RADIUS);
+    this.shipRoot.y = clampToBounds(this.shipRoot.y, PLAYER_RADIUS, SPACE_WORLD_CONFIG.height - PLAYER_RADIUS);
+
+    const fireHeld = this.input.activePointer.isDown || this.inputKeys.fire.isDown;
+    if (fireHeld && this.fireCooldown <= 0) {
+      this.fireCooldown = PLAYER_FIRE_COOLDOWN;
+      this.firePlayerShot();
+    }
+
+    this.updatePlayerVisuals();
+  }
+
+  private updatePlayerVisuals(): void {
+    const speedPulse = Phaser.Math.Clamp(this.shipVelocity.length() / PLAYER_MAX_SPEED, 0, 1);
+    if (this.thrusting) {
+      this.shipThruster.setFillStyle(0x79e6ff, 0.58 + (speedPulse * 0.2));
+      this.shipThruster.setScale(1, 1.1 + (speedPulse * 0.45));
+    } else {
+      this.shipThruster.setFillStyle(0x79e6ff, 0.16 + (speedPulse * 0.16));
+      this.shipThruster.setScale(1, 0.82 + (speedPulse * 0.18));
+    }
+
+    this.shipDamageRing.setStrokeStyle(2, 0xffdbbc, this.playerFlash * 0.84);
+    this.shipDamageRing.setFillStyle(0xff9f74, this.playerFlash * 0.16);
+  }
+
+  private firePlayerShot(): void {
+    const spawnDistance = PLAYER_RADIUS + 10;
+    const x = this.shipRoot.x + (this.aimDirection.x * spawnDistance);
+    const y = this.shipRoot.y + (this.aimDirection.y * spawnDistance);
+    const sprite = this.add.circle(x, y, 4, 0x8ae4ff, 1).setDepth(16);
+    const glow = this.add.circle(x, y, 9, 0x3dbdff, 0.22).setDepth(15);
+    const velocity = this.aimDirection.clone().scale(PLAYER_BULLET_SPEED).add(this.shipVelocity.clone().scale(0.3));
+
+    this.shots.push({
+      id: `shot-${this.time.now}-${this.shots.length}`,
+      ownerKind: "player",
+      ownerShipId: null,
+      ownerFactionId: null,
+      sprite,
+      glow,
+      velocity,
+      life: PLAYER_PROJECTILE_LIFETIME,
+      radius: 4,
+      damage: PLAYER_DAMAGE,
+      canHitPlayer: false,
+    });
+
+    retroSfx.play("player-fire", {
+      pan: Phaser.Math.Clamp((x - this.shipRoot.x) / 420, -0.6, 0.6),
+      volume: 0.92,
+    });
+  }
+
+  private updateFieldObjects(dt: number): void {
+    for (const fieldObject of this.asteroids) {
+      fieldObject.root.x += fieldObject.velocity.x * dt;
+      fieldObject.root.y += fieldObject.velocity.y * dt;
+      fieldObject.root.rotation += fieldObject.spin * dt;
+
+      if (fieldObject.root.x <= fieldObject.radius || fieldObject.root.x >= SPACE_WORLD_CONFIG.width - fieldObject.radius) {
+        fieldObject.velocity.x *= -1;
+        fieldObject.root.x = clampToBounds(fieldObject.root.x, fieldObject.radius, SPACE_WORLD_CONFIG.width - fieldObject.radius);
+      }
+      if (fieldObject.root.y <= fieldObject.radius || fieldObject.root.y >= SPACE_WORLD_CONFIG.height - fieldObject.radius) {
+        fieldObject.velocity.y *= -1;
+        fieldObject.root.y = clampToBounds(fieldObject.root.y, fieldObject.radius, SPACE_WORLD_CONFIG.height - fieldObject.radius);
+      }
+
+      fieldObject.flash = Math.max(0, fieldObject.flash - (dt * 4));
+      fieldObject.damageRing.setStrokeStyle(2, 0xffcf96, fieldObject.flash * 0.86);
+      fieldObject.damageRing.setFillStyle(0xff8a52, fieldObject.flash * 0.16);
+      this.resolvePlayerAgainstFieldObject(fieldObject);
+    }
+  }
+
+  private resolvePlayerAgainstFieldObject(fieldObject: SpaceFieldObject): void {
+    const dx = fieldObject.root.x - this.shipRoot.x;
+    const dy = fieldObject.root.y - this.shipRoot.y;
+    const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
+    const minimumDistance = fieldObject.radius + PLAYER_RADIUS;
+    if (distance >= minimumDistance) {
+      return;
+    }
+
+    const overlap = minimumDistance - distance;
+    const normalX = dx / distance;
+    const normalY = dy / distance;
+    this.shipRoot.x -= normalX * overlap;
+    this.shipRoot.y -= normalY * overlap;
+    this.shipRoot.x = clampToBounds(this.shipRoot.x, PLAYER_RADIUS, SPACE_WORLD_CONFIG.width - PLAYER_RADIUS);
+    this.shipRoot.y = clampToBounds(this.shipRoot.y, PLAYER_RADIUS, SPACE_WORLD_CONFIG.height - PLAYER_RADIUS);
+
+    const impactSpeed = (this.shipVelocity.x * normalX) + (this.shipVelocity.y * normalY);
+    if (impactSpeed > 0) {
+      this.shipVelocity.x -= normalX * impactSpeed * 1.25;
+      this.shipVelocity.y -= normalY * impactSpeed * 1.25;
+      this.shipVelocity.scale(0.92);
+    }
+  }
+
+  private updateFactionShips(dt: number): void {
+    for (const ship of this.factionShips) {
+      const faction = SPACE_FACTIONS[ship.factionId];
+      ship.fireCooldown = Math.max(0, ship.fireCooldown - dt);
+      ship.flash = Math.max(0, ship.flash - (dt * 4));
+      ship.aggressionTimer = Math.max(0, ship.aggressionTimer - dt);
+      if (ship.aggressionTimer <= 0) {
+        ship.provokedByPlayer = false;
+        ship.provokedByShips.clear();
+      }
+
+      const target = this.selectShipTarget(ship);
+      const fleeTarget = target ? null : this.findNearestSmugglerThreat(ship);
+      const movement = new Phaser.Math.Vector2();
+      let aimDirection = ship.aimDirection.clone();
+      let shouldFire = false;
+
+      if (target?.kind === "player") {
+        const dx = this.shipRoot.x - ship.root.x;
+        const dy = this.shipRoot.y - ship.root.y;
+        const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
+        aimDirection = new Phaser.Math.Vector2(dx / distance, dy / distance);
+        movement.copy(this.getCombatMovement(aimDirection, distance, faction.preferredRange, ship.strafeSign));
+        shouldFire = distance <= faction.fireRange;
+      } else if (target?.kind === "ship") {
+        const dx = target.ship.root.x - ship.root.x;
+        const dy = target.ship.root.y - ship.root.y;
+        const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
+        aimDirection = new Phaser.Math.Vector2(dx / distance, dy / distance);
+        movement.copy(this.getCombatMovement(aimDirection, distance, faction.preferredRange, ship.strafeSign));
+        shouldFire = distance <= faction.fireRange;
+      } else if (fleeTarget) {
+        movement.copy(this.getFleeMovement(ship, fleeTarget));
+        if (movement.lengthSq() > 0) {
+          aimDirection = movement.clone().normalize();
+        }
+      } else {
+        const patrolDx = ship.patrolTarget.x - ship.root.x;
+        const patrolDy = ship.patrolTarget.y - ship.root.y;
+        const patrolDistance = Math.sqrt((patrolDx * patrolDx) + (patrolDy * patrolDy));
+        if (patrolDistance < 90) {
+          ship.patrolTarget = this.pickNewPatrolTarget(ship.sectorId);
+        }
+        const nextDx = ship.patrolTarget.x - ship.root.x;
+        const nextDy = ship.patrolTarget.y - ship.root.y;
+        if ((nextDx * nextDx) + (nextDy * nextDy) > 1) {
+          movement.set(nextDx, nextDy).normalize();
+          aimDirection = movement.clone();
+        }
+      }
+
+      this.applyFactionMovement(ship, movement, faction, dt);
+      if (aimDirection.lengthSq() > 0.01) {
+        ship.aimDirection.copy(aimDirection.normalize());
+        ship.root.rotation = Math.atan2(ship.aimDirection.y, ship.aimDirection.x) + Math.PI * 0.5;
+      }
+
+      ship.root.x = clampToBounds(ship.root.x, ship.radius, SPACE_WORLD_CONFIG.width - ship.radius);
+      ship.root.y = clampToBounds(ship.root.y, ship.radius, SPACE_WORLD_CONFIG.height - ship.radius);
+
+      if (shouldFire && ship.fireCooldown <= 0) {
+        ship.fireCooldown = faction.fireCooldown;
+        this.fireFactionShot(ship);
+      }
+
+      ship.damageRing.setStrokeStyle(2, faction.trimColor, ship.flash * 0.88);
+      ship.damageRing.setFillStyle(faction.glowColor, ship.flash * 0.18);
+      const velocityPulse = Phaser.Math.Clamp(ship.velocity.length() / faction.maxSpeed, 0, 1);
+      const thrustAlpha = movement.lengthSq() > 0 ? 0.42 + (velocityPulse * 0.16) : 0.14 + (velocityPulse * 0.12);
+      ship.thruster.setFillStyle(faction.glowColor, thrustAlpha);
+      ship.thruster.setScale(1, movement.lengthSq() > 0 ? 1.05 + (velocityPulse * 0.35) : 0.82 + (velocityPulse * 0.12));
+    }
+  }
+
+  private selectShipTarget(ship: SpaceFactionShip): { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null {
+    const faction = SPACE_FACTIONS[ship.factionId];
+    let bestDistanceSq = Number.POSITIVE_INFINITY;
+    let bestTarget: { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null = null;
+
+    if (!this.playerDestroyed && (faction.attackPlayerByDefault || ship.provokedByPlayer)) {
+      const dx = this.shipRoot.x - ship.root.x;
+      const dy = this.shipRoot.y - ship.root.y;
+      const distanceSq = (dx * dx) + (dy * dy);
+      if (distanceSq <= faction.detectRange * faction.detectRange) {
+        return { kind: "player" };
+      }
+    }
+
+    this.factionShips.forEach((targetShip) => {
+      if (targetShip.id === ship.id) {
+        return;
+      }
+      if (!this.isShipHostileToShip(ship, targetShip)) {
+        return;
+      }
+      const dx = targetShip.root.x - ship.root.x;
+      const dy = targetShip.root.y - ship.root.y;
+      const distanceSq = (dx * dx) + (dy * dy);
+      if (distanceSq > faction.detectRange * faction.detectRange || distanceSq >= bestDistanceSq) {
+        return;
+      }
+
+      bestDistanceSq = distanceSq;
+      bestTarget = { kind: "ship", ship: targetShip };
+    });
+
+    return bestTarget;
+  }
+
+  private isShipHostileToShip(attacker: SpaceFactionShip, target: SpaceFactionShip): boolean {
+    if (attacker.id === target.id || attacker.factionId === target.factionId) {
+      return false;
+    }
+
+    if (isFactionHostileByDefault(attacker.factionId, target.factionId)) {
+      return true;
+    }
+
+    return attacker.provokedByShips.has(target.id);
+  }
+
+  private findNearestSmugglerThreat(ship: SpaceFactionShip): Phaser.Math.Vector2 | null {
+    if (ship.factionId !== "smuggler") {
+      return null;
+    }
+
+    let nearestDistanceSq = Number.POSITIVE_INFINITY;
+    let nearestPosition: Phaser.Math.Vector2 | null = null;
+
+    this.factionShips.forEach((otherShip) => {
+      if (otherShip.id === ship.id || otherShip.factionId === "smuggler") {
+        return;
+      }
+      const dx = otherShip.root.x - ship.root.x;
+      const dy = otherShip.root.y - ship.root.y;
+      const distanceSq = (dx * dx) + (dy * dy);
+      if (distanceSq > 520 * 520 || distanceSq >= nearestDistanceSq) {
+        return;
+      }
+
+      nearestDistanceSq = distanceSq;
+      nearestPosition = new Phaser.Math.Vector2(otherShip.root.x, otherShip.root.y);
+    });
+
+    return nearestPosition;
+  }
+
+  private getCombatMovement(
+    aimDirection: Phaser.Math.Vector2,
+    distance: number,
+    preferredRange: number,
+    strafeSign: number,
+  ): Phaser.Math.Vector2 {
+    const movement = new Phaser.Math.Vector2();
+    if (distance > preferredRange + 90) {
+      movement.copy(aimDirection);
+      return movement;
+    }
+
+    if (distance < preferredRange - 70) {
+      movement.copy(aimDirection).scale(-1);
+      return movement;
+    }
+
+    movement.set(-aimDirection.y * strafeSign, aimDirection.x * strafeSign);
+    return movement;
+  }
+
+  private getFleeMovement(ship: SpaceFactionShip, threatPosition: Phaser.Math.Vector2): Phaser.Math.Vector2 {
+    const movement = new Phaser.Math.Vector2(ship.root.x - threatPosition.x, ship.root.y - threatPosition.y);
+    if (movement.lengthSq() <= 1) {
+      return movement;
+    }
+
+    return movement.normalize();
+  }
+
+  private applyFactionMovement(
+    ship: SpaceFactionShip,
+    desiredDirection: Phaser.Math.Vector2,
+    faction: (typeof SPACE_FACTIONS)[SpaceFactionId],
+    dt: number,
+  ): void {
+    if (desiredDirection.lengthSq() > 0.0001) {
+      const normalized = desiredDirection.clone().normalize();
+      ship.velocity.x += normalized.x * faction.acceleration * dt;
+      ship.velocity.y += normalized.y * faction.acceleration * dt;
+      ship.velocity.scale(Math.max(0, 1 - (0.92 * dt)));
+    } else {
+      ship.velocity.scale(Math.max(0, 1 - (1.9 * dt)));
+    }
+
+    if (ship.velocity.length() > faction.maxSpeed) {
+      ship.velocity.setLength(faction.maxSpeed);
+    }
+
+    ship.root.x += ship.velocity.x * dt;
+    ship.root.y += ship.velocity.y * dt;
+  }
+
+  private pickNewPatrolTarget(sectorId: string): Phaser.Math.Vector2 {
+    const sector = SPACE_SECTORS.find((entry) => entry.id === sectorId) ?? getSpaceSectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+    const bounds = sector?.bounds ?? {
+      x: 800,
+      y: 800,
+      width: SPACE_WORLD_CONFIG.width - 1600,
+      height: SPACE_WORLD_CONFIG.height - 1600,
+    };
+    return new Phaser.Math.Vector2(
+      randomBetween(bounds.x + 180, bounds.x + bounds.width - 180),
+      randomBetween(bounds.y + 180, bounds.y + bounds.height - 180),
+    );
+  }
+
+  private fireFactionShot(ship: SpaceFactionShip): void {
+    const faction = SPACE_FACTIONS[ship.factionId];
+    const direction = ship.aimDirection.clone().normalize();
+    const spawnDistance = ship.radius + 8;
+    const x = ship.root.x + (direction.x * spawnDistance);
+    const y = ship.root.y + (direction.y * spawnDistance);
+    const sprite = this.add.circle(x, y, 4, faction.trimColor, 0.98).setDepth(15);
+    const glow = this.add.circle(x, y, 8, faction.glowColor, 0.24).setDepth(14);
+    const velocity = direction.scale(faction.bulletSpeed).add(ship.velocity.clone().scale(0.34));
+
+    this.shots.push({
+      id: `shot-${this.time.now}-${this.shots.length}`,
+      ownerKind: "faction",
+      ownerShipId: ship.id,
+      ownerFactionId: ship.factionId,
+      sprite,
+      glow,
+      velocity,
+      life: FACTION_PROJECTILE_LIFETIME,
+      radius: 4,
+      damage: FACTION_DAMAGE,
+      canHitPlayer: SPACE_FACTIONS[ship.factionId].attackPlayerByDefault || ship.provokedByPlayer,
+    });
+
+    retroSfx.play("enemy-shot", {
+      pan: Phaser.Math.Clamp((x - this.shipRoot.x) / 420, -0.75, 0.75),
+      volume: 0.66,
+      pitch: ship.factionId === "pirate" ? 1.06 : ship.factionId === "smuggler" ? 0.94 : 1,
+    });
+  }
+
+  private resolveFactionShipCollisions(): void {
+    this.factionShips.forEach((ship) => {
+      this.asteroids.forEach((fieldObject) => {
+        this.resolveFactionShipAgainstFieldObject(ship, fieldObject);
+      });
+
+      this.resolveMovingBodiesOverlap(
+        ship.root,
+        ship.radius,
+        ship.velocity,
+        this.shipRoot,
+        PLAYER_RADIUS,
+        this.shipVelocity,
+        0.72,
+      );
+    });
+
+    for (let leftIndex = 0; leftIndex < this.factionShips.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < this.factionShips.length; rightIndex += 1) {
+        const leftShip = this.factionShips[leftIndex];
+        const rightShip = this.factionShips[rightIndex];
+        this.resolveMovingBodiesOverlap(
+          leftShip.root,
+          leftShip.radius,
+          leftShip.velocity,
+          rightShip.root,
+          rightShip.radius,
+          rightShip.velocity,
+          0.5,
+        );
+      }
+    }
+  }
+
+  private resolveFactionShipAgainstFieldObject(ship: SpaceFactionShip, fieldObject: SpaceFieldObject): void {
+    const dx = fieldObject.root.x - ship.root.x;
+    const dy = fieldObject.root.y - ship.root.y;
+    const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
+    const minimumDistance = fieldObject.radius + ship.radius;
+    if (distance >= minimumDistance) {
+      return;
+    }
+
+    const overlap = minimumDistance - distance;
+    const normalX = dx / distance;
+    const normalY = dy / distance;
+    ship.root.x -= normalX * overlap;
+    ship.root.y -= normalY * overlap;
+    ship.root.x = clampToBounds(ship.root.x, ship.radius, SPACE_WORLD_CONFIG.width - ship.radius);
+    ship.root.y = clampToBounds(ship.root.y, ship.radius, SPACE_WORLD_CONFIG.height - ship.radius);
+
+    const impactSpeed = (ship.velocity.x * normalX) + (ship.velocity.y * normalY);
+    if (impactSpeed > 0) {
+      ship.velocity.x -= normalX * impactSpeed * 1.1;
+      ship.velocity.y -= normalY * impactSpeed * 1.1;
+      ship.velocity.scale(0.92);
+    }
+  }
+
+  private resolveMovingBodiesOverlap(
+    leftRoot: Phaser.GameObjects.Container,
+    leftRadius: number,
+    leftVelocity: Phaser.Math.Vector2,
+    rightRoot: Phaser.GameObjects.Container,
+    rightRadius: number,
+    rightVelocity: Phaser.Math.Vector2,
+    leftWeight: number,
+  ): void {
+    const dx = rightRoot.x - leftRoot.x;
+    const dy = rightRoot.y - leftRoot.y;
+    const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
+    const minimumDistance = leftRadius + rightRadius;
+    if (distance >= minimumDistance) {
+      return;
+    }
+
+    const overlap = minimumDistance - distance;
+    const normalX = dx / distance;
+    const normalY = dy / distance;
+    const rightWeight = 1 - leftWeight;
+
+    leftRoot.x -= normalX * overlap * leftWeight;
+    leftRoot.y -= normalY * overlap * leftWeight;
+    rightRoot.x += normalX * overlap * rightWeight;
+    rightRoot.y += normalY * overlap * rightWeight;
+
+    leftRoot.x = clampToBounds(leftRoot.x, leftRadius, SPACE_WORLD_CONFIG.width - leftRadius);
+    leftRoot.y = clampToBounds(leftRoot.y, leftRadius, SPACE_WORLD_CONFIG.height - leftRadius);
+    rightRoot.x = clampToBounds(rightRoot.x, rightRadius, SPACE_WORLD_CONFIG.width - rightRadius);
+    rightRoot.y = clampToBounds(rightRoot.y, rightRadius, SPACE_WORLD_CONFIG.height - rightRadius);
+
+    leftVelocity.x -= normalX * 18;
+    leftVelocity.y -= normalY * 18;
+    rightVelocity.x += normalX * 18;
+    rightVelocity.y += normalY * 18;
+    leftVelocity.scale(0.96);
+    rightVelocity.scale(0.96);
+  }
+
+  private updateProjectiles(dt: number): void {
+    for (let shotIndex = this.shots.length - 1; shotIndex >= 0; shotIndex -= 1) {
+      const shot = this.shots[shotIndex];
+      shot.life -= dt;
+      shot.sprite.x += shot.velocity.x * dt;
+      shot.sprite.y += shot.velocity.y * dt;
+      shot.glow.x = shot.sprite.x;
+      shot.glow.y = shot.sprite.y;
+
+      const outOfBounds = shot.sprite.x < -40
+        || shot.sprite.y < -40
+        || shot.sprite.x > SPACE_WORLD_CONFIG.width + 40
+        || shot.sprite.y > SPACE_WORLD_CONFIG.height + 40;
+      if (shot.life <= 0 || outOfBounds) {
+        this.destroyProjectile(shotIndex);
+        continue;
+      }
+
+      let consumed = false;
+      if (shot.ownerKind === "player") {
+        for (let shipIndex = this.factionShips.length - 1; shipIndex >= 0; shipIndex -= 1) {
+          const ship = this.factionShips[shipIndex];
+          const dx = ship.root.x - shot.sprite.x;
+          const dy = ship.root.y - shot.sprite.y;
+          const combinedRadius = ship.radius + shot.radius;
+          if ((dx * dx) + (dy * dy) > combinedRadius * combinedRadius) {
+            continue;
+          }
+
+          this.damageFactionShip(ship, shot.damage, { kind: "player" }, shot.sprite.x);
+          this.destroyProjectile(shotIndex);
+          consumed = true;
+          break;
+        }
+
+        if (consumed) {
+          continue;
+        }
+
+        for (let objectIndex = this.asteroids.length - 1; objectIndex >= 0; objectIndex -= 1) {
+          const fieldObject = this.asteroids[objectIndex];
+          const dx = fieldObject.root.x - shot.sprite.x;
+          const dy = fieldObject.root.y - shot.sprite.y;
+          const combinedRadius = fieldObject.radius + shot.radius;
+          if ((dx * dx) + (dy * dy) > combinedRadius * combinedRadius) {
+            continue;
+          }
+
+          this.damageFieldObject(objectIndex, shot.sprite.x);
+          this.destroyProjectile(shotIndex);
+          consumed = true;
+          break;
+        }
+      } else {
+        if (shot.canHitPlayer) {
+          const dx = this.shipRoot.x - shot.sprite.x;
+          const dy = this.shipRoot.y - shot.sprite.y;
+          const combinedRadius = PLAYER_RADIUS + shot.radius;
+          if ((dx * dx) + (dy * dy) <= combinedRadius * combinedRadius) {
+            this.damagePlayerShip(shot.damage, shot.ownerFactionId);
+            this.destroyProjectile(shotIndex);
+            consumed = true;
+          }
+        }
+
+        if (consumed) {
+          continue;
+        }
+
+        for (let shipIndex = this.factionShips.length - 1; shipIndex >= 0; shipIndex -= 1) {
+          const ship = this.factionShips[shipIndex];
+          if (ship.id === shot.ownerShipId || ship.factionId === shot.ownerFactionId) {
+            continue;
+          }
+
+          const dx = ship.root.x - shot.sprite.x;
+          const dy = ship.root.y - shot.sprite.y;
+          const combinedRadius = ship.radius + shot.radius;
+          if ((dx * dx) + (dy * dy) > combinedRadius * combinedRadius) {
+            continue;
+          }
+
+          this.damageFactionShip(ship, shot.damage, {
+            kind: "ship",
+            shipId: shot.ownerShipId,
+            factionId: shot.ownerFactionId,
+          }, shot.sprite.x);
+          this.destroyProjectile(shotIndex);
+          consumed = true;
+          break;
+        }
+      }
+
+      if (consumed) {
+        continue;
+      }
+    }
+  }
+
+  private damageFieldObject(index: number, hitX: number): void {
+    const fieldObject = this.asteroids[index];
+    if (!fieldObject) {
+      return;
+    }
+
+    fieldObject.hp -= 1;
+    fieldObject.flash = 1;
+    retroSfx.play("shield-hit", {
+      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.8, 0.8),
+      volume: 0.8,
+    });
+
+    if (fieldObject.hp <= 0) {
+      this.breakFieldObject(index, hitX);
+    }
+  }
+
+  private breakFieldObject(index: number, hitX: number): void {
+    const fieldObject = this.asteroids[index];
+    if (!fieldObject) {
+      return;
+    }
+
+    const x = fieldObject.root.x;
+    const y = fieldObject.root.y;
+    const radius = fieldObject.radius;
+    const fragmentColor = fieldObject.kind === "asteroid" ? 0xa7bad3 : 0xd4ba8e;
+    fieldObject.root.destroy(true);
+    this.asteroids.splice(index, 1);
+    this.destroyedObjects += 1;
+
+    this.spawnExplosionRing(x, y, Math.max(14, radius * 0.45), 0xffd3a1, 0xffb171);
+    this.spawnBurst(x, y, fragmentColor, fieldObject.kind === "asteroid" ? 8 : 5, 80, fieldObject.kind === "asteroid" ? 210 : 160);
+
+    retroSfx.play("loot-burst", {
+      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.8, 0.8),
+      volume: fieldObject.kind === "asteroid" ? 0.86 : 0.64,
+    });
+  }
+
+  private damageFactionShip(
+    ship: SpaceFactionShip,
+    damage: number,
+    source: SpaceDamageSource,
+    hitX: number,
+  ): void {
+    if (!this.factionShips.includes(ship)) {
+      return;
+    }
+
+    ship.hp -= damage;
+    ship.flash = 1;
+    ship.aggressionTimer = AGGRESSION_DURATION;
+    if (source.kind === "player") {
+      ship.provokedByPlayer = true;
+    } else if (source.shipId && source.shipId !== ship.id) {
+      ship.provokedByShips.add(source.shipId);
+    }
+
+    retroSfx.play(ship.hp <= 0 ? "shield-break" : "shield-hit", {
+      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.8, 0.8),
+      volume: ship.hp <= 0 ? 0.7 : 0.64,
+    });
+
+    if (ship.hp <= 0) {
+      this.destroyFactionShip(ship, hitX);
+    }
+  }
+
+  private destroyFactionShip(ship: SpaceFactionShip, hitX: number): void {
+    const shipIndex = this.factionShips.indexOf(ship);
+    if (shipIndex < 0) {
+      return;
+    }
+
+    const faction = SPACE_FACTIONS[ship.factionId];
+    const x = ship.root.x;
+    const y = ship.root.y;
+    ship.root.destroy(true);
+    this.factionShips.splice(shipIndex, 1);
+    this.destroyedFactionShips += 1;
+    this.factionShips.forEach((otherShip) => {
+      otherShip.provokedByShips.delete(ship.id);
+    });
+
+    this.spawnExplosionRing(x, y, ship.radius * 0.7, faction.trimColor, faction.glowColor);
+    this.spawnBurst(x, y, faction.color, ship.factionId === "pirate" ? 7 : 6, 100, 220);
+
+    retroSfx.play("loot-burst", {
+      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.75, 0.75),
+      volume: 0.76,
+      pitch: ship.factionId === "pirate" ? 1.06 : 0.96,
+    });
+  }
+
+  private damagePlayerShip(amount: number, sourceFactionId: SpaceFactionId | null): void {
+    if (this.playerDestroyed || this.returningToShip) {
+      return;
+    }
+
+    this.playerHull -= amount;
+    this.playerFlash = 1;
+    retroSfx.play(this.playerHull <= 0 ? "shield-break" : "shield-hit", {
+      volume: this.playerHull <= 0 ? 0.82 : 0.72,
+      pan: sourceFactionId === "empire" ? -0.18 : sourceFactionId === "pirate" ? 0.22 : 0,
+    });
+
+    if (this.playerHull <= 0) {
+      this.destroyPlayerShip();
+    }
+  }
+
+  private destroyPlayerShip(): void {
+    if (this.playerDestroyed) {
+      return;
+    }
+
+    this.playerDestroyed = true;
+    this.returnButton?.setEnabled(false);
+    this.statusText?.setText("Ship destroyed. Routing to GAME OVER.");
+    this.contactText?.setText("Continue relaunches the current space route. Return To Ship docks back in the hub.");
+    this.spawnExplosionRing(this.shipRoot.x, this.shipRoot.y, 24, 0xffe0bf, 0xff8f57);
+    this.spawnBurst(this.shipRoot.x, this.shipRoot.y, 0x8ec7ff, 10, 120, 250);
+    this.time.delayedCall(260, () => {
+      this.scene.start("game-over", {
+        mode: "space",
+        missionId: this.routeMissionId,
+        routeTitle: this.routeTitle,
+      });
+    });
+  }
+
+  private destroyProjectile(index: number): void {
+    const shot = this.shots[index];
+    if (!shot) {
+      return;
+    }
+
+    shot.sprite.destroy();
+    shot.glow.destroy();
+    this.shots.splice(index, 1);
+  }
+
+  private spawnExplosionRing(x: number, y: number, radius: number, strokeColor: number, fillColor: number): void {
+    const ring = this.add.circle(x, y, Math.max(14, radius), fillColor, 0)
+      .setStrokeStyle(2, strokeColor, 0.82)
+      .setDepth(18);
+    this.tweens.add({
+      targets: ring,
+      scaleX: 2.2,
+      scaleY: 2.2,
+      alpha: 0,
+      duration: 240,
+      onComplete: () => ring.destroy(),
+    });
+  }
+
+  private spawnBurst(
+    x: number,
+    y: number,
+    color: number,
+    count: number,
+    speedMin: number,
+    speedMax: number,
+  ): void {
+    for (let fragmentIndex = 0; fragmentIndex < count; fragmentIndex += 1) {
+      const angle = randomBetween(0, Math.PI * 2);
+      const speed = randomBetween(speedMin, speedMax);
+      const width = randomBetween(4, 11);
+      const height = randomBetween(3, 8);
+      const sprite = this.add.rectangle(x, y, width, height, color, 0.94)
+        .setRotation(angle)
+        .setDepth(17);
+      this.burstParticles.push({
+        sprite,
+        velocity: new Phaser.Math.Vector2(Math.cos(angle) * speed, Math.sin(angle) * speed),
+        rotationSpeed: randomBetween(-5.5, 5.5),
+        life: randomBetween(0.35, 0.7),
+        maxLife: randomBetween(0.35, 0.7),
+      });
+    }
+  }
+
+  private updateBurstParticles(dt: number): void {
+    for (let index = this.burstParticles.length - 1; index >= 0; index -= 1) {
+      const particle = this.burstParticles[index];
+      particle.life -= dt;
+      particle.sprite.x += particle.velocity.x * dt;
+      particle.sprite.y += particle.velocity.y * dt;
+      particle.sprite.rotation += particle.rotationSpeed * dt;
+      particle.sprite.alpha = Math.max(0, particle.life / particle.maxLife);
+
+      if (particle.life > 0) {
+        continue;
+      }
+
+      particle.sprite.destroy();
+      this.burstParticles.splice(index, 1);
+    }
+  }
+
+  private refreshHud(): void {
+    const sector = this.getCurrentSector();
+    const localCounts = this.getFactionCounts(1400);
+    const localBreakables = this.countNearbyBreakables(1200);
+    const speed = Math.round(this.shipVelocity.length());
+    const playerHostiles = this.factionShips.filter((ship) => {
+      const faction = SPACE_FACTIONS[ship.factionId];
+      if (!(faction.attackPlayerByDefault || ship.provokedByPlayer)) {
+        return false;
+      }
+      return Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y) <= 1300;
+    }).length;
+
+    this.routeText?.setText(this.routeMissionId
+      ? `Route staged: ${this.routeTitle}  |  Sector: ${sector?.label ?? "Outer Drift"}`
+      : `Free roam launch  |  Sector: ${sector?.label ?? "Outer Drift"}`);
+    this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}`);
+    this.contactText?.setText(`Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`);
+  }
+
+  private getCurrentSector(): SpaceSectorConfig | null {
+    return getSpaceSectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+  }
+
+  private getFactionCounts(radius?: number): Record<SpaceFactionId, number> {
+    return this.factionShips.reduce<Record<SpaceFactionId, number>>((counts, ship) => {
+      if (radius !== undefined) {
+        const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y);
+        if (distance > radius) {
+          return counts;
+        }
+      }
+      counts[ship.factionId] += 1;
+      return counts;
+    }, {
+      empire: 0,
+      pirate: 0,
+      republic: 0,
+      smuggler: 0,
+    });
+  }
+
+  private countNearbyBreakables(radius: number): number {
+    return this.asteroids.filter((fieldObject) => (
+      Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, fieldObject.root.x, fieldObject.root.y) <= radius
+    )).length;
+  }
+
+  private returnToShip(): void {
+    if (this.returningToShip || this.playerDestroyed) {
+      return;
+    }
+
+    this.returningToShip = true;
+    this.returnButton?.setEnabled(false);
+    this.statusText?.setText("Returning to ship interior.");
+    gameSession.clearShipTravel();
+    this.cameras.main.fadeOut(220, 8, 12, 18);
+    this.time.delayedCall(220, () => {
+      this.scene.start("hub");
+    });
+  }
+
+  getDebugSnapshot(): Record<string, unknown> {
+    const factionCounts = this.getFactionCounts();
+    const nearestFieldObjects = [...this.asteroids]
+      .sort((left, right) => {
+        const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
+        const rightDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, right.root.x, right.root.y);
+        return leftDistance - rightDistance;
+      })
+      .slice(0, 4)
+      .map((fieldObject) => ({
+        id: fieldObject.id,
+        kind: fieldObject.kind,
+        x: Math.round(fieldObject.root.x),
+        y: Math.round(fieldObject.root.y),
+        hp: fieldObject.hp,
+        radius: Math.round(fieldObject.radius),
+      }));
+    const nearestShips = [...this.factionShips]
+      .sort((left, right) => {
+        const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
+        const rightDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, right.root.x, right.root.y);
+        return leftDistance - rightDistance;
+      })
+      .slice(0, 6)
+      .map((ship) => ({
+        id: ship.id,
+        factionId: ship.factionId,
+        sectorId: ship.sectorId,
+        x: Math.round(ship.root.x),
+        y: Math.round(ship.root.y),
+        hp: ship.hp,
+        hostileToPlayer: SPACE_FACTIONS[ship.factionId].attackPlayerByDefault || ship.provokedByPlayer,
+      }));
+
+    return {
+      coordinateSpace: "origin top-left, +x right, +y down",
+      world: {
+        width: SPACE_WORLD_CONFIG.width,
+        height: SPACE_WORLD_CONFIG.height,
+      },
+      sector: this.getCurrentSector()?.label ?? "Outer Drift",
+      routeMissionId: this.routeMissionId,
+      routeTitle: this.routeTitle,
+      playerHull: {
+        current: Math.max(0, this.playerHull),
+        max: PLAYER_MAX_HULL,
+      },
+      ship: {
+        x: Math.round(this.shipRoot.x),
+        y: Math.round(this.shipRoot.y),
+        vx: Math.round(this.shipVelocity.x),
+        vy: Math.round(this.shipVelocity.y),
+        facing: Math.round(Phaser.Math.RadToDeg(this.shipRoot.rotation)),
+      },
+      asteroidsRemaining: this.asteroids.length,
+      destroyedObjects: this.destroyedObjects,
+      factionShipsRemaining: this.factionShips.length,
+      destroyedFactionShips: this.destroyedFactionShips,
+      factionCounts,
+      activeShots: this.shots.length,
+      activeBurstParticles: this.burstParticles.length,
+      returnReady: !this.returningToShip && !this.playerDestroyed,
+      nearestFieldObjects,
+      nearestShips,
+    };
+  }
+}
+
+
+

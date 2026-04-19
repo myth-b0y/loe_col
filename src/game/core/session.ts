@@ -59,6 +59,153 @@ export type DifficultyProfile = {
 };
 
 export type RewardData = MissionRewardBundle;
+export type ShipTravelStatus = "docked" | "in-transit" | "arrived";
+export type ShipSystemId = "hull" | "reactor" | "engines" | "lifeSupport" | "navigation";
+export type ShipSystemState = {
+  integrity: number;
+  online: boolean;
+};
+export type ShipSystemsState = Record<ShipSystemId, ShipSystemState>;
+export type ShipTravelState = {
+  status: ShipTravelStatus;
+  destinationMissionId: string | null;
+  arrivedMissionId: string | null;
+  lastDepartureAt: string | null;
+  lastArrivalAt: string | null;
+};
+export type ShipRepairState = {
+  lastInspectionAt: string | null;
+  lastRepairAt: string | null;
+};
+export type ShipStorageState = {
+  cargo: Array<InventoryItem | null>;
+};
+export type ShipState = {
+  travel: ShipTravelState;
+  systems: ShipSystemsState;
+  repair: ShipRepairState;
+  storage: ShipStorageState;
+};
+
+const SHIP_SYSTEM_IDS: ShipSystemId[] = ["hull", "reactor", "engines", "lifeSupport", "navigation"];
+const DEFAULT_SHIP_STORAGE_SLOT_COUNT = 40;
+
+function clampShipIntegrity(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 100;
+  }
+
+  return Phaser.Math.Clamp(Math.round(value), 0, 100);
+}
+
+function normalizeOptionalTimestamp(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function createDefaultShipSystemsState(): ShipSystemsState {
+  return {
+    hull: { integrity: 100, online: true },
+    reactor: { integrity: 100, online: true },
+    engines: { integrity: 100, online: true },
+    lifeSupport: { integrity: 100, online: true },
+    navigation: { integrity: 100, online: true },
+  };
+}
+
+function normalizeShipSystemsState(
+  systems: Partial<Record<ShipSystemId, Partial<ShipSystemState>>> | undefined,
+): ShipSystemsState {
+  const defaults = createDefaultShipSystemsState();
+
+  SHIP_SYSTEM_IDS.forEach((systemId) => {
+    const parsed = systems?.[systemId];
+    if (!parsed) {
+      return;
+    }
+
+    const integrity = clampShipIntegrity(parsed.integrity);
+    defaults[systemId] = {
+      integrity,
+      online: typeof parsed.online === "boolean" ? parsed.online && integrity > 0 : integrity > 0,
+    };
+  });
+
+  return defaults;
+}
+
+function normalizeShipTravelState(travel: Partial<ShipTravelState> | undefined): ShipTravelState {
+  const destinationMissionId = typeof travel?.destinationMissionId === "string" && travel.destinationMissionId.length > 0
+    ? travel.destinationMissionId
+    : null;
+  const arrivedMissionId = typeof travel?.arrivedMissionId === "string" && travel.arrivedMissionId.length > 0
+    ? travel.arrivedMissionId
+    : null;
+
+  let status: ShipTravelStatus = travel?.status === "in-transit" || travel?.status === "arrived" || travel?.status === "docked"
+    ? travel.status
+    : "docked";
+
+  if (status === "in-transit" && !destinationMissionId) {
+    status = arrivedMissionId ? "arrived" : "docked";
+  } else if (status === "arrived" && !arrivedMissionId) {
+    status = destinationMissionId ? "in-transit" : "docked";
+  }
+
+  if (status === "docked") {
+    return {
+      status,
+      destinationMissionId: null,
+      arrivedMissionId: null,
+      lastDepartureAt: normalizeOptionalTimestamp(travel?.lastDepartureAt),
+      lastArrivalAt: normalizeOptionalTimestamp(travel?.lastArrivalAt),
+    };
+  }
+
+  if (status === "in-transit") {
+    return {
+      status,
+      destinationMissionId,
+      arrivedMissionId: null,
+      lastDepartureAt: normalizeOptionalTimestamp(travel?.lastDepartureAt),
+      lastArrivalAt: normalizeOptionalTimestamp(travel?.lastArrivalAt),
+    };
+  }
+
+  return {
+    status,
+    destinationMissionId: arrivedMissionId ?? destinationMissionId,
+    arrivedMissionId,
+    lastDepartureAt: normalizeOptionalTimestamp(travel?.lastDepartureAt),
+    lastArrivalAt: normalizeOptionalTimestamp(travel?.lastArrivalAt),
+  };
+}
+
+function normalizeShipRepairState(repair: Partial<ShipRepairState> | undefined): ShipRepairState {
+  return {
+    lastInspectionAt: normalizeOptionalTimestamp(repair?.lastInspectionAt),
+    lastRepairAt: normalizeOptionalTimestamp(repair?.lastRepairAt),
+  };
+}
+
+function createDefaultShipState(): ShipState {
+  return {
+    travel: {
+      status: "docked",
+      destinationMissionId: null,
+      arrivedMissionId: null,
+      lastDepartureAt: null,
+      lastArrivalAt: null,
+    },
+    systems: createDefaultShipSystemsState(),
+    repair: {
+      lastInspectionAt: null,
+      lastRepairAt: null,
+    },
+    storage: {
+      cargo: createEmptyCargoSlots(DEFAULT_SHIP_STORAGE_SLOT_COUNT),
+    },
+  };
+}
 
 function rewardHasValue(reward: RewardData | null | undefined): boolean {
   if (!reward) {
@@ -132,7 +279,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 6;
+  version: 7;
   meta: {
     lastSavedAt: string | null;
   };
@@ -162,6 +309,7 @@ export type SaveData = {
     exhaustedMissionIds: string[];
     unlockedMissionIds: string[];
   };
+  ship: ShipState;
 };
 
 export type SaveSlot = {
@@ -205,7 +353,7 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const DEFAULT_SAVE: SaveData = {
-  version: 6,
+  version: 7,
   meta: {
     lastSavedAt: null,
   },
@@ -235,6 +383,7 @@ const DEFAULT_SAVE: SaveData = {
     exhaustedMissionIds: [],
     unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
   },
+  ship: createDefaultShipState(),
 };
 
 function clone<T>(value: T): T {
@@ -296,8 +445,8 @@ function normalizeEquipmentLoadout(
   return defaults;
 }
 
-function normalizeCargoSlots(cargo: unknown[] | undefined): Array<InventoryItem | null> {
-  const defaults = createEmptyCargoSlots(DEFAULT_CARGO_SLOTS.length);
+function normalizeCargoSlots(cargo: unknown[] | undefined, count = DEFAULT_CARGO_SLOTS.length): Array<InventoryItem | null> {
+  const defaults = createEmptyCargoSlots(count);
   if (!cargo || cargo.length === 0) {
     return defaults;
   }
@@ -316,7 +465,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 6 as const,
+    version: 7 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
     loadout: {
@@ -330,6 +479,16 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
     progression: {
       ...clone(DEFAULT_SAVE.progression),
       ...parsed.progression,
+    },
+    ship: {
+      ...createDefaultShipState(),
+      ...parsed.ship,
+      travel: normalizeShipTravelState(parsed.ship?.travel),
+      systems: normalizeShipSystemsState(parsed.ship?.systems as Partial<Record<ShipSystemId, Partial<ShipSystemState>>> | undefined),
+      repair: normalizeShipRepairState(parsed.ship?.repair),
+      storage: {
+        cargo: normalizeCargoSlots(parsed.ship?.storage?.cargo, DEFAULT_SHIP_STORAGE_SLOT_COUNT),
+      },
     },
   };
 
@@ -535,6 +694,192 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return cloneCraftingMaterials(this.saveData.loadout.crafting);
   }
 
+  getShipState(): ShipState {
+    return clone(this.saveData.ship);
+  }
+
+  getShipTravelState(): ShipTravelState {
+    return clone(this.saveData.ship.travel);
+  }
+
+  getArrivedMissionId(): string | null {
+    return this.saveData.ship.travel.arrivedMissionId;
+  }
+
+  canDeployArrivedMission(missionId = this.getSelectedMissionId()): boolean {
+    return Boolean(
+      missionId
+      && this.saveData.ship.travel.status === "arrived"
+      && this.saveData.ship.travel.arrivedMissionId === missionId,
+    );
+  }
+
+  startShipTravel(missionId: string): boolean {
+    if (!missionId) {
+      return false;
+    }
+
+    this.saveData.ship.travel = {
+      ...this.saveData.ship.travel,
+      status: "in-transit",
+      destinationMissionId: missionId,
+      arrivedMissionId: null,
+      lastDepartureAt: new Date().toISOString(),
+    };
+    this.emitShipTravelChanged();
+    return true;
+  }
+
+  markShipArrived(missionId = this.saveData.ship.travel.destinationMissionId): boolean {
+    if (!missionId) {
+      return false;
+    }
+
+    this.saveData.ship.travel = {
+      ...this.saveData.ship.travel,
+      status: "arrived",
+      destinationMissionId: missionId,
+      arrivedMissionId: missionId,
+      lastArrivalAt: new Date().toISOString(),
+    };
+    this.emitShipTravelChanged();
+    return true;
+  }
+
+  clearShipTravel(): void {
+    this.setShipDockedState();
+    this.emitShipTravelChanged();
+  }
+
+  getShipSystemsState(): ShipSystemsState {
+    return clone(this.saveData.ship.systems);
+  }
+
+  getDamagedShipSystemIds(): ShipSystemId[] {
+    return SHIP_SYSTEM_IDS.filter((systemId) => {
+      const system = this.saveData.ship.systems[systemId];
+      return system.integrity < 100 || !system.online;
+    });
+  }
+
+  hasShipSystemDamage(systemId?: ShipSystemId): boolean {
+    if (systemId) {
+      const system = this.saveData.ship.systems[systemId];
+      return system.integrity < 100 || !system.online;
+    }
+
+    return this.getDamagedShipSystemIds().length > 0;
+  }
+
+  inspectShipSystems(): void {
+    this.saveData.ship.repair.lastInspectionAt = new Date().toISOString();
+    this.emitShipChanged();
+  }
+
+  setShipSystemIntegrity(systemId: ShipSystemId, integrity: number): number {
+    const nextIntegrity = clampShipIntegrity(integrity);
+    const system = this.saveData.ship.systems[systemId];
+    system.integrity = nextIntegrity;
+    if (nextIntegrity === 0) {
+      system.online = false;
+    }
+    this.emitShipChanged();
+    return nextIntegrity;
+  }
+
+  setShipSystemOnline(systemId: ShipSystemId, online: boolean): void {
+    const system = this.saveData.ship.systems[systemId];
+    system.online = system.integrity > 0 ? online : false;
+    this.emitShipChanged();
+  }
+
+  repairShipSystem(systemId: ShipSystemId): void {
+    this.saveData.ship.systems[systemId] = {
+      integrity: 100,
+      online: true,
+    };
+    this.saveData.ship.repair.lastRepairAt = new Date().toISOString();
+    this.emitShipChanged();
+  }
+
+  repairAllShipSystems(): void {
+    SHIP_SYSTEM_IDS.forEach((systemId) => {
+      this.saveData.ship.systems[systemId] = {
+        integrity: 100,
+        online: true,
+      };
+    });
+    this.saveData.ship.repair.lastRepairAt = new Date().toISOString();
+    this.emitShipChanged();
+  }
+
+  getShipStorageSlots(): Array<InventoryItem | null> {
+    return cloneCargoSlots(this.saveData.ship.storage.cargo);
+  }
+
+  addItemToShipStorage(item: InventoryItem): boolean {
+    const success = addItemToCargoSlots(this.saveData.ship.storage.cargo, item);
+    if (!success) {
+      return false;
+    }
+
+    this.emitShipChanged();
+    return true;
+  }
+
+  storeCargoItem(cargoIndex: number): boolean {
+    const cargo = this.saveData.loadout.cargo;
+    if (cargoIndex < 0 || cargoIndex >= cargo.length) {
+      return false;
+    }
+
+    const item = cargo[cargoIndex];
+    if (!item) {
+      return false;
+    }
+
+    const success = addItemToCargoSlots(this.saveData.ship.storage.cargo, item);
+    if (!success) {
+      return false;
+    }
+
+    cargo[cargoIndex] = null;
+    this.emitShipChanged();
+    return true;
+  }
+
+  retrieveShipStorageItem(storageIndex: number): boolean {
+    const storage = this.saveData.ship.storage.cargo;
+    if (storageIndex < 0 || storageIndex >= storage.length) {
+      return false;
+    }
+
+    const item = storage[storageIndex];
+    if (!item) {
+      return false;
+    }
+
+    const success = addItemToCargoSlots(this.saveData.loadout.cargo, item);
+    if (!success) {
+      return false;
+    }
+
+    storage[storageIndex] = null;
+    this.emitShipChanged();
+    return true;
+  }
+
+  dropShipStorageItem(storageIndex: number): boolean {
+    const storage = this.saveData.ship.storage.cargo;
+    if (storageIndex < 0 || storageIndex >= storage.length || storage[storageIndex] === null) {
+      return false;
+    }
+
+    storage[storageIndex] = null;
+    this.emitShipChanged();
+    return true;
+  }
+
   getPlayerRaceId(): RaceId {
     return this.saveData.profile.raceId;
   }
@@ -714,6 +1059,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
     if (this.saveData.missions.selectedMissionId === missionId) {
       this.saveData.missions.selectedMissionId = null;
     }
+    if (this.clearShipTravelForMission(missionId)) {
+      this.emitShipTravelChanged();
+      return true;
+    }
+
     this.emit("save-changed", this.saveData);
     return true;
   }
@@ -831,6 +1181,10 @@ export class GameSession extends Phaser.Events.EventEmitter {
       this.addItemToCargo(item);
     });
     this.pendingReward = clone(reward);
+    if (this.clearShipTravelForMission(missionId)) {
+      this.emitShipTravelChanged();
+      return;
+    }
 
     this.emit("save-changed", this.saveData);
   }
@@ -857,6 +1211,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     if (!options?.preservePendingReward) {
       this.pendingReward = null;
     }
+    let shipTravelChanged = false;
 
     if (options?.requeue && missionId) {
       this.saveData.missions.acceptedMissionIds = [
@@ -864,7 +1219,14 @@ export class GameSession extends Phaser.Events.EventEmitter {
         ...this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId),
       ];
       this.saveData.missions.selectedMissionId = missionId;
+    } else if (missionId) {
+      shipTravelChanged = this.clearShipTravelForMission(missionId);
+    }
+
+    if (options?.requeue && missionId) {
       this.emit("save-changed", this.saveData);
+    } else if (shipTravelChanged) {
+      this.emitShipTravelChanged();
     }
 
     this.emit("mission-left", {
@@ -952,6 +1314,41 @@ export class GameSession extends Phaser.Events.EventEmitter {
   setDifficulty(value: GameplayDifficulty): void {
     this.settings.gameplay.difficulty = value;
     this.persistSettings();
+  }
+
+  private emitShipChanged(): void {
+    this.emit("ship-changed", this.getShipState());
+    this.emit("save-changed", this.saveData);
+  }
+
+  private emitShipTravelChanged(): void {
+    this.emit("ship-travel-changed", this.getShipTravelState());
+    this.emitShipChanged();
+  }
+
+  private setShipDockedState(): void {
+    this.saveData.ship.travel = {
+      ...this.saveData.ship.travel,
+      status: "docked",
+      destinationMissionId: null,
+      arrivedMissionId: null,
+    };
+  }
+
+  private clearShipTravelForMission(missionId: string | null | undefined): boolean {
+    if (!missionId) {
+      return false;
+    }
+
+    if (
+      this.saveData.ship.travel.destinationMissionId !== missionId
+      && this.saveData.ship.travel.arrivedMissionId !== missionId
+    ) {
+      return false;
+    }
+
+    this.setShipDockedState();
+    return true;
   }
 
   private syncLoadoutSummary(): void {
