@@ -96,6 +96,10 @@ type SpaceDamageSource =
   | { kind: "player" }
   | { kind: "ship"; shipId: string | null; factionId: SpaceFactionId | null };
 
+type SpacePlayerTarget =
+  | { kind: "ship"; ship: SpaceFactionShip }
+  | { kind: "field"; fieldObject: SpaceFieldObject };
+
 const PLAYER_RADIUS = 22;
 const PLAYER_MAX_HULL = 8;
 const PLAYER_ACCELERATION = 720;
@@ -110,6 +114,9 @@ const FACTION_DAMAGE = 1;
 const PLAYER_DAMAGE = 1;
 const AGGRESSION_DURATION = 12;
 const MISSION_LANDING_RANGE_BUFFER = 150;
+const PLAYER_TARGET_LOCK_RANGE = 980;
+const TOUCH_STICK_RADIUS = 72;
+const TOUCH_STICK_DEADZONE = 18;
 
 function tracePolygonPath(graphics: Phaser.GameObjects.Graphics, points: number[]): void {
   if (points.length < 4) {
@@ -157,6 +164,9 @@ export class SpaceScene extends Phaser.Scene {
   private shipThruster!: Phaser.GameObjects.Ellipse;
   private shipDamageRing!: Phaser.GameObjects.Arc;
   private shipVelocity = new Phaser.Math.Vector2();
+  private keyboardMoveVector = new Phaser.Math.Vector2();
+  private touchMoveVector = new Phaser.Math.Vector2();
+  private touchAimVector = new Phaser.Math.Vector2(1, 0);
   private moveDirection = new Phaser.Math.Vector2();
   private aimDirection = new Phaser.Math.Vector2(1, 0);
   private pointerWorld = new Phaser.Math.Vector2();
@@ -176,9 +186,25 @@ export class SpaceScene extends Phaser.Scene {
   private playerHull = PLAYER_MAX_HULL;
   private playerFlash = 0;
   private fireCooldown = 0;
+  private fireHeld = false;
   private thrusting = false;
   private returningToShip = false;
   private playerDestroyed = false;
+  private touchCapable = false;
+  private touchMode = false;
+  private movePointerId: number | null = null;
+  private attackPointerId: number | null = null;
+  private selectedTarget: SpacePlayerTarget | null = null;
+  private autoAimTarget: SpacePlayerTarget | null = null;
+  private moveBase?: Phaser.GameObjects.Arc;
+  private moveKnob?: Phaser.GameObjects.Arc;
+  private attackButton?: MenuButton;
+  private targetButton?: MenuButton;
+  private abilityOneButton?: MenuButton;
+  private abilityTwoButton?: MenuButton;
+  private desktopControlsText?: Phaser.GameObjects.Text;
+  private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
+  private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
   private routeText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private contactText?: Phaser.GameObjects.Text;
@@ -214,6 +240,8 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.touchCapable = this.sys.game.device.input.touch;
+    this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.asteroids = [];
     this.factionShips = [];
     this.shots = [];
@@ -224,9 +252,19 @@ export class SpaceScene extends Phaser.Scene {
     this.playerHull = PLAYER_MAX_HULL;
     this.playerFlash = 0;
     this.fireCooldown = 0;
+    this.fireHeld = false;
     this.shipVelocity.set(0, 0);
+    this.keyboardMoveVector.set(0, 0);
+    this.touchMoveVector.set(0, 0);
+    this.touchAimVector.set(1, 0);
     this.moveDirection.set(0, 0);
     this.aimDirection.set(1, 0);
+    this.selectedTarget = null;
+    this.autoAimTarget = null;
+    this.movePointerId = null;
+    this.attackPointerId = null;
+    this.touchUiObjects = [];
+    this.desktopUiObjects = [];
     this.thrusting = false;
     this.returningToShip = false;
     this.playerDestroyed = false;
@@ -240,10 +278,23 @@ export class SpaceScene extends Phaser.Scene {
     this.createMissionPlanet();
     this.createFactionShips();
     this.createHud();
+    this.createTouchUi();
     this.createCommandOverlays();
+    this.syncInputMode();
     this.bindKeyboard();
+    this.bindPointers();
     this.configureCamera();
     this.refreshHud();
+
+    const syncInputMode = (): void => this.syncInputMode();
+    gameSession.on("settings-changed", syncInputMode);
+    gameSession.on("input-mode-changed", syncInputMode);
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      gameSession.off("settings-changed", syncInputMode);
+      gameSession.off("input-mode-changed", syncInputMode);
+      this.releaseTouchControls();
+    });
   }
 
   update(_time: number, delta: number): void {
@@ -543,13 +594,14 @@ export class SpaceScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB / Space fire  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
+    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB / Space fire  |  T target  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
       fontFamily: "Arial",
       fontSize: "15px",
       color: "#dcecff",
       backgroundColor: "#09131fcc",
       padding: { x: 12, y: 6 },
     }).setOrigin(0.5, 0.5).setScrollFactor(0).setDepth(51);
+    this.desktopUiObjects.push(this.desktopControlsText);
 
     this.logbookButton = createMenuButton({
       scene: this,
@@ -591,6 +643,98 @@ export class SpaceScene extends Phaser.Scene {
     this.returnButton.container.setScrollFactor(0);
   }
 
+  private createTouchUi(): void {
+    if (!this.touchCapable) {
+      return;
+    }
+
+    this.moveBase = this.add.circle(148, 566, TOUCH_STICK_RADIUS, 0x173054, 0.36).setDepth(54).setScrollFactor(0);
+    this.moveBase.setStrokeStyle(3, 0x72a8ff, 0.65);
+    this.moveKnob = this.add.circle(148, 566, 34, 0xdde9ff, 0.72).setDepth(55).setScrollFactor(0);
+    this.moveKnob.setStrokeStyle(2, 0xffffff, 0.9);
+
+    const moveLabel = this.add.text(148, 470, "MOVE / FACE", {
+      fontFamily: "Arial",
+      fontSize: "20px",
+      color: "#9fc6ff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(55).setScrollFactor(0);
+
+    const attackLabel = this.add.text(1114, 470, "ATTACK", {
+      fontFamily: "Arial",
+      fontSize: "20px",
+      color: "#9fc6ff",
+      fontStyle: "bold",
+    }).setOrigin(0.5).setDepth(55).setScrollFactor(0);
+
+    this.attackButton = createMenuButton({
+      scene: this,
+      x: 1114,
+      y: 566,
+      width: 150,
+      height: 68,
+      label: "Attack",
+      onClick: () => undefined,
+      onPress: (pointer) => this.beginTouchAttack(pointer),
+      onRelease: (pointer) => this.endTouchAttack(pointer),
+      depth: 55,
+      accentColor: 0x1f5a87,
+    });
+    this.attackButton.container.setScrollFactor(0);
+
+    this.targetButton = createMenuButton({
+      scene: this,
+      x: 1188,
+      y: 486,
+      width: 112,
+      height: 52,
+      label: "Target",
+      onClick: () => this.cycleTargetLock(),
+      depth: 55,
+      accentColor: 0x2b4966,
+    });
+    this.targetButton.container.setScrollFactor(0);
+
+    this.abilityOneButton = createMenuButton({
+      scene: this,
+      x: 922,
+      y: 572,
+      width: 134,
+      height: 62,
+      label: "Aux 1",
+      onClick: () => undefined,
+      depth: 55,
+      accentColor: 0x2a394c,
+      disabled: true,
+    });
+    this.abilityOneButton.container.setScrollFactor(0);
+
+    this.abilityTwoButton = createMenuButton({
+      scene: this,
+      x: 942,
+      y: 494,
+      width: 126,
+      height: 54,
+      label: "Aux 2",
+      onClick: () => undefined,
+      depth: 55,
+      accentColor: 0x2a394c,
+      disabled: true,
+    });
+    this.abilityTwoButton.container.setScrollFactor(0);
+
+    this.touchUiObjects.push(
+      this.moveBase,
+      this.moveKnob,
+      moveLabel,
+      attackLabel,
+      this.attackButton.container,
+      this.targetButton.container,
+      this.abilityOneButton.container,
+      this.abilityTwoButton.container,
+    );
+  }
+
   private createCommandOverlays(): void {
     this.logbookOverlay = new LogbookOverlay({
       scene: this,
@@ -630,6 +774,7 @@ export class SpaceScene extends Phaser.Scene {
     }) as SpaceScene["inputKeys"];
 
     keyboard.on("keydown-ESC", () => {
+      this.reportDesktopInput();
       if (this.isMenuOverlayVisible()) {
         this.closeCommandOverlays();
         return;
@@ -637,17 +782,92 @@ export class SpaceScene extends Phaser.Scene {
       this.openPauseMenu();
     });
     keyboard.on("keydown-L", () => {
+      this.reportDesktopInput();
       this.toggleLogbookOverlay();
     });
     keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
       event.preventDefault();
+      this.reportDesktopInput();
       this.openDataPadTab("inventory");
+    });
+    keyboard.on("keydown-T", () => {
+      this.reportDesktopInput();
+      if (this.isMenuOverlayVisible()) {
+        return;
+      }
+      this.cycleTargetLock();
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
       keyboard.removeAllListeners("keydown-L");
       keyboard.removeAllListeners("keydown-TAB");
+      keyboard.removeAllListeners("keydown-T");
+    });
+  }
+
+  private bindPointers(): void {
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      if (this.playerDestroyed || this.returningToShip || this.isMenuOverlayVisible()) {
+        return;
+      }
+
+      const touchLike = this.isTouchPointer(pointer);
+      if (this.touchCapable) {
+        gameSession.reportInputMode(touchLike ? "touch" : "desktop", this.touchCapable);
+      }
+
+      if (this.touchMode && touchLike) {
+        if (this.pointerOverUi(pointer)) {
+          return;
+        }
+
+        if (this.movePointerId === null && this.moveBase && this.moveKnob) {
+          this.movePointerId = pointer.id;
+          this.anchorMoveStick(pointer.x, pointer.y);
+          this.updateMoveStick(pointer);
+        }
+        return;
+      }
+
+      if (this.pointerOverUi(pointer)) {
+        return;
+      }
+
+      this.reportDesktopInput();
+      this.fireHeld = true;
+    });
+
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      if (this.isMenuOverlayVisible()) {
+        return;
+      }
+
+      const touchLike = this.isTouchPointer(pointer);
+      if (this.touchCapable) {
+        gameSession.reportInputMode(touchLike ? "touch" : "desktop", this.touchCapable);
+      }
+
+      if (this.touchMode && touchLike && pointer.id === this.movePointerId && pointer.isDown) {
+        this.updateMoveStick(pointer);
+      }
+    });
+
+    this.input.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+      if (this.touchMode && this.isTouchPointer(pointer)) {
+        if (pointer.id === this.movePointerId) {
+          this.movePointerId = null;
+          this.touchMoveVector.set(0, 0);
+          this.resetMoveStick();
+        }
+        if (pointer.id === this.attackPointerId) {
+          this.endTouchAttack(pointer);
+        }
+        return;
+      }
+
+      this.reportDesktopInput();
+      this.fireHeld = false;
     });
   }
 
@@ -658,15 +878,14 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updateAimDirection(): void {
-    const pointer = this.input.activePointer;
-    this.cameras.main.getWorldPoint(pointer.x, pointer.y, this.pointerWorld);
-    const dx = this.pointerWorld.x - this.shipRoot.x;
-    const dy = this.pointerWorld.y - this.shipRoot.y;
-    if ((dx * dx) + (dy * dy) < 64) {
+    const baseDirection = this.getBaseAimDirection();
+    this.refreshAutoAimTarget(baseDirection);
+    const combatDirection = this.getCombatAimDirection(baseDirection);
+    if (combatDirection.lengthSq() <= 0.001) {
       return;
     }
 
-    this.aimDirection.set(dx, dy).normalize();
+    this.aimDirection.copy(combatDirection.normalize());
     this.shipRoot.rotation = Math.atan2(this.aimDirection.y, this.aimDirection.x) + Math.PI * 0.5;
   }
 
@@ -675,20 +894,32 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
-    this.moveDirection.set(0, 0);
+    this.keyboardMoveVector.set(0, 0);
     if (this.inputKeys.left.isDown) {
-      this.moveDirection.x -= 1;
+      this.keyboardMoveVector.x -= 1;
     }
     if (this.inputKeys.right.isDown) {
-      this.moveDirection.x += 1;
+      this.keyboardMoveVector.x += 1;
     }
     if (this.inputKeys.up.isDown) {
-      this.moveDirection.y -= 1;
+      this.keyboardMoveVector.y -= 1;
     }
     if (this.inputKeys.down.isDown) {
-      this.moveDirection.y += 1;
+      this.keyboardMoveVector.y += 1;
     }
 
+    if (this.touchCapable && (
+      this.keyboardMoveVector.lengthSq() > 0.001
+      || this.inputKeys.fire.isDown
+      || this.inputKeys.returnToShip.isDown
+    )) {
+      this.reportDesktopInput();
+    }
+
+    const movementSource = this.touchMode && this.touchMoveVector.lengthSq() > 0.01
+      ? this.touchMoveVector
+      : this.keyboardMoveVector;
+    this.moveDirection.copy(movementSource);
     this.thrusting = this.moveDirection.lengthSq() > 0;
     if (this.thrusting) {
       this.moveDirection.normalize();
@@ -709,8 +940,8 @@ export class SpaceScene extends Phaser.Scene {
     this.shipRoot.y = clampToBounds(this.shipRoot.y, PLAYER_RADIUS, SPACE_WORLD_CONFIG.height - PLAYER_RADIUS);
     gameSession.setShipSpacePosition(this.shipRoot.x, this.shipRoot.y);
 
-    const fireHeld = this.input.activePointer.isDown || this.inputKeys.fire.isDown;
-    if (fireHeld && this.fireCooldown <= 0) {
+    const lockAutoFire = gameSession.settings.controls.autoFire && this.autoAimTarget !== null;
+    if ((this.fireHeld || this.inputKeys.fire.isDown || lockAutoFire) && this.fireCooldown <= 0) {
       this.fireCooldown = PLAYER_FIRE_COOLDOWN;
       this.firePlayerShot();
     }
@@ -730,6 +961,249 @@ export class SpaceScene extends Phaser.Scene {
 
     this.shipDamageRing.setStrokeStyle(2, 0xffdbbc, this.playerFlash * 0.84);
     this.shipDamageRing.setFillStyle(0xff9f74, this.playerFlash * 0.16);
+  }
+
+  private getBaseAimDirection(): Phaser.Math.Vector2 {
+    const direction = this.touchMode
+      ? this.touchAimVector.clone()
+      : this.getDesktopAimVector();
+
+    if (!Number.isFinite(direction.x) || !Number.isFinite(direction.y) || direction.lengthSq() <= 0.0001) {
+      return this.aimDirection.clone();
+    }
+
+    return direction.normalize();
+  }
+
+  private getDesktopAimVector(): Phaser.Math.Vector2 {
+    const pointer = this.input.activePointer;
+    if (!pointer.isDown && pointer.x === 0 && pointer.y === 0) {
+      return this.aimDirection.clone();
+    }
+
+    this.cameras.main.getWorldPoint(pointer.x, pointer.y, this.pointerWorld);
+    return new Phaser.Math.Vector2(
+      this.pointerWorld.x - this.shipRoot.x,
+      this.pointerWorld.y - this.shipRoot.y,
+    );
+  }
+
+  private getCombatAimDirection(baseDirection: Phaser.Math.Vector2): Phaser.Math.Vector2 {
+    if (!this.autoAimTarget) {
+      return baseDirection;
+    }
+
+    if (this.autoAimTarget.kind === "ship") {
+      return new Phaser.Math.Vector2(
+        this.autoAimTarget.ship.root.x - this.shipRoot.x,
+        this.autoAimTarget.ship.root.y - this.shipRoot.y,
+      ).normalize();
+    }
+
+    return new Phaser.Math.Vector2(
+      this.autoAimTarget.fieldObject.root.x - this.shipRoot.x,
+      this.autoAimTarget.fieldObject.root.y - this.shipRoot.y,
+    ).normalize();
+  }
+
+  private refreshAutoAimTarget(direction: Phaser.Math.Vector2): void {
+    if (this.selectedTarget && !this.isPlayerTargetValid(this.selectedTarget)) {
+      this.selectedTarget = null;
+    }
+
+    this.autoAimTarget = this.getResolvedLockTarget(direction);
+  }
+
+  private getResolvedLockTarget(_direction: Phaser.Math.Vector2): SpacePlayerTarget | null {
+    if (this.selectedTarget && this.isPlayerTargetValid(this.selectedTarget)) {
+      return this.selectedTarget;
+    }
+
+    this.selectedTarget = null;
+    if (!gameSession.settings.controls.autoAim) {
+      return null;
+    }
+
+    const nearestHostileShip = this.getNearestHostileShip();
+    return nearestHostileShip ? { kind: "ship", ship: nearestHostileShip } : null;
+  }
+
+  private getNearestHostileShip(): SpaceFactionShip | null {
+    let nearest: SpaceFactionShip | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    this.factionShips.forEach((ship) => {
+      if (!this.isShipHostileToPlayer(ship)) {
+        return;
+      }
+
+      const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y);
+      if (distance > PLAYER_TARGET_LOCK_RANGE || distance >= nearestDistance) {
+        return;
+      }
+
+      nearest = ship;
+      nearestDistance = distance;
+    });
+
+    return nearest;
+  }
+
+  private getTargetCycleCandidates(): SpacePlayerTarget[] {
+    const hostileShips = this.factionShips
+      .filter((ship) => this.isShipHostileToPlayer(ship))
+      .sort((left, right) => {
+        const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
+        const rightDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, right.root.x, right.root.y);
+        return leftDistance - rightDistance;
+      })
+      .filter((ship) => Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y) <= PLAYER_TARGET_LOCK_RANGE)
+      .map<SpacePlayerTarget>((ship) => ({ kind: "ship", ship }));
+
+    if (hostileShips.length > 0) {
+      return hostileShips;
+    }
+
+    return this.asteroids
+      .filter((fieldObject) => Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, fieldObject.root.x, fieldObject.root.y) <= PLAYER_TARGET_LOCK_RANGE)
+      .sort((left, right) => {
+        const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
+        const rightDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, right.root.x, right.root.y);
+        return leftDistance - rightDistance;
+      })
+      .map<SpacePlayerTarget>((fieldObject) => ({ kind: "field", fieldObject }));
+  }
+
+  private cycleTargetLock(): void {
+    if (this.playerDestroyed || this.returningToShip) {
+      return;
+    }
+
+    const candidates = this.getTargetCycleCandidates();
+    if (candidates.length === 0) {
+      this.selectedTarget = null;
+      this.autoAimTarget = null;
+      return;
+    }
+
+    const currentIndex = this.selectedTarget
+      ? candidates.findIndex((candidate) => this.targetsMatch(candidate, this.selectedTarget))
+      : -1;
+    const nextTarget = candidates[(currentIndex + 1) % candidates.length] ?? candidates[0];
+    this.selectedTarget = nextTarget;
+    this.autoAimTarget = nextTarget;
+  }
+
+  private targetsMatch(left: SpacePlayerTarget | null, right: SpacePlayerTarget | null): boolean {
+    if (!left || !right || left.kind !== right.kind) {
+      return false;
+    }
+
+    if (left.kind === "ship" && right.kind === "ship") {
+      return left.ship.id === right.ship.id;
+    }
+
+    if (left.kind === "field" && right.kind === "field") {
+      return left.fieldObject.id === right.fieldObject.id;
+    }
+
+    return false;
+  }
+
+  private isPlayerTargetValid(target: SpacePlayerTarget): boolean {
+    if (target.kind === "ship") {
+      return this.factionShips.includes(target.ship)
+        && this.isShipHostileToPlayer(target.ship)
+        && Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, target.ship.root.x, target.ship.root.y) <= PLAYER_TARGET_LOCK_RANGE;
+    }
+
+    return this.asteroids.includes(target.fieldObject)
+      && Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, target.fieldObject.root.x, target.fieldObject.root.y) <= PLAYER_TARGET_LOCK_RANGE;
+  }
+
+  private isShipHostileToPlayer(ship: SpaceFactionShip): boolean {
+    const faction = SPACE_FACTIONS[ship.factionId];
+    return faction.attackPlayerByDefault || ship.provokedByPlayer;
+  }
+
+  private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
+    return Boolean(
+      this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || this.logbookButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || this.returnButton?.container.getBounds().contains(pointer.x, pointer.y)
+      || (this.attackButton?.container.visible && this.attackButton.container.getBounds().contains(pointer.x, pointer.y))
+      || (this.targetButton?.container.visible && this.targetButton.container.getBounds().contains(pointer.x, pointer.y))
+      || (this.abilityOneButton?.container.visible && this.abilityOneButton.container.getBounds().contains(pointer.x, pointer.y))
+      || (this.abilityTwoButton?.container.visible && this.abilityTwoButton.container.getBounds().contains(pointer.x, pointer.y)),
+    );
+  }
+
+  private anchorMoveStick(x: number, y: number): void {
+    if (!this.moveBase || !this.moveKnob) {
+      return;
+    }
+
+    this.moveBase.setPosition(
+      Phaser.Math.Clamp(x, 86, GAME_WIDTH - 86),
+      Phaser.Math.Clamp(y, 104, GAME_HEIGHT - 88),
+    );
+    this.moveBase.setFillStyle(0x173054, 0.52);
+    this.moveKnob.setPosition(this.moveBase.x, this.moveBase.y);
+  }
+
+  private updateMoveStick(pointer: Phaser.Input.Pointer): void {
+    if (!this.moveBase || !this.moveKnob) {
+      return;
+    }
+
+    const vector = new Phaser.Math.Vector2(pointer.x - this.moveBase.x, pointer.y - this.moveBase.y);
+    const distance = vector.length();
+    if (distance > TOUCH_STICK_RADIUS) {
+      vector.normalize().scale(TOUCH_STICK_RADIUS);
+    }
+
+    this.moveKnob.setPosition(this.moveBase.x + vector.x, this.moveBase.y + vector.y);
+    if (distance <= TOUCH_STICK_DEADZONE) {
+      this.touchMoveVector.set(0, 0);
+      return;
+    }
+
+    const rawStrength = Phaser.Math.Clamp(
+      (Math.min(distance, TOUCH_STICK_RADIUS) - TOUCH_STICK_DEADZONE) / (TOUCH_STICK_RADIUS - TOUCH_STICK_DEADZONE),
+      0,
+      1,
+    );
+    const sensitivityCurve = 100 / gameSession.settings.controls.touchSensitivity;
+    const strength = Math.pow(rawStrength, sensitivityCurve);
+    this.touchMoveVector.set(vector.x, vector.y).normalize().scale(strength);
+    this.touchAimVector.set(vector.x, vector.y).normalize();
+  }
+
+  private resetMoveStick(): void {
+    if (!this.moveBase || !this.moveKnob) {
+      return;
+    }
+
+    this.moveBase.setPosition(148, 566).setFillStyle(0x173054, 0.36);
+    this.moveKnob.setPosition(148, 566);
+  }
+
+  private beginTouchAttack(pointer: Phaser.Input.Pointer): void {
+    if (this.playerDestroyed || this.returningToShip || this.isMenuOverlayVisible()) {
+      return;
+    }
+
+    this.attackPointerId = pointer.id;
+    this.fireHeld = true;
+  }
+
+  private endTouchAttack(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id !== this.attackPointerId) {
+      return;
+    }
+
+    this.attackPointerId = null;
+    this.fireHeld = false;
   }
 
   private firePlayerShot(): void {
@@ -1369,6 +1843,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     this.playerDestroyed = true;
+    this.releaseTouchControls();
     this.returnButton?.setEnabled(false);
     this.statusText?.setText("Ship destroyed. Routing to GAME OVER.");
     this.contactText?.setText("Continue relaunches the current space route. Return To Ship docks back in the hub.");
@@ -1464,6 +1939,7 @@ export class SpaceScene extends Phaser.Scene {
       ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionPlanet.x, missionPlanet.y)
       : null;
     const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, missionDistance);
+    const touchLocked = this.returningToShip || this.playerDestroyed || this.isMenuOverlayVisible();
     const playerHostiles = this.factionShips.filter((ship) => {
       const faction = SPACE_FACTIONS[ship.factionId];
       if (!(faction.attackPlayerByDefault || ship.provokedByPlayer)) {
@@ -1471,18 +1947,39 @@ export class SpaceScene extends Phaser.Scene {
       }
       return Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y) <= 1300;
     }).length;
+    const targetLabel = this.autoAimTarget
+      ? this.autoAimTarget.kind === "ship"
+        ? `${SPACE_FACTIONS[this.autoAimTarget.ship.factionId].label} ship`
+        : this.autoAimTarget.fieldObject.kind === "asteroid"
+          ? "Asteroid"
+          : "Debris"
+      : "None";
+    const autoAim = gameSession.settings.controls.autoAim;
+    const autoFire = gameSession.settings.controls.autoFire;
 
     this.routeText?.setText(trackedMission
       ? `Route staged: ${trackedMission.title}  |  Sector: ${sector.label}`
       : `Free roam launch  |  Sector: ${sector.label}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
     this.contactText?.setText(missionPlanet
-      ? `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nWaypoint ${missionPlanet.name}  |  Dist ${Math.round(missionDistance ?? 0)}  |  ${landingReady ? "Landing window open. Press X or use Land." : "Follow the mission marker."}`
-      : `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`);
+      ? `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
+      : `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}`);
     this.coordinateText?.setText(missionPlanet
       ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}`
       : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nSECTOR ${sector.label}`);
     this.returnButton?.setLabel(landingReady ? "Land On Planet" : "Return To Ship");
+    this.attackButton?.setLabel("Attack");
+    this.attackButton?.setCooldownProgress(0);
+    this.attackButton?.setInputEnabled(this.touchMode && !touchLocked);
+    this.targetButton?.setLabel(this.autoAimTarget ? "Next\nTarget" : "Target");
+    this.targetButton?.setCooldownProgress(0);
+    this.targetButton?.setInputEnabled(this.touchMode && !touchLocked && this.getTargetCycleCandidates().length > 0);
+    this.abilityOneButton?.setLabel("Aux 1");
+    this.abilityOneButton?.setCooldownProgress(0);
+    this.abilityOneButton?.setInputEnabled(false);
+    this.abilityTwoButton?.setLabel("Aux 2");
+    this.abilityTwoButton?.setCooldownProgress(0);
+    this.abilityTwoButton?.setInputEnabled(false);
     this.updateMissionPlanetVisuals(missionPlanet, landingReady);
     this.updateWaypointIndicator(missionPlanet, missionDistance, landingReady);
     this.syncSceneOverlayChrome();
@@ -1605,6 +2102,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     this.returningToShip = true;
+    this.releaseTouchControls();
     this.closeCommandOverlays();
     this.returnButton?.setEnabled(false);
     this.logbookButton?.setEnabled(false);
@@ -1623,6 +2121,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     this.returningToShip = true;
+    this.releaseTouchControls();
     this.closeCommandOverlays();
     this.returnButton?.setEnabled(false);
     this.logbookButton?.setEnabled(false);
@@ -1670,6 +2169,8 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
+    this.fireHeld = false;
+    this.releaseTouchControls();
     this.closeCommandOverlays();
 
     if (tab === "missions") {
@@ -1695,6 +2196,7 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    this.releaseTouchControls();
     this.closeCommandOverlays();
     this.scene.launch("pause", {
       returnSceneKey: "space",
@@ -1715,6 +2217,50 @@ export class SpaceScene extends Phaser.Scene {
     this.logbookButton?.container.setAlpha(blocking ? 0.28 : 1);
     this.pauseButton?.container.setAlpha(blocking ? 0.28 : 1);
     this.returnButton?.container.setAlpha(blocking ? 0.28 : 1);
+    this.attackButton?.container.setAlpha(this.touchMode ? (blocking ? 0.22 : 1) : 0);
+    this.targetButton?.container.setAlpha(this.touchMode ? (blocking ? 0.22 : 1) : 0);
+    this.abilityOneButton?.container.setAlpha(this.touchMode ? (blocking ? 0.18 : 0.48) : 0);
+    this.abilityTwoButton?.container.setAlpha(this.touchMode ? (blocking ? 0.18 : 0.48) : 0);
+  }
+
+  private syncInputMode(): void {
+    this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
+    const desktopVisible = !this.touchMode;
+
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
+    });
+    this.desktopUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(desktopVisible);
+    });
+
+    if (!this.touchMode) {
+      this.releaseTouchControls();
+    }
+
+    this.syncSceneOverlayChrome();
+  }
+
+  private releaseTouchControls(): void {
+    this.movePointerId = null;
+    this.attackPointerId = null;
+    this.touchMoveVector.set(0, 0);
+    this.fireHeld = false;
+    this.resetMoveStick();
+  }
+
+  private reportDesktopInput(): void {
+    if (!this.touchCapable) {
+      return;
+    }
+
+    gameSession.reportInputMode("desktop", this.touchCapable);
+  }
+
+  private isTouchPointer(pointer: Phaser.Input.Pointer): boolean {
+    const augmentedPointer = pointer as Phaser.Input.Pointer & { wasTouch?: boolean };
+    const event = pointer.event as (PointerEvent & { pointerType?: string }) | undefined;
+    return Boolean(augmentedPointer.wasTouch || event?.pointerType === "touch");
   }
 
   getDebugSnapshot(): Record<string, unknown> {
@@ -1760,6 +2306,9 @@ export class SpaceScene extends Phaser.Scene {
       sector: this.getCurrentGalaxySector().label,
       routeMissionId: this.routeMissionId,
       routeTitle: this.routeTitle,
+      touchMode: this.touchMode,
+      autoAim: gameSession.settings.controls.autoAim,
+      autoFire: gameSession.settings.controls.autoFire,
       playerHull: {
         current: Math.max(0, this.playerHull),
         max: PLAYER_MAX_HULL,
@@ -1788,6 +2337,17 @@ export class SpaceScene extends Phaser.Scene {
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       inventoryVisible: this.inventoryOverlay?.isVisible() ?? false,
       mapVisible: this.galaxyMapOverlay?.isVisible() ?? false,
+      selectedTarget: this.selectedTarget
+        ? this.selectedTarget.kind === "ship"
+          ? { kind: "ship", id: this.selectedTarget.ship.id, factionId: this.selectedTarget.ship.factionId }
+          : { kind: "field", id: this.selectedTarget.fieldObject.id, fieldKind: this.selectedTarget.fieldObject.kind }
+        : null,
+      autoAimTarget: this.autoAimTarget
+        ? this.autoAimTarget.kind === "ship"
+          ? { kind: "ship", id: this.autoAimTarget.ship.id, factionId: this.autoAimTarget.ship.factionId }
+          : { kind: "field", id: this.autoAimTarget.fieldObject.id, fieldKind: this.autoAimTarget.fieldObject.kind }
+        : null,
+      touchAttackHeld: this.attackPointerId !== null,
       returnReady: !this.returningToShip && !this.playerDestroyed,
       nearestFieldObjects,
       nearestShips,
