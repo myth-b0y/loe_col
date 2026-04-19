@@ -71,6 +71,109 @@ try {
   });
 
   await waitForScene(page, "hub");
+  await page.waitForTimeout(250);
+  await capture(page, "hub-touch-start.png");
+
+  const hubTouchHud = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    return {
+      touchMode: hub?.touchMode ?? false,
+      stickVisible: hub?.stickBase?.visible ?? false,
+      activateVisible: hub?.activateButton?.container?.visible ?? false,
+    };
+  });
+
+  assert(hubTouchHud.touchMode, "Hub scene did not resolve to touch mode in a touch-capable context");
+  assert(hubTouchHud.stickVisible, "Hub touch movement stick is not visible during gameplay");
+
+  const hubInventoryHidden = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    hub?.openDataPadTab?.("inventory");
+    return {
+      inventoryVisible: hub?.inventoryOverlay?.isVisible?.() ?? false,
+      stickVisible: hub?.stickBase?.visible ?? true,
+      activateVisible: hub?.activateButton?.container?.visible ?? true,
+    };
+  });
+  await page.waitForTimeout(80);
+  await capture(page, "hub-inventory-hidden.png");
+
+  assert(hubInventoryHidden.inventoryVisible, "Hub inventory overlay did not open in touch mode");
+  assert(!hubInventoryHidden.stickVisible, "Hub touch movement stick stayed visible under the inventory overlay");
+  assert(!hubInventoryHidden.activateVisible, "Hub touch activate button stayed visible under the inventory overlay");
+
+  const hubPanelHidden = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    hub?.inventoryOverlay?.hide?.();
+    hub?.openStation?.("pilotSeat");
+    return {
+      panelVisible: hub?.panel?.visible ?? false,
+      stickVisible: hub?.stickBase?.visible ?? true,
+      activateVisible: hub?.activateButton?.container?.visible ?? true,
+      panelTitle: hub?.panelTitle?.text ?? "",
+    };
+  });
+  await page.waitForTimeout(80);
+  await capture(page, "hub-pilot-panel-hidden.png");
+
+  assert(hubPanelHidden.panelVisible, "Hub pilot seat panel did not open");
+  assert(hubPanelHidden.panelTitle === "Pilot Seat", `Unexpected pilot panel title '${hubPanelHidden.panelTitle}'`);
+  assert(!hubPanelHidden.stickVisible, "Hub touch movement stick stayed visible under the pilot seat panel");
+  assert(!hubPanelHidden.activateVisible, "Hub touch activate button stayed visible under the pilot seat panel");
+
+  await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    hub?.closePanel?.();
+    window.__loeSession?.startMission?.("ember-watch");
+    window.__loeGame?.scene.start("mission", { missionId: "ember-watch" });
+  });
+
+  await waitForScene(page, "mission");
+  await page.waitForTimeout(300);
+  await capture(page, "mission-touch-start.png");
+
+  const missionTouchHud = await page.evaluate(() => {
+    const mission = window.__loeGame?.scene.keys.mission;
+    return {
+      touchMode: mission?.touchMode ?? false,
+      moveVisible: mission?.moveBase?.visible ?? false,
+      attackVisible: mission?.attackButton?.container?.visible ?? false,
+      pulseVisible: mission?.pulseButton?.container?.visible ?? false,
+    };
+  });
+
+  assert(missionTouchHud.touchMode, "Mission scene did not resolve to touch mode in a touch-capable context");
+  assert(missionTouchHud.moveVisible, "Mission touch movement stick is not visible during gameplay");
+  assert(missionTouchHud.attackVisible, "Mission touch attack button is not visible during gameplay");
+
+  const missionInventoryHidden = await page.evaluate(() => {
+    const mission = window.__loeGame?.scene.keys.mission;
+    mission?.openDataPadTab?.("inventory");
+    return {
+      inventoryVisible: mission?.inventoryOverlay?.isVisible?.() ?? false,
+      moveVisible: mission?.moveBase?.visible ?? true,
+      attackVisible: mission?.attackButton?.container?.visible ?? true,
+      pulseVisible: mission?.pulseButton?.container?.visible ?? true,
+    };
+  });
+  await page.waitForTimeout(80);
+  await capture(page, "mission-inventory-hidden.png");
+
+  assert(missionInventoryHidden.inventoryVisible, "Mission inventory overlay did not open in touch mode");
+  assert(!missionInventoryHidden.moveVisible, "Mission touch movement stick stayed visible under the inventory overlay");
+  assert(!missionInventoryHidden.attackVisible, "Mission touch attack button stayed visible under the inventory overlay");
+  assert(!missionInventoryHidden.pulseVisible, "Mission touch ability buttons stayed visible under the inventory overlay");
+
+  await page.evaluate(() => {
+    const game = window.__loeGame;
+    const mission = window.__loeGame?.scene.keys.mission;
+    mission?.inventoryOverlay?.hide?.();
+    game?.scene.stop("mission");
+    game?.scene.start("hub");
+  });
+  await page.waitForTimeout(200);
+
+  await waitForScene(page, "hub");
   await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
     hub?.launchIntoSpace?.("ember-watch");
@@ -84,6 +187,7 @@ try {
     const space = window.__loeGame?.scene.keys.space;
     return {
       touchMode: space?.getDebugSnapshot?.().touchMode ?? false,
+      moveVisible: space?.moveBase?.visible ?? false,
       attackVisible: space?.attackButton?.container?.visible ?? false,
       targetVisible: space?.targetButton?.container?.visible ?? false,
       auxOneVisible: space?.abilityOneButton?.container?.visible ?? false,
@@ -92,9 +196,37 @@ try {
   });
 
   assert(touchHud.touchMode, "Space scene did not resolve to touch mode in a touch-capable context");
-  assert(touchHud.attackVisible, "Touch attack button is not visible in space");
-  assert(touchHud.targetVisible, "Touch target button is not visible in space");
-  assert(touchHud.auxOneVisible && touchHud.auxTwoVisible, "Touch ability placeholders are not visible in space");
+  assert(touchHud.moveVisible, "Space touch movement stick is not visible");
+  assert(touchHud.attackVisible, "Space touch attack button is not visible");
+  assert(touchHud.targetVisible, "Space touch target button is not visible");
+  assert(touchHud.auxOneVisible && touchHud.auxTwoVisible, "Space touch ability placeholders are not visible");
+
+  const spaceInventoryHidden = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    space?.openDataPadTab?.("inventory");
+    return {
+      inventoryVisible: space?.inventoryOverlay?.isVisible?.() ?? false,
+      moveVisible: space?.moveBase?.visible ?? true,
+      attackVisible: space?.attackButton?.container?.visible ?? true,
+      targetVisible: space?.targetButton?.container?.visible ?? true,
+      auxOneVisible: space?.abilityOneButton?.container?.visible ?? true,
+      auxTwoVisible: space?.abilityTwoButton?.container?.visible ?? true,
+    };
+  });
+  await page.waitForTimeout(80);
+  await capture(page, "space-inventory-hidden.png");
+
+  assert(spaceInventoryHidden.inventoryVisible, "Space inventory overlay did not open in touch mode");
+  assert(!spaceInventoryHidden.moveVisible, "Space touch movement stick stayed visible under the inventory overlay");
+  assert(!spaceInventoryHidden.attackVisible, "Space touch attack button stayed visible under the inventory overlay");
+  assert(!spaceInventoryHidden.targetVisible, "Space touch target button stayed visible under the inventory overlay");
+  assert(!spaceInventoryHidden.auxOneVisible && !spaceInventoryHidden.auxTwoVisible, "Space touch ability placeholders stayed visible under the inventory overlay");
+
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    space?.inventoryOverlay?.hide?.();
+  });
+  await page.waitForTimeout(80);
 
   const shipBeforeMove = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -307,7 +439,13 @@ try {
 
   const summary = {
     url: URL,
+    hubTouchHud,
+    hubInventoryHidden,
+    hubPanelHidden,
+    missionTouchHud,
+    missionInventoryHidden,
     touchHud,
+    spaceInventoryHidden,
     shipBeforeMove,
     shipAfterMove,
     attackDuringHold,

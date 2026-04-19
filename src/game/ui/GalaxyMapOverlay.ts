@@ -215,16 +215,16 @@ export class GalaxyMapOverlay {
     }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
 
     this.staticMap = scene.add.graphics().setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
-    this.markerMap = scene.add.graphics().setDepth(PANEL_DEPTH + 3).setScrollFactor(0);
+    this.markerMap = scene.add.graphics().setDepth(PANEL_DEPTH + 5).setScrollFactor(0);
 
     this.playerLabel = scene.add.text(0, 0, "SHIP", {
       fontFamily: "Arial",
-      fontSize: "12px",
+      fontSize: "13px",
       color: "#dff7ff",
       fontStyle: "bold",
-      backgroundColor: "#08111bd8",
-      padding: { x: 4, y: 2 },
-    }).setDepth(PANEL_DEPTH + 4).setScrollFactor(0).setVisible(false);
+      backgroundColor: "#03111de6",
+      padding: { x: 6, y: 3 },
+    }).setDepth(PANEL_DEPTH + 6).setScrollFactor(0).setVisible(false);
 
     this.missionLabel = scene.add.text(0, 0, "MISSION", {
       fontFamily: "Arial",
@@ -288,6 +288,7 @@ export class GalaxyMapOverlay {
       missionSwatch,
       hoverSwatch,
       this.staticMap,
+      ...this.sectorLabels,
       this.markerMap,
       this.playerLabel,
       this.missionLabel,
@@ -296,8 +297,13 @@ export class GalaxyMapOverlay {
       this.settingsButton.container,
       this.closeButton.container,
       ...Object.values(this.tabButtons).flatMap((button) => (button ? [button.container] : [])),
-      ...this.sectorLabels,
     ]).setDepth(PANEL_DEPTH);
+
+    this.root.bringToTop(this.markerMap);
+    this.root.bringToTop(this.missionLabel);
+    this.root.bringToTop(this.playerLabel);
+    this.root.bringToTop(this.hoverLabel);
+    this.root.bringToTop(this.mapInputZone);
 
     this.root.setVisible(false);
     this.setInputEnabled(false);
@@ -439,12 +445,16 @@ export class GalaxyMapOverlay {
 
     this.markerMap.clear();
     const playerMarker = this.worldToMap(playerPosition);
-    this.markerMap.lineStyle(2, 0xcff5ff, 0.98);
-    this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 8);
-    this.markerMap.lineBetween(playerMarker.x - 12, playerMarker.y, playerMarker.x + 12, playerMarker.y);
-    this.markerMap.lineBetween(playerMarker.x, playerMarker.y - 12, playerMarker.x, playerMarker.y + 12);
-    this.playerLabel.setPosition(playerMarker.x + 16, playerMarker.y - 18).setVisible(true);
-    this.playerLabel.setText(`SHIP ${playerPosition.x}, ${playerPosition.y}`);
+    this.markerMap.fillStyle(0x8fe3ff, 1);
+    this.markerMap.fillCircle(playerMarker.x, playerMarker.y, 5);
+    this.markerMap.lineStyle(3, 0xf3fbff, 0.98);
+    this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 11);
+    this.markerMap.lineStyle(2, 0x8fe3ff, 0.96);
+    this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 17);
+    this.markerMap.lineBetween(playerMarker.x - 14, playerMarker.y, playerMarker.x + 14, playerMarker.y);
+    this.markerMap.lineBetween(playerMarker.x, playerMarker.y - 14, playerMarker.x, playerMarker.y + 14);
+    this.playerLabel.setPosition(playerMarker.x + 18, playerMarker.y - 24).setVisible(true);
+    this.playerLabel.setText("YOU");
 
     if (missionPlanet) {
       const missionMarker = this.worldToMap(missionPlanet);
@@ -472,6 +482,12 @@ export class GalaxyMapOverlay {
     } else {
       this.hoverLabel.setVisible(false);
     }
+
+    this.root.bringToTop(this.markerMap);
+    this.root.bringToTop(this.missionLabel);
+    this.root.bringToTop(this.playerLabel);
+    this.root.bringToTop(this.hoverLabel);
+    this.root.bringToTop(this.mapInputZone);
   }
 
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {

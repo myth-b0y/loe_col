@@ -287,12 +287,18 @@ export class SpaceScene extends Phaser.Scene {
     this.refreshHud();
 
     const syncInputMode = (): void => this.syncInputMode();
+    const handleResume = (): void => {
+      this.syncInputMode();
+      this.refreshHud();
+    };
     gameSession.on("settings-changed", syncInputMode);
     gameSession.on("input-mode-changed", syncInputMode);
+    this.events.on(Phaser.Scenes.Events.RESUME, handleResume);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameSession.off("settings-changed", syncInputMode);
       gameSession.off("input-mode-changed", syncInputMode);
+      this.events.off(Phaser.Scenes.Events.RESUME, handleResume);
       this.releaseTouchControls();
     });
   }
@@ -1122,8 +1128,20 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private isShipHostileToPlayer(ship: SpaceFactionShip): boolean {
+    return this.canShipAttackPlayer(ship);
+  }
+
+  private canShipAttackPlayer(ship: SpaceFactionShip): boolean {
+    if (ship.factionId === "republic") {
+      return false;
+    }
+
     const faction = SPACE_FACTIONS[ship.factionId];
     return faction.attackPlayerByDefault || ship.provokedByPlayer;
+  }
+
+  private canPlayerDamageShip(ship: SpaceFactionShip): boolean {
+    return ship.factionId !== "republic";
   }
 
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
@@ -1360,7 +1378,7 @@ export class SpaceScene extends Phaser.Scene {
     let bestDistanceSq = Number.POSITIVE_INFINITY;
     let bestTarget: { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null = null;
 
-    if (!this.playerDestroyed && (faction.attackPlayerByDefault || ship.provokedByPlayer)) {
+    if (!this.playerDestroyed && this.canShipAttackPlayer(ship)) {
       const dx = this.shipRoot.x - ship.root.x;
       const dy = this.shipRoot.y - ship.root.y;
       const distanceSq = (dx * dx) + (dy * dy);
@@ -1647,6 +1665,9 @@ export class SpaceScene extends Phaser.Scene {
       if (shot.ownerKind === "player") {
         for (let shipIndex = this.factionShips.length - 1; shipIndex >= 0; shipIndex -= 1) {
           const ship = this.factionShips[shipIndex];
+          if (!this.canPlayerDamageShip(ship)) {
+            continue;
+          }
           const dx = ship.root.x - shot.sprite.x;
           const dy = ship.root.y - shot.sprite.y;
           const combinedRadius = ship.radius + shot.radius;
@@ -1772,6 +1793,10 @@ export class SpaceScene extends Phaser.Scene {
     hitX: number,
   ): void {
     if (!this.factionShips.includes(ship)) {
+      return;
+    }
+
+    if (source.kind === "player" && !this.canPlayerDamageShip(ship)) {
       return;
     }
 
@@ -2198,6 +2223,9 @@ export class SpaceScene extends Phaser.Scene {
 
     this.releaseTouchControls();
     this.closeCommandOverlays();
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(false);
+    });
     this.scene.launch("pause", {
       returnSceneKey: "space",
       allowSave: true,
@@ -2207,6 +2235,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private syncSceneOverlayChrome(): void {
     const blocking = this.isMenuOverlayVisible();
+    const touchGameplayVisible = this.touchMode && !blocking;
     const alpha = blocking ? 0.1 : 1;
     this.routeText?.setAlpha(alpha);
     this.statusText?.setAlpha(alpha);
@@ -2217,6 +2246,9 @@ export class SpaceScene extends Phaser.Scene {
     this.logbookButton?.container.setAlpha(blocking ? 0.28 : 1);
     this.pauseButton?.container.setAlpha(blocking ? 0.28 : 1);
     this.returnButton?.container.setAlpha(blocking ? 0.28 : 1);
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(touchGameplayVisible);
+    });
     this.attackButton?.container.setAlpha(this.touchMode ? (blocking ? 0.22 : 1) : 0);
     this.targetButton?.container.setAlpha(this.touchMode ? (blocking ? 0.22 : 1) : 0);
     this.abilityOneButton?.container.setAlpha(this.touchMode ? (blocking ? 0.18 : 0.48) : 0);
@@ -2226,10 +2258,6 @@ export class SpaceScene extends Phaser.Scene {
   private syncInputMode(): void {
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     const desktopVisible = !this.touchMode;
-
-    this.touchUiObjects.forEach((object) => {
-      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
-    });
     this.desktopUiObjects.forEach((object) => {
       (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(desktopVisible);
     });

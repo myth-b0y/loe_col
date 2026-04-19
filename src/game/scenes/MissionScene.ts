@@ -506,8 +506,13 @@ export class MissionScene extends Phaser.Scene {
     this.loadStage(0);
 
     const syncInputMode = (): void => this.syncInputMode();
+    const handleResume = (): void => {
+      this.syncInputMode();
+      this.updateHudState();
+    };
     gameSession.on("settings-changed", syncInputMode);
     gameSession.on("input-mode-changed", syncInputMode);
+    this.events.on(Phaser.Scenes.Events.RESUME, handleResume);
     const fullscreenListener = (): void => {
       if (typeof document === "undefined" || document.fullscreenElement || !this.scene.isActive()) {
         return;
@@ -524,6 +529,7 @@ export class MissionScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameSession.off("settings-changed", syncInputMode);
       gameSession.off("input-mode-changed", syncInputMode);
+      this.events.off(Phaser.Scenes.Events.RESUME, handleResume);
       if (typeof document !== "undefined") {
         document.removeEventListener("fullscreenchange", fullscreenListener);
       }
@@ -986,19 +992,20 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private createSceneOverlays(): void {
+    const handleOverlayClosed = (): void => {
+      this.fireHeld = false;
+      this.updateHudState();
+    };
+
     this.logbookOverlay = new LogbookOverlay({
       scene: this,
-      onClose: () => {
-        this.fireHeld = false;
-      },
+      onClose: handleOverlayClosed,
       onOpenSettings: () => this.openPauseMenu(),
       onRequestTab: (tab) => this.openDataPadTab(tab),
     });
     this.inventoryOverlay = new InventoryOverlay({
       scene: this,
-      onClose: () => {
-        this.fireHeld = false;
-      },
+      onClose: handleOverlayClosed,
       getSnapshot: () => this.getMissionInventorySnapshot(),
       onOpenSettings: () => this.openPauseMenu(),
       onRequestTab: (tab) => this.openDataPadTab(tab),
@@ -1007,9 +1014,7 @@ export class MissionScene extends Phaser.Scene {
 
     this.galaxyMapOverlay = new GalaxyMapOverlay({
       scene: this,
-      onClose: () => {
-        this.fireHeld = false;
-      },
+      onClose: handleOverlayClosed,
       onOpenSettings: () => this.openPauseMenu(),
       onRequestTab: (tab) => this.openDataPadTab(tab),
     });
@@ -4817,7 +4822,11 @@ export class MissionScene extends Phaser.Scene {
   private updateHudState(): void {
     const combatLocked = this.isCombatLocked();
     const menuOverlayVisible = this.isMenuOverlayVisible();
+    const touchGameplayVisible = this.touchMode && !menuOverlayVisible;
     const companionsEnabled = gameSession.getModeRules().companionsEnabled;
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(touchGameplayVisible);
+    });
     this.hpFill.width = PLAYER_BAR_WIDTH * (this.playerHp / this.playerMaxHp);
     this.shieldFill.width = PLAYER_BAR_WIDTH * (this.playerShield / Math.max(1, this.playerMaxShield));
     this.setTextIfChanged(this.hpValueText, `${Math.ceil(this.playerHp)} / ${this.playerMaxHp}`);
@@ -5160,20 +5169,29 @@ export class MissionScene extends Phaser.Scene {
 
     if (tab === "missions") {
       this.logbookOverlay?.show();
+      this.updateHudState();
       return;
     }
 
     if (tab === "inventory") {
       this.inventoryOverlay?.show();
+      this.updateHudState();
       return;
     }
 
     if (tab === "map") {
       this.galaxyMapOverlay?.show();
+      this.updateHudState();
     }
   }
 
   private openPauseMenu(): void {
+    if (this.scene.isPaused("pause")) {
+      return;
+    }
+
+    this.fireHeld = false;
+    this.releaseMissionControls();
     if (this.logbookOverlay?.isVisible()) {
       this.logbookOverlay.hide();
     }
@@ -5188,6 +5206,9 @@ export class MissionScene extends Phaser.Scene {
       document.exitPointerLock?.();
     }
 
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(false);
+    });
     this.scene.launch("pause", {
       returnSceneKey: "mission",
       allowSave: false,
@@ -5897,9 +5918,6 @@ export class MissionScene extends Phaser.Scene {
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     const desktopVisible = !this.touchMode;
 
-    this.touchUiObjects.forEach((object) => {
-      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
-    });
     this.desktopUiObjects.forEach((object) => {
       (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(desktopVisible);
     });
@@ -5911,6 +5929,8 @@ export class MissionScene extends Phaser.Scene {
       this.fireHeld = false;
       this.resetMoveStick();
     }
+
+    this.updateHudState();
   }
 
   private isCombatLocked(): boolean {

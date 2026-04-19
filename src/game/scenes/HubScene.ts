@@ -346,12 +346,18 @@ export class HubScene extends Phaser.Scene {
     this.refreshMissionState();
 
     const syncInputMode = (): void => this.syncInputMode();
+    const handleResume = (): void => {
+      this.syncInputMode();
+      this.refreshMissionState();
+    };
     gameSession.on("settings-changed", syncInputMode);
     gameSession.on("input-mode-changed", syncInputMode);
+    this.events.on(Phaser.Scenes.Events.RESUME, handleResume);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameSession.off("settings-changed", syncInputMode);
       gameSession.off("input-mode-changed", syncInputMode);
+      this.events.off(Phaser.Scenes.Events.RESUME, handleResume);
       this.playerLight?.destroy();
       this.crew.forEach((companion) => companion.light.destroy());
       this.stations.forEach((station) => station.light.destroy());
@@ -1976,6 +1982,7 @@ ${getCompanionRoleDisplay(companion)}`, {
 
   private syncSceneOverlayChrome(): void {
     const blocking = this.hasBlockingOverlay();
+    const touchGameplayVisible = this.touchMode && !blocking;
     const alpha = blocking ? 0.08 : 1;
     this.missionText?.setAlpha(alpha);
     this.statusText?.setAlpha(alpha);
@@ -1983,6 +1990,10 @@ ${getCompanionRoleDisplay(companion)}`, {
     this.promptText?.setAlpha(alpha);
     this.logbookButton?.container.setAlpha(blocking ? 0.28 : 1);
     this.pauseButton?.container.setAlpha(blocking ? 0.28 : 1);
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(touchGameplayVisible);
+    });
+    this.updateInteractionVisuals();
   }
 
   private presentPendingReward(): void {
@@ -2137,6 +2148,16 @@ ${getCompanionRoleDisplay(companion)}`, {
       return;
     }
 
+    this.movePointerId = null;
+    this.moveVector.set(0, 0);
+    this.resetStick();
+    if (this.deployOverlay?.visible) {
+      this.closeDeployOverlay();
+    }
+    this.closeCommandOverlays();
+    this.touchUiObjects.forEach((object) => {
+      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(false);
+    });
     this.scene.launch("pause", {
       returnSceneKey: "hub",
       allowSave: true,
@@ -2197,16 +2218,13 @@ ${getCompanionRoleDisplay(companion)}`, {
 
   private syncInputMode(): void {
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
-    this.touchUiObjects.forEach((object) => {
-      (object as Phaser.GameObjects.GameObject & { setVisible: (value: boolean) => Phaser.GameObjects.GameObject }).setVisible(this.touchMode);
-    });
-    this.updateInteractionVisuals();
-
     if (!this.touchMode) {
       this.movePointerId = null;
       this.moveVector.set(0, 0);
       this.resetStick();
     }
+
+    this.syncSceneOverlayChrome();
   }
 
   private pointerOverTouchUi(pointer: Phaser.Input.Pointer): boolean {

@@ -143,6 +143,10 @@ try {
     republic.root.x = playerX + 340;
     republic.root.y = playerY;
     const republicTarget = space.selectShipTarget(republic)?.kind ?? null;
+    const republicHullBefore = republic.hp;
+    space.damageFactionShip(republic, 1, { kind: "player" }, republic.root.x);
+    const republicHullAfter = republic.hp;
+    const republicProvoked = republic.provokedByPlayer;
 
     parkFar(republic, 2600, 0);
     pirate.root.x = playerX - 340;
@@ -163,6 +167,9 @@ try {
     return {
       empireTarget,
       republicTarget,
+      republicHullBefore,
+      republicHullAfter,
+      republicProvoked,
       pirateTarget,
       smugglerBefore,
       smugglerAfter,
@@ -175,6 +182,8 @@ try {
 
   assert(behaviorCheck.empireTarget === "player", "Empire should treat the player as hostile");
   assert(behaviorCheck.republicTarget !== "player", "Republic should not attack the player by default");
+  assert(behaviorCheck.republicHullAfter === behaviorCheck.republicHullBefore, "Republic ships should not take player damage");
+  assert(!behaviorCheck.republicProvoked, "Republic ships should not become provoked by player attacks");
   assert(behaviorCheck.pirateTarget === "player", "Pirates should treat the player as hostile");
   assert(behaviorCheck.empireVsRepublic, "Empire should be hostile to Republic ships");
   assert(behaviorCheck.republicVsEmpire, "Republic should be hostile to Empire ships");
