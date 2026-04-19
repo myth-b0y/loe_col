@@ -1167,13 +1167,17 @@ export class MissionScene extends Phaser.Scene {
       }
       this.castArcLance();
     });
-    keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
-      event.preventDefault();
+    keyboard.on("keydown-T", () => {
       this.reportDesktopInput();
       if (this.isMenuOverlayVisible()) {
         return;
       }
       this.cycleTargetLock();
+    });
+    keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
+      event.preventDefault();
+      this.reportDesktopInput();
+      this.openDataPadTab("inventory");
     });
     keyboard.on("keydown-SHIFT", () => {
       this.reportDesktopInput();
@@ -1220,6 +1224,7 @@ export class MissionScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-Q");
       keyboard.removeAllListeners("keydown-E");
+      keyboard.removeAllListeners("keydown-T");
       keyboard.removeAllListeners("keydown-TAB");
       keyboard.removeAllListeners("keydown-SHIFT");
       keyboard.removeAllListeners("keydown-F");
@@ -5932,22 +5937,22 @@ export class MissionScene extends Phaser.Scene {
     const autoFire = gameSession.settings.controls.autoFire;
     if (this.autoAimTarget) {
       if (autoAim && autoFire) {
-        return "Tab Cycle | Auto Fire Locked";
+        return "T Cycle | Auto Fire Locked";
       }
 
       if (autoAim) {
-        return "Tab Cycle | Auto Aim, Manual Fire";
+        return "T Cycle | Auto Aim, Manual Fire";
       }
 
       if (autoFire) {
-        return "Tab Cycle | Locked Auto Fire";
+        return "T Cycle | Locked Auto Fire";
       }
 
-      return "Tab Cycle | Manual Fire";
+      return "T Cycle | Manual Fire";
     }
 
     if (autoAim && autoFire) {
-      return "Tab Cycle | Nearest Auto Lock";
+      return "T Cycle | Nearest Auto Lock";
     }
 
     if (autoAim) {
@@ -5955,10 +5960,10 @@ export class MissionScene extends Phaser.Scene {
     }
 
     if (autoFire) {
-      return "Tab Cycle | Auto Fire Needs Lock";
+      return "T Cycle | Auto Fire Needs Lock";
     }
 
-    return "LMB Fire | Tab Cycle";
+    return "LMB Fire | T Cycle";
   }
 
   private getTouchCooldownLabel(label: string, cooldown: number, combatLocked: boolean): string {

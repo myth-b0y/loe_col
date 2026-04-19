@@ -6,7 +6,7 @@ import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
 import { SettingsOverlay } from "../ui/SettingsOverlay";
 
 type PauseSceneData = {
-  returnSceneKey: "hub" | "mission";
+  returnSceneKey: "hub" | "mission" | "space";
   allowSave: boolean;
 };
 

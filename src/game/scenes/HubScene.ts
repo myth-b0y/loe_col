@@ -1263,11 +1263,19 @@ ${getCompanionRoleDisplay(companion)}`, {
       }
       this.toggleLogbookOverlay();
     });
+    keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
+      event.preventDefault();
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.openDataPadTab("inventory");
+    });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
       keyboard.removeAllListeners("keydown-E");
       keyboard.removeAllListeners("keydown-L");
+      keyboard.removeAllListeners("keydown-TAB");
     });
   }
 
@@ -1495,9 +1503,12 @@ ${getCompanionRoleDisplay(companion)}`, {
 
     if (this.isNearAirlock()) {
       const selectedMission = gameSession.getSelectedMissionId();
-      this.promptText.setText(selectedMission
-        ? "Activate the exit hatch to review crew staging and start the current ground contract."
-        : "Activate the exit hatch to review crew staging. Launch unlocks once the Data Pad has an active contract.");
+      const arrivedMissionId = gameSession.getArrivedMissionId();
+      this.promptText.setText(arrivedMissionId
+        ? "Activate the exit hatch to review crew staging and begin the landed ground contract."
+        : selectedMission
+          ? "Activate the exit hatch to review crew staging. Landing on the mission planet is required before deployment."
+          : "Activate the exit hatch to review crew staging. Launch unlocks once the Data Pad has an active contract.");
       return;
     }
 
@@ -1627,7 +1638,7 @@ ${getCompanionRoleDisplay(companion)}`, {
         "This first space pass supports launch, free flight, shooting, destructible asteroids, and clean return to the ship.",
       ],
       footer: activeMission
-        ? "Launch starts the current route's space test. Landing is not wired yet, so return from space will bring you back into the ship interior."
+        ? "Launch starts the current route's space leg. Fly to the mission planet, land, then return to the hatch to begin the ground contract."
         : "Mission routing is optional for this foundation pass. Launching now enters the space field immediately.",
       actionLabel: "Launch Into Space",
       actionEnabled: !this.spaceLaunching,
@@ -1773,8 +1784,10 @@ ${getCompanionRoleDisplay(companion)}`, {
 
   private refreshDeployOverlay(statusMessage?: string): void {
     const assignments = gameSession.getSquadAssignments();
-    const activeMissionId = gameSession.getSelectedMissionId();
+    const selectedMissionId = gameSession.getSelectedMissionId();
+    const activeMissionId = gameSession.getArrivedMissionId();
     const activeMission = activeMissionId ? getMissionContract(activeMissionId) : null;
+    const stagedMission = selectedMissionId ? getMissionContract(selectedMissionId) : null;
     const selectedCompanion = this.selectedDeployCompanionId ? getCompanionDefinition(this.selectedDeployCompanionId) : undefined;
     const fallbackStatus = selectedCompanion
       ? `${selectedCompanion.name} selected. Choose a valid slot below.`
@@ -1783,8 +1796,10 @@ ${getCompanionRoleDisplay(companion)}`, {
         : `${assignments.length} companion${assignments.length === 1 ? "" : "s"} readied. You can still move them before launch.`;
 
     this.deployMissionText?.setText(activeMission
-      ? `Active contract: ${activeMission.title} | ${activeMission.location}`
-      : "No active contract selected. Use the mission terminal and Data Pad before launch.");
+      ? `Landed contract: ${activeMission.title} | ${activeMission.location}`
+      : stagedMission
+        ? `Route staged: ${stagedMission.title} | Land at the mission planet before deployment.`
+        : "No active contract selected. Use the mission terminal and Data Pad before launch.");
     this.deployStatusText?.setText(statusMessage ?? fallbackStatus);
 
     this.deployRosterCards.forEach((card) => {
@@ -1832,7 +1847,7 @@ ${getCompanionRoleDisplay(companion)}`, {
     });
 
     this.deployLaunchButton?.setEnabled(Boolean(activeMission));
-    this.deployLaunchButton?.setLabel(activeMission ? "Launch Mission" : "Launch Locked");
+    this.deployLaunchButton?.setLabel(activeMission ? "Begin Ground Mission" : stagedMission ? "Land First" : "Launch Locked");
     this.deployClearButton?.setEnabled(assignments.length > 0);
   }
 
@@ -1892,21 +1907,27 @@ ${getCompanionRoleDisplay(companion)}`, {
   private refreshMissionState(): void {
     const activeMissionId = gameSession.getSelectedMissionId();
     const activeMission = activeMissionId ? getMissionContract(activeMissionId) : null;
+    const arrivedMissionId = gameSession.getArrivedMissionId();
+    const arrivedMission = arrivedMissionId ? getMissionContract(arrivedMissionId) : null;
     const queuedCount = gameSession.getAcceptedMissionIds().length;
     const travel = gameSession.getShipTravelState();
-    this.missionText?.setText(activeMission
-      ? `Active contract: ${activeMission.title} | ${queuedCount} queued | Pilot seat launch ready`
-      : "No active contract. Queue missions at the mission terminal, then use the pilot seat for a free-roam or staged route launch.");
-    this.statusText?.setText(activeMission
-      ? `${activeMission.prompt} Pilot seat launch is now live. The exit hatch remains a temporary direct ground-deploy shortcut until landing is built.`
-      : `Ship travel: ${getShipTravelStatusLabel(travel.status)}. Pilot seat now launches the space field, while the exit hatch remains the temporary ground-combat shortcut.`);
+    this.missionText?.setText(arrivedMission
+      ? `Arrived contract: ${arrivedMission.title} | ${queuedCount} queued | Exit hatch deployment ready`
+      : activeMission
+        ? `Active contract: ${activeMission.title} | ${queuedCount} queued | Pilot seat launch ready`
+        : "No active contract. Queue missions at the mission terminal, then use the pilot seat for a free-roam or staged route launch.");
+    this.statusText?.setText(arrivedMission
+      ? `${arrivedMission.prompt} Landing complete. Move through the exit hatch when you are ready to begin the ground mission.`
+      : activeMission
+        ? `${activeMission.prompt} Pilot seat launch is now live. Fly to the mission planet and land before using the exit hatch.`
+        : `Ship travel: ${getShipTravelStatusLabel(travel.status)}. Pilot seat launches the space field, and the exit hatch stays locked until a mission landing is complete.`);
 
-    this.airlockDoor?.setFillStyle(activeMission ? 0x1d5c8d : 0x173b5d, activeMission ? 0.98 : 0.9);
-    this.airlockDoor?.setStrokeStyle(3, activeMission ? 0x8be4ff : 0x7ec4ff, activeMission ? 0.96 : 0.62);
+    this.airlockDoor?.setFillStyle(arrivedMission ? 0x1d5c8d : 0x173b5d, arrivedMission ? 0.98 : 0.9);
+    this.airlockDoor?.setStrokeStyle(3, arrivedMission ? 0x8be4ff : 0x7ec4ff, arrivedMission ? 0.96 : 0.62);
     this.airlockGlow?.setFillStyle(0x4abfff, 0);
-    this.airlockLabel?.setText(activeMission ? "Exit Hatch Ready" : "Exit Hatch");
-    this.airlockLabel?.setColor(activeMission ? "#f4fbff" : "#c8ddff");
-    if (!activeMission) {
+    this.airlockLabel?.setText(arrivedMission ? "Exit Hatch Ready" : "Exit Hatch");
+    this.airlockLabel?.setColor(arrivedMission ? "#f4fbff" : "#c8ddff");
+    if (!arrivedMission) {
       this.deploying = false;
     }
   }
@@ -1930,6 +1951,9 @@ ${getCompanionRoleDisplay(companion)}`, {
   }
 
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
+    if (this.deployOverlay?.visible) {
+      this.closeDeployOverlay();
+    }
     this.closeCommandOverlays();
 
     if (tab === "missions") {
@@ -2008,9 +2032,9 @@ ${getCompanionRoleDisplay(companion)}`, {
       return;
     }
 
-    const missionId = gameSession.getSelectedMissionId();
+    const missionId = gameSession.getArrivedMissionId();
     if (!missionId) {
-      this.refreshDeployOverlay("You can prep the squad now, but launch stays locked until the Data Pad has an active contract.");
+      this.refreshDeployOverlay("You can prep the squad now, but you still need to reach the mission planet and land before deployment.");
       return;
     }
 
@@ -2046,7 +2070,7 @@ ${getCompanionRoleDisplay(companion)}`, {
           kind: "airlock" as const,
           x: this.airlockDoor?.x ?? 0,
           y: (this.airlockDoor?.getBounds().top ?? 0) - 26,
-          buttonLabel: "Deploy",
+          buttonLabel: gameSession.getArrivedMissionId() ? "Deploy" : "Prep",
         }
       : null;
 
