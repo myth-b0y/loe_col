@@ -2,9 +2,11 @@ import Phaser from "phaser";
 
 import { retroSfx } from "../audio/retroSfx";
 import {
+  GALAXY_WORLD_CONFIG,
   GALAXY_HAZE_NODES,
   GALAXY_SECTORS,
   GALAXY_STARS,
+  clampPointToGalaxyTravelBounds,
   getGalaxySectorAtPosition,
   getGalaxySectorPolygonPoints,
   getMissionPlanetForMission,
@@ -14,11 +16,10 @@ import {
 import { getMissionContract } from "../content/missions";
 import {
   SPACE_FACTIONS,
-  SPACE_SECTORS,
   SPACE_WORLD_CONFIG,
+  createSpacePatrolTarget,
   createSpaceFactionShipSeeds,
   createSpaceFieldSeeds,
-  getSpaceSectorAtPosition,
   isFactionHostileByDefault,
   type SpaceFactionId,
   type SpaceFactionShipSeed,
@@ -146,10 +147,6 @@ function createRockPoints(radius: number): number[] {
   }
 
   return points;
-}
-
-function clampToBounds(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function angleToDirection(rotation: number): Phaser.Math.Vector2 {
@@ -359,6 +356,24 @@ export class SpaceScene extends Phaser.Scene {
       haze.fillCircle(node.x, node.y, node.radius);
     });
 
+    this.add.ellipse(
+      GALAXY_WORLD_CONFIG.center.x,
+      GALAXY_WORLD_CONFIG.center.y,
+      GALAXY_WORLD_CONFIG.restrictedCoreRadius * 2.24,
+      GALAXY_WORLD_CONFIG.restrictedCoreRadius * 2.24 * GALAXY_WORLD_CONFIG.verticalScale,
+      0x04050b,
+      0.9,
+    ).setStrokeStyle(5, 0x6db7ff, 0.12).setDepth(-27);
+
+    this.add.ellipse(
+      GALAXY_WORLD_CONFIG.center.x,
+      GALAXY_WORLD_CONFIG.center.y,
+      GALAXY_WORLD_CONFIG.coreRadius * 2.12,
+      GALAXY_WORLD_CONFIG.coreRadius * 2.12 * GALAXY_WORLD_CONFIG.verticalScale,
+      0x0f1d30,
+      0.2,
+    ).setStrokeStyle(2, 0xc3e4ff, 0.1).setDepth(-26);
+
     const stars = this.add.graphics().setDepth(-24);
     GALAXY_STARS.forEach((star) => {
       stars.fillStyle(star.color, star.alpha);
@@ -434,7 +449,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createFieldObjects(): void {
-    const seeds = createSpaceFieldSeeds();
+    const seeds = createSpaceFieldSeeds(SPACE_WORLD_CONFIG, gameSession.getShipSpacePosition());
     this.asteroids = seeds.map((seed, index) => this.createFieldObject(seed, index));
   }
 
@@ -466,7 +481,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createFactionShips(): void {
-    const seeds = createSpaceFactionShipSeeds();
+    const seeds = createSpaceFactionShipSeeds(SPACE_WORLD_CONFIG, undefined, gameSession.getShipSpacePosition());
     this.factionShips = seeds.map((seed, index) => this.createFactionShip(seed, index));
   }
 
@@ -942,8 +957,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.shipRoot.x += this.shipVelocity.x * dt;
     this.shipRoot.y += this.shipVelocity.y * dt;
-    this.shipRoot.x = clampToBounds(this.shipRoot.x, PLAYER_RADIUS, SPACE_WORLD_CONFIG.width - PLAYER_RADIUS);
-    this.shipRoot.y = clampToBounds(this.shipRoot.y, PLAYER_RADIUS, SPACE_WORLD_CONFIG.height - PLAYER_RADIUS);
+    this.constrainMovingBody(this.shipRoot, PLAYER_RADIUS, this.shipVelocity, 0.16);
     gameSession.setShipSpacePosition(this.shipRoot.x, this.shipRoot.y);
 
     const lockAutoFire = gameSession.settings.controls.autoFire && this.autoAimTarget !== null;
@@ -967,6 +981,30 @@ export class SpaceScene extends Phaser.Scene {
 
     this.shipDamageRing.setStrokeStyle(2, 0xffdbbc, this.playerFlash * 0.84);
     this.shipDamageRing.setFillStyle(0xff9f74, this.playerFlash * 0.16);
+  }
+
+  private constrainMovingBody(
+    root: Phaser.GameObjects.Container,
+    radius: number,
+    velocity: Phaser.Math.Vector2,
+    rebound = 0.22,
+  ): void {
+    const clamped = clampPointToGalaxyTravelBounds(root.x, root.y, radius);
+    const collidedX = Math.abs(clamped.x - root.x) > 0.01;
+    const collidedY = Math.abs(clamped.y - root.y) > 0.01;
+    root.x = clamped.x;
+    root.y = clamped.y;
+    if (!collidedX && !collidedY) {
+      return;
+    }
+
+    if (collidedX) {
+      velocity.x *= -rebound;
+    }
+    if (collidedY) {
+      velocity.y *= -rebound;
+    }
+    velocity.scale(0.88);
   }
 
   private getBaseAimDirection(): Phaser.Math.Vector2 {
@@ -1257,15 +1295,7 @@ export class SpaceScene extends Phaser.Scene {
       fieldObject.root.x += fieldObject.velocity.x * dt;
       fieldObject.root.y += fieldObject.velocity.y * dt;
       fieldObject.root.rotation += fieldObject.spin * dt;
-
-      if (fieldObject.root.x <= fieldObject.radius || fieldObject.root.x >= SPACE_WORLD_CONFIG.width - fieldObject.radius) {
-        fieldObject.velocity.x *= -1;
-        fieldObject.root.x = clampToBounds(fieldObject.root.x, fieldObject.radius, SPACE_WORLD_CONFIG.width - fieldObject.radius);
-      }
-      if (fieldObject.root.y <= fieldObject.radius || fieldObject.root.y >= SPACE_WORLD_CONFIG.height - fieldObject.radius) {
-        fieldObject.velocity.y *= -1;
-        fieldObject.root.y = clampToBounds(fieldObject.root.y, fieldObject.radius, SPACE_WORLD_CONFIG.height - fieldObject.radius);
-      }
+      this.constrainMovingBody(fieldObject.root, fieldObject.radius, fieldObject.velocity, 0.82);
 
       fieldObject.flash = Math.max(0, fieldObject.flash - (dt * 4));
       fieldObject.damageRing.setStrokeStyle(2, 0xffcf96, fieldObject.flash * 0.86);
@@ -1288,8 +1318,7 @@ export class SpaceScene extends Phaser.Scene {
     const normalY = dy / distance;
     this.shipRoot.x -= normalX * overlap;
     this.shipRoot.y -= normalY * overlap;
-    this.shipRoot.x = clampToBounds(this.shipRoot.x, PLAYER_RADIUS, SPACE_WORLD_CONFIG.width - PLAYER_RADIUS);
-    this.shipRoot.y = clampToBounds(this.shipRoot.y, PLAYER_RADIUS, SPACE_WORLD_CONFIG.height - PLAYER_RADIUS);
+    this.constrainMovingBody(this.shipRoot, PLAYER_RADIUS, this.shipVelocity, 0.16);
 
     const impactSpeed = (this.shipVelocity.x * normalX) + (this.shipVelocity.y * normalY);
     if (impactSpeed > 0) {
@@ -1356,8 +1385,7 @@ export class SpaceScene extends Phaser.Scene {
         ship.root.rotation = Math.atan2(ship.aimDirection.y, ship.aimDirection.x) + Math.PI * 0.5;
       }
 
-      ship.root.x = clampToBounds(ship.root.x, ship.radius, SPACE_WORLD_CONFIG.width - ship.radius);
-      ship.root.y = clampToBounds(ship.root.y, ship.radius, SPACE_WORLD_CONFIG.height - ship.radius);
+      this.constrainMovingBody(ship.root, ship.radius, ship.velocity, 0.22);
 
       if (shouldFire && ship.fireCooldown <= 0) {
         ship.fireCooldown = faction.fireCooldown;
@@ -1500,16 +1528,10 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private pickNewPatrolTarget(sectorId: string): Phaser.Math.Vector2 {
-    const sector = SPACE_SECTORS.find((entry) => entry.id === sectorId) ?? getSpaceSectorAtPosition(this.shipRoot.x, this.shipRoot.y);
-    const bounds = sector?.bounds ?? {
-      x: 800,
-      y: 800,
-      width: SPACE_WORLD_CONFIG.width - 1600,
-      height: SPACE_WORLD_CONFIG.height - 1600,
-    };
+    const point = createSpacePatrolTarget(sectorId, SPACE_WORLD_CONFIG);
     return new Phaser.Math.Vector2(
-      randomBetween(bounds.x + 180, bounds.x + bounds.width - 180),
-      randomBetween(bounds.y + 180, bounds.y + bounds.height - 180),
+      point.x,
+      point.y,
     );
   }
 
@@ -1592,8 +1614,7 @@ export class SpaceScene extends Phaser.Scene {
     const normalY = dy / distance;
     ship.root.x -= normalX * overlap;
     ship.root.y -= normalY * overlap;
-    ship.root.x = clampToBounds(ship.root.x, ship.radius, SPACE_WORLD_CONFIG.width - ship.radius);
-    ship.root.y = clampToBounds(ship.root.y, ship.radius, SPACE_WORLD_CONFIG.height - ship.radius);
+    this.constrainMovingBody(ship.root, ship.radius, ship.velocity, 0.22);
 
     const impactSpeed = (ship.velocity.x * normalX) + (ship.velocity.y * normalY);
     if (impactSpeed > 0) {
@@ -1630,10 +1651,8 @@ export class SpaceScene extends Phaser.Scene {
     rightRoot.x += normalX * overlap * rightWeight;
     rightRoot.y += normalY * overlap * rightWeight;
 
-    leftRoot.x = clampToBounds(leftRoot.x, leftRadius, SPACE_WORLD_CONFIG.width - leftRadius);
-    leftRoot.y = clampToBounds(leftRoot.y, leftRadius, SPACE_WORLD_CONFIG.height - leftRadius);
-    rightRoot.x = clampToBounds(rightRoot.x, rightRadius, SPACE_WORLD_CONFIG.width - rightRadius);
-    rightRoot.y = clampToBounds(rightRoot.y, rightRadius, SPACE_WORLD_CONFIG.height - rightRadius);
+    this.constrainMovingBody(leftRoot, leftRadius, leftVelocity, 0.2);
+    this.constrainMovingBody(rightRoot, rightRadius, rightVelocity, 0.2);
 
     leftVelocity.x -= normalX * 18;
     leftVelocity.y -= normalY * 18;
@@ -2330,8 +2349,11 @@ export class SpaceScene extends Phaser.Scene {
       world: {
         width: SPACE_WORLD_CONFIG.width,
         height: SPACE_WORLD_CONFIG.height,
+        galaxyRadius: GALAXY_WORLD_CONFIG.radius,
+        restrictedCoreRadius: GALAXY_WORLD_CONFIG.restrictedCoreRadius,
       },
       sector: this.getCurrentGalaxySector().label,
+      playerRaceId: gameSession.getPlayerRaceId(),
       routeMissionId: this.routeMissionId,
       routeTitle: this.routeTitle,
       touchMode: this.touchMode,

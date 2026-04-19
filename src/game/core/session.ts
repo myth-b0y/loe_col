@@ -1,6 +1,11 @@
 import Phaser from "phaser";
 
-import { GALAXY_WORLD_CONFIG, clampPointToGalaxyBounds, type GalaxyPoint } from "../content/galaxy";
+import {
+  clampPointToGalaxyTravelBounds,
+  getDefaultGalaxySpawnPoint,
+  getGalaxySpawnPointForRace,
+  type GalaxyPoint,
+} from "../content/galaxy";
 import {
   DEFAULT_SQUAD_ASSIGNMENTS,
   canCompanionOccupySlot,
@@ -88,6 +93,7 @@ export type ShipState = {
   systems: ShipSystemsState;
   repair: ShipRepairState;
   storage: ShipStorageState;
+  spacePosition: ShipSpacePosition;
 };
 
 const SHIP_SYSTEM_IDS: ShipSystemId[] = ["hull", "reactor", "engines", "lifeSupport", "navigation"];
@@ -190,7 +196,17 @@ function normalizeShipRepairState(repair: Partial<ShipRepairState> | undefined):
   };
 }
 
-function createDefaultShipState(): ShipState {
+function normalizeShipSpacePosition(
+  spacePosition: Partial<ShipSpacePosition> | undefined,
+  raceId: RaceId | undefined,
+): ShipSpacePosition {
+  const fallback = raceId ? getGalaxySpawnPointForRace(raceId) : getDefaultGalaxySpawnPoint();
+  const x = typeof spacePosition?.x === "number" && Number.isFinite(spacePosition.x) ? spacePosition.x : fallback.x;
+  const y = typeof spacePosition?.y === "number" && Number.isFinite(spacePosition.y) ? spacePosition.y : fallback.y;
+  return clampPointToGalaxyTravelBounds(Math.round(x), Math.round(y));
+}
+
+function createDefaultShipState(raceId?: RaceId): ShipState {
   return {
     travel: {
       status: "docked",
@@ -207,6 +223,7 @@ function createDefaultShipState(): ShipState {
     storage: {
       cargo: createEmptyCargoSlots(DEFAULT_SHIP_STORAGE_SLOT_COUNT),
     },
+    spacePosition: normalizeShipSpacePosition(undefined, raceId),
   };
 }
 
@@ -282,7 +299,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 7;
+  version: 8;
   meta: {
     lastSavedAt: string | null;
   };
@@ -356,7 +373,7 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const DEFAULT_SAVE: SaveData = {
-  version: 7,
+  version: 8,
   meta: {
     lastSavedAt: null,
   },
@@ -465,12 +482,13 @@ function normalizeCargoSlots(cargo: unknown[] | undefined, count = DEFAULT_CARGO
 }
 
 function mergeSaveData(parsed: Partial<SaveData>): SaveData {
+  const profile = { ...clone(DEFAULT_SAVE.profile), ...parsed.profile };
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 7 as const,
+    version: 8 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
-    profile: { ...clone(DEFAULT_SAVE.profile), ...parsed.profile },
+    profile,
     loadout: {
       ...clone(DEFAULT_SAVE.loadout),
       ...parsed.loadout,
@@ -484,7 +502,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...parsed.progression,
     },
     ship: {
-      ...createDefaultShipState(),
+      ...createDefaultShipState(profile.raceId),
       ...parsed.ship,
       travel: normalizeShipTravelState(parsed.ship?.travel),
       systems: normalizeShipSystemsState(parsed.ship?.systems as Partial<Record<ShipSystemId, Partial<ShipSystemState>>> | undefined),
@@ -492,6 +510,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       storage: {
         cargo: normalizeCargoSlots(parsed.ship?.storage?.cargo, DEFAULT_SHIP_STORAGE_SLOT_COUNT),
       },
+      spacePosition: normalizeShipSpacePosition(parsed.ship?.spacePosition as Partial<ShipSpacePosition> | undefined, profile.raceId),
     },
   };
 
@@ -535,7 +554,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
   runConfig: RunConfig = clone(DEFAULT_RUN_CONFIG);
   activeMissionId: string | null = null;
   pendingReward: RewardData | null = null;
-  private shipSpacePosition: ShipSpacePosition = { ...GALAXY_WORLD_CONFIG.spawn };
   private activeSlotIndex = 0;
   private saveSlots: Array<SaveData | null> = createEmptySlots();
   private hasTouchInput = false;
@@ -559,7 +577,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.activeSlotIndex = 0;
     this.saveData = clone(DEFAULT_SAVE);
-    this.resetShipSpacePosition();
     this.emit("save-changed", this.saveData);
     this.emit("run-config-changed", this.getRunConfig());
     this.emit("slots-changed", this.getSaveSlots());
@@ -715,16 +732,16 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   getShipSpacePosition(): ShipSpacePosition {
-    return { ...this.shipSpacePosition };
+    return { ...this.saveData.ship.spacePosition };
   }
 
   setShipSpacePosition(x: number, y: number): ShipSpacePosition {
-    this.shipSpacePosition = clampPointToGalaxyBounds(Math.round(x), Math.round(y));
+    this.saveData.ship.spacePosition = clampPointToGalaxyTravelBounds(Math.round(x), Math.round(y));
     return this.getShipSpacePosition();
   }
 
   resetShipSpacePosition(): ShipSpacePosition {
-    this.shipSpacePosition = { ...GALAXY_WORLD_CONFIG.spawn };
+    this.saveData.ship.spacePosition = getGalaxySpawnPointForRace(this.saveData.profile.raceId);
     return this.getShipSpacePosition();
   }
 
@@ -1102,7 +1119,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.activeSlotIndex = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.saveData = clone(DEFAULT_SAVE);
-    this.resetShipSpacePosition();
+    this.saveData.ship = createDefaultShipState(this.saveData.profile.raceId);
     this.activeMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
@@ -1147,7 +1164,6 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
     this.saveData = mergeSaveData(slot);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
-    this.resetShipSpacePosition();
     this.activeSlotIndex = safeSlot;
     this.activeMissionId = null;
     this.pendingReward = null;
