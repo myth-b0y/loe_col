@@ -3,6 +3,7 @@ import {
   GALAXY_WORLD_CONFIG,
   getGalaxySectorAtPosition,
   getGalaxySectorById,
+  getGalaxySpawnPointForRace,
   pointFromDegrees,
   type GalaxyPoint,
   type GalaxySectorConfig,
@@ -10,6 +11,7 @@ import {
 
 export type SpaceFieldObjectKind = "asteroid" | "debris";
 export type SpaceFactionId = "empire" | "pirate" | "republic" | "smuggler";
+export type SpaceWorldCellKey = `${number},${number}`;
 
 export type SpaceWorldConfig = {
   width: number;
@@ -19,6 +21,9 @@ export type SpaceWorldConfig = {
     y: number;
   };
   starCount: number;
+  cellSize: number;
+  activeFieldCellRadius: number;
+  activeShipCellRadius: number;
   nearbyFieldRadius: number;
   nearbySafeRadius: number;
   nearbyObjectCount: number;
@@ -56,6 +61,8 @@ export type SpaceFactionConfig = {
 };
 
 export type SpaceFieldObjectSeed = {
+  id: string;
+  cellKey: SpaceWorldCellKey;
   kind: SpaceFieldObjectKind;
   x: number;
   y: number;
@@ -68,6 +75,8 @@ export type SpaceFieldObjectSeed = {
 };
 
 export type SpaceFactionShipSeed = {
+  id: string;
+  cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
   sectorId: string;
   x: number;
@@ -77,6 +86,16 @@ export type SpaceFactionShipSeed = {
   rotation: number;
   patrolX: number;
   patrolY: number;
+};
+
+export type SpaceWorldDefinition = {
+  fieldSeeds: SpaceFieldObjectSeed[];
+  factionSeeds: SpaceFactionShipSeed[];
+  fieldSeedIndex: Record<string, SpaceFieldObjectSeed>;
+  factionSeedIndex: Record<string, SpaceFactionShipSeed>;
+  fieldSeedsByCell: Record<SpaceWorldCellKey, SpaceFieldObjectSeed[]>;
+  factionSeedsByCell: Record<SpaceWorldCellKey, SpaceFactionShipSeed[]>;
+  factionCounts: Record<SpaceFactionId, number>;
 };
 
 const SPACE_SECTOR_SHIPS: Record<string, Partial<Record<SpaceFactionId, number>>> = {
@@ -89,6 +108,10 @@ const SPACE_SECTOR_SHIPS: Record<string, Partial<Record<SpaceFactionId, number>>
   "ashari-crown": { empire: 6, pirate: 2, smuggler: 1 },
 };
 
+const FIELD_WORLD_SEED = 0x3c71_2a6d;
+const SHIP_WORLD_SEED = 0x8f14_b39b;
+let cachedSpaceWorldDefinition: SpaceWorldDefinition | null = null;
+
 export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
   width: GALAXY_WORLD_CONFIG.width,
   height: GALAXY_WORLD_CONFIG.height,
@@ -97,12 +120,15 @@ export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
     y: GALAXY_WORLD_CONFIG.spawn.y,
   },
   starCount: GALAXY_WORLD_CONFIG.starCount + GALAXY_WORLD_CONFIG.backgroundStarCount,
+  cellSize: 3200,
+  activeFieldCellRadius: 1,
+  activeShipCellRadius: 2,
   nearbyFieldRadius: 2400,
   nearbySafeRadius: 360,
-  nearbyObjectCount: 24,
+  nearbyObjectCount: 4,
   galaxyObjectCount: 180,
   deepSpaceObjectCount: 64,
-  shipSpawnSafeRadius: 560,
+  shipSpawnSafeRadius: 1200,
   sectorInnerPadding: 720,
   sectorOuterPadding: 940,
   deepSpaceMargin: 2400,
@@ -192,8 +218,29 @@ export const SPACE_SECTORS: SpaceSectorConfig[] = GALAXY_SECTORS.map((sector) =>
   ships: SPACE_SECTOR_SHIPS[sector.id] ?? {},
 }));
 
+class SeededRandom {
+  private seed: number;
+
+  constructor(seed: number) {
+    this.seed = seed >>> 0;
+  }
+
+  next(): number {
+    this.seed = (1664525 * this.seed + 1013904223) >>> 0;
+    return this.seed / 0x100000000;
+  }
+
+  range(min: number, max: number): number {
+    return min + ((max - min) * this.next());
+  }
+
+  int(min: number, max: number): number {
+    return Math.floor(this.range(min, max + 1));
+  }
+}
+
 function randomBetween(random: () => number, min: number, max: number): number {
-  return min + (max - min) * random();
+  return min + ((max - min) * random());
 }
 
 function wrapAngleDegrees(angleDeg: number): number {
@@ -213,11 +260,32 @@ function expandWrappedArc(startAngleDeg: number, endAngleDeg: number): { start: 
   return { start, end };
 }
 
-function createSeed(
+function getGalaxySectorSpawnBounds(
+  sector: GalaxySectorConfig,
+  config: SpaceWorldConfig,
+): { minRadius: number; maxRadius: number } {
+  const minRadius = Math.min(
+    sector.outerRadius - config.sectorOuterPadding - 240,
+    sector.innerRadius + config.sectorInnerPadding,
+  );
+  const maxRadius = Math.max(
+    minRadius + 240,
+    sector.outerRadius - config.sectorOuterPadding,
+  );
+  return { minRadius, maxRadius };
+}
+
+function createCellKey(cellX: number, cellY: number): SpaceWorldCellKey {
+  return `${cellX},${cellY}`;
+}
+
+function createFieldSeed(
+  id: string,
   kind: SpaceFieldObjectKind,
   x: number,
   y: number,
   random: () => number,
+  config: SpaceWorldConfig,
 ): SpaceFieldObjectSeed {
   const radius = kind === "asteroid"
     ? randomBetween(random, 28, 58)
@@ -231,6 +299,8 @@ function createSeed(
     : Math.round(radius >= 24 ? 3 : 2);
 
   return {
+    id,
+    cellKey: getSpaceCellKeyAtPosition(x, y, config),
     kind,
     x,
     y,
@@ -251,10 +321,10 @@ function canPlaceFieldSeed(
   buffer: number,
 ): boolean {
   return seeds.every((seed) => {
-    const minDistance = seed.radius + radius + buffer;
+    const minimumDistance = seed.radius + radius + buffer;
     const dx = seed.x - x;
     const dy = seed.y - y;
-    return (dx * dx) + (dy * dy) >= minDistance * minDistance;
+    return (dx * dx) + (dy * dy) >= minimumDistance * minimumDistance;
   });
 }
 
@@ -267,30 +337,15 @@ function canPlaceShipSeed(
 ): boolean {
   return seeds.every((seed) => {
     const otherRadius = SPACE_FACTIONS[seed.factionId].radius;
-    const minDistance = otherRadius + radius + buffer;
+    const minimumDistance = otherRadius + radius + buffer;
     const dx = seed.x - x;
     const dy = seed.y - y;
-    return (dx * dx) + (dy * dy) >= minDistance * minDistance;
+    return (dx * dx) + (dy * dy) >= minimumDistance * minimumDistance;
   });
 }
 
 function pickKind(random: () => number): SpaceFieldObjectKind {
   return random() > 0.32 ? "asteroid" : "debris";
-}
-
-function getGalaxySectorSpawnBounds(
-  sector: GalaxySectorConfig,
-  config: SpaceWorldConfig,
-): { minRadius: number; maxRadius: number } {
-  const minRadius = Math.min(
-    sector.outerRadius - config.sectorOuterPadding - 240,
-    sector.innerRadius + config.sectorInnerPadding,
-  );
-  const maxRadius = Math.max(
-    minRadius + 240,
-    sector.outerRadius - config.sectorOuterPadding,
-  );
-  return { minRadius, maxRadius };
 }
 
 function pickPointInGalaxySector(
@@ -337,58 +392,184 @@ function pickPointInDeepSpace(
   };
 }
 
-function createNearbySeed(
+function createSpawnClusterSeed(
+  clusterId: string,
+  origin: GalaxyPoint,
   config: SpaceWorldConfig,
-  spawnPosition: GalaxyPoint,
   seeds: SpaceFieldObjectSeed[],
   random: () => number,
-): SpaceFieldObjectSeed {
+): SpaceFieldObjectSeed | null {
   for (let attempt = 0; attempt < 24; attempt += 1) {
     const angle = randomBetween(random, 0, Math.PI * 2);
     const distance = randomBetween(random, config.nearbySafeRadius, config.nearbyFieldRadius);
     const kind = pickKind(random);
-    const x = spawnPosition.x + Math.cos(angle) * distance;
-    const y = spawnPosition.y + Math.sin(angle) * distance;
-    const seed = createSeed(kind, x, y, random);
+    const x = origin.x + (Math.cos(angle) * distance);
+    const y = origin.y + (Math.sin(angle) * distance);
+    const candidate = createFieldSeed(clusterId, kind, x, y, random, config);
     if (
       x >= 220
       && x <= config.width - 220
       && y >= 220
       && y <= config.height - 220
-      && canPlaceFieldSeed(seeds, x, y, seed.radius, 18)
+      && canPlaceFieldSeed(seeds, x, y, candidate.radius, 18)
     ) {
-      return seed;
+      return candidate;
     }
   }
 
-  return createSeed("debris", spawnPosition.x + config.nearbyFieldRadius, spawnPosition.y, random);
+  return null;
 }
 
 function createDistantSeed(
+  id: string,
   config: SpaceWorldConfig,
-  spawnPosition: GalaxyPoint,
   seeds: SpaceFieldObjectSeed[],
   random: () => number,
+  deepSpaceOnly = false,
 ): SpaceFieldObjectSeed {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const point = random() < 0.76
-      ? pickPointInGalaxyBody(config, random)
-      : pickPointInDeepSpace(config, random);
-    const dx = point.x - spawnPosition.x;
-    const dy = point.y - spawnPosition.y;
-    if ((dx * dx) + (dy * dy) < config.nearbySafeRadius * config.nearbySafeRadius) {
-      continue;
-    }
-
+    const point = deepSpaceOnly
+      ? pickPointInDeepSpace(config, random)
+      : random() < 0.76
+        ? pickPointInGalaxyBody(config, random)
+        : pickPointInDeepSpace(config, random);
     const kind = pickKind(random);
-    const seed = createSeed(kind, point.x, point.y, random);
-    if (canPlaceFieldSeed(seeds, point.x, point.y, seed.radius, 18)) {
-      return seed;
+    const candidate = createFieldSeed(id, kind, point.x, point.y, random, config);
+    if (canPlaceFieldSeed(seeds, point.x, point.y, candidate.radius, 18)) {
+      return candidate;
     }
   }
 
-  const fallback = pickPointInGalaxyBody(config, random);
-  return createSeed("asteroid", fallback.x, fallback.y, random);
+  const fallback = deepSpaceOnly ? pickPointInDeepSpace(config, random) : pickPointInGalaxyBody(config, random);
+  return createFieldSeed(id, "asteroid", fallback.x, fallback.y, random, config);
+}
+
+function isPointNearAnySpawn(point: GalaxyPoint, safeRadius: number): boolean {
+  const safeRadiusSq = safeRadius * safeRadius;
+  return GALAXY_SECTORS.some((sector) => {
+    const spawn = getGalaxySpawnPointForRace(sector.raceId);
+    const dx = point.x - spawn.x;
+    const dy = point.y - spawn.y;
+    return (dx * dx) + (dy * dy) < safeRadiusSq;
+  });
+}
+
+function createSpaceFieldSeedsInternal(
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): SpaceFieldObjectSeed[] {
+  const rng = new SeededRandom(FIELD_WORLD_SEED);
+  const seeds: SpaceFieldObjectSeed[] = [];
+  let fieldIndex = 0;
+
+  GALAXY_SECTORS.forEach((sector) => {
+    const spawn = getGalaxySpawnPointForRace(sector.raceId);
+    for (let clusterIndex = 0; clusterIndex < config.nearbyObjectCount; clusterIndex += 1) {
+      const id = `field-${fieldIndex}`;
+      const seed = createSpawnClusterSeed(id, spawn, config, seeds, () => rng.next());
+      if (!seed) {
+        continue;
+      }
+      seeds.push(seed);
+      fieldIndex += 1;
+    }
+  });
+
+  for (let index = 0; index < config.galaxyObjectCount; index += 1) {
+    const id = `field-${fieldIndex}`;
+    seeds.push(createDistantSeed(id, config, seeds, () => rng.next(), false));
+    fieldIndex += 1;
+  }
+
+  for (let index = 0; index < config.deepSpaceObjectCount; index += 1) {
+    const id = `field-${fieldIndex}`;
+    seeds.push(createDistantSeed(id, config, seeds, () => rng.next(), true));
+    fieldIndex += 1;
+  }
+
+  return seeds;
+}
+
+function createSpaceFactionShipSeedsInternal(
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+  sectors: SpaceSectorConfig[] = SPACE_SECTORS,
+): SpaceFactionShipSeed[] {
+  const rng = new SeededRandom(SHIP_WORLD_SEED);
+  const seeds: SpaceFactionShipSeed[] = [];
+  let shipIndex = 0;
+
+  sectors.forEach((sectorConfig) => {
+    const galaxySector = getGalaxySectorById(sectorConfig.id);
+    if (!galaxySector) {
+      return;
+    }
+
+    const factionEntries = Object.entries(sectorConfig.ships) as Array<[SpaceFactionId, number | undefined]>;
+    factionEntries.forEach(([factionId, count]) => {
+      const shipCount = count ?? 0;
+      const faction = SPACE_FACTIONS[factionId];
+      for (let index = 0; index < shipCount; index += 1) {
+        for (let attempt = 0; attempt < 56; attempt += 1) {
+          const point = pickPointInGalaxySector(galaxySector, config, () => rng.next());
+          if (isPointNearAnySpawn(point, config.shipSpawnSafeRadius)) {
+            continue;
+          }
+          if (!canPlaceShipSeed(seeds, point.x, point.y, faction.radius, 150)) {
+            continue;
+          }
+
+          const patrolPoint = pickPointInGalaxySector(galaxySector, config, () => rng.next());
+          const heading = randomBetween(() => rng.next(), 0, Math.PI * 2);
+          const speed = randomBetween(() => rng.next(), 18, faction.maxSpeed * 0.24);
+          seeds.push({
+            id: `faction-${shipIndex}`,
+            cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
+            factionId,
+            sectorId: sectorConfig.id,
+            x: point.x,
+            y: point.y,
+            velocityX: Math.cos(heading) * speed,
+            velocityY: Math.sin(heading) * speed,
+            rotation: heading + Math.PI * 0.5,
+            patrolX: patrolPoint.x,
+            patrolY: patrolPoint.y,
+          });
+          shipIndex += 1;
+          break;
+        }
+      }
+    });
+  });
+
+  return seeds;
+}
+
+function countFactionSeeds(seeds: SpaceFactionShipSeed[]): Record<SpaceFactionId, number> {
+  return seeds.reduce<Record<SpaceFactionId, number>>((counts, seed) => {
+    counts[seed.factionId] += 1;
+    return counts;
+  }, {
+    empire: 0,
+    pirate: 0,
+    republic: 0,
+    smuggler: 0,
+  });
+}
+
+function groupSeedsByCell<T extends { cellKey: SpaceWorldCellKey }>(seeds: T[]): Record<SpaceWorldCellKey, T[]> {
+  return seeds.reduce<Record<SpaceWorldCellKey, T[]>>((grouped, seed) => {
+    if (!grouped[seed.cellKey]) {
+      grouped[seed.cellKey] = [];
+    }
+    grouped[seed.cellKey].push(seed);
+    return grouped;
+  }, {} as Record<SpaceWorldCellKey, T[]>);
+}
+
+function indexSeedsById<T extends { id: string }>(seeds: T[]): Record<string, T> {
+  return seeds.reduce<Record<string, T>>((indexed, seed) => {
+    indexed[seed.id] = seed;
+    return indexed;
+  }, {});
 }
 
 export function isFactionHostileByDefault(attacker: SpaceFactionId, target: SpaceFactionId): boolean {
@@ -415,6 +596,51 @@ export function getSpaceSectorAtPosition(
   return getSpaceSectorById(galaxySector.id, sectors);
 }
 
+export function getSpaceCellCoordinatesForPosition(
+  x: number,
+  y: number,
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): { cellX: number; cellY: number } {
+  return {
+    cellX: Math.max(0, Math.floor(x / config.cellSize)),
+    cellY: Math.max(0, Math.floor(y / config.cellSize)),
+  };
+}
+
+export function getSpaceCellKeyAtPosition(
+  x: number,
+  y: number,
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): SpaceWorldCellKey {
+  const { cellX, cellY } = getSpaceCellCoordinatesForPosition(x, y, config);
+  return createCellKey(cellX, cellY);
+}
+
+export function getSpaceCellKeysAroundPosition(
+  x: number,
+  y: number,
+  radius: number,
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): SpaceWorldCellKey[] {
+  const { cellX, cellY } = getSpaceCellCoordinatesForPosition(x, y, config);
+  const maxCellX = Math.ceil(config.width / config.cellSize) - 1;
+  const maxCellY = Math.ceil(config.height / config.cellSize) - 1;
+  const keys: SpaceWorldCellKey[] = [];
+
+  for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+    for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+      const nextCellX = Math.min(maxCellX, Math.max(0, cellX + offsetX));
+      const nextCellY = Math.min(maxCellY, Math.max(0, cellY + offsetY));
+      const key = createCellKey(nextCellX, nextCellY);
+      if (!keys.includes(key)) {
+        keys.push(key);
+      }
+    }
+  }
+
+  return keys;
+}
+
 export function createSpacePatrolTarget(
   sectorId: string,
   config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
@@ -426,71 +652,43 @@ export function createSpacePatrolTarget(
 
 export function createSpaceFieldSeeds(
   config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
-  spawnPosition: GalaxyPoint = config.spawn,
-  random: () => number = Math.random,
 ): SpaceFieldObjectSeed[] {
-  const seeds: SpaceFieldObjectSeed[] = [];
-
-  for (let index = 0; index < config.nearbyObjectCount; index += 1) {
-    seeds.push(createNearbySeed(config, spawnPosition, seeds, random));
-  }
-
-  for (let index = 0; index < config.galaxyObjectCount + config.deepSpaceObjectCount; index += 1) {
-    seeds.push(createDistantSeed(config, spawnPosition, seeds, random));
-  }
-
-  return seeds;
+  return createSpaceWorldDefinition(config).fieldSeeds;
 }
 
 export function createSpaceFactionShipSeeds(
   config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
   sectors: SpaceSectorConfig[] = SPACE_SECTORS,
-  spawnPosition: GalaxyPoint = config.spawn,
-  random: () => number = Math.random,
 ): SpaceFactionShipSeed[] {
-  const seeds: SpaceFactionShipSeed[] = [];
+  if (config === SPACE_WORLD_CONFIG && sectors === SPACE_SECTORS) {
+    return createSpaceWorldDefinition(config).factionSeeds;
+  }
 
-  sectors.forEach((sectorConfig) => {
-    const galaxySector = getGalaxySectorById(sectorConfig.id);
-    if (!galaxySector) {
-      return;
-    }
+  return createSpaceFactionShipSeedsInternal(config, sectors);
+}
 
-    const factionEntries = Object.entries(sectorConfig.ships) as Array<[SpaceFactionId, number | undefined]>;
-    factionEntries.forEach(([factionId, count]) => {
-      const shipCount = count ?? 0;
-      const faction = SPACE_FACTIONS[factionId];
-      for (let index = 0; index < shipCount; index += 1) {
-        for (let attempt = 0; attempt < 56; attempt += 1) {
-          const point = pickPointInGalaxySector(galaxySector, config, random);
-          const spawnDx = point.x - spawnPosition.x;
-          const spawnDy = point.y - spawnPosition.y;
-          if ((spawnDx * spawnDx) + (spawnDy * spawnDy) < config.shipSpawnSafeRadius * config.shipSpawnSafeRadius) {
-            continue;
-          }
-          if (!canPlaceShipSeed(seeds, point.x, point.y, faction.radius, 150)) {
-            continue;
-          }
+export function createSpaceWorldDefinition(
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): SpaceWorldDefinition {
+  if (config === SPACE_WORLD_CONFIG && cachedSpaceWorldDefinition) {
+    return cachedSpaceWorldDefinition;
+  }
 
-          const patrolPoint = pickPointInGalaxySector(galaxySector, config, random);
-          const heading = randomBetween(random, 0, Math.PI * 2);
-          const speed = randomBetween(random, 18, faction.maxSpeed * 0.24);
-          seeds.push({
-            factionId,
-            sectorId: sectorConfig.id,
-            x: point.x,
-            y: point.y,
-            velocityX: Math.cos(heading) * speed,
-            velocityY: Math.sin(heading) * speed,
-            rotation: heading + Math.PI * 0.5,
-            patrolX: patrolPoint.x,
-            patrolY: patrolPoint.y,
-          });
-          break;
-        }
-      }
-    });
-  });
+  const fieldSeeds = createSpaceFieldSeedsInternal(config);
+  const factionSeeds = createSpaceFactionShipSeedsInternal(config);
+  const definition: SpaceWorldDefinition = {
+    fieldSeeds,
+    factionSeeds,
+    fieldSeedIndex: indexSeedsById(fieldSeeds),
+    factionSeedIndex: indexSeedsById(factionSeeds),
+    fieldSeedsByCell: groupSeedsByCell(fieldSeeds),
+    factionSeedsByCell: groupSeedsByCell(factionSeeds),
+    factionCounts: countFactionSeeds(factionSeeds),
+  };
 
-  return seeds;
+  if (config === SPACE_WORLD_CONFIG) {
+    cachedSpaceWorldDefinition = definition;
+  }
+
+  return definition;
 }

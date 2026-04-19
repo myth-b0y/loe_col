@@ -94,7 +94,7 @@ try {
 
   const spawnSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    const ships = [...space.factionShips];
+    const ships = [...space.worldDefinition.factionSeeds];
     const sectorCounts = ships.reduce((acc, ship) => {
       if (!acc[ship.sectorId]) {
         acc[ship.sectorId] = { empire: 0, pirate: 0, republic: 0, smuggler: 0 };
@@ -115,14 +115,55 @@ try {
   assert(spawnSummary.factionCounts.smuggler > 0, "Smuggler ships did not spawn");
   assert(Object.keys(spawnSummary.sectorCounts).length >= 4, "Sector-based ship spawning is too sparse");
 
-  const behaviorCheck = await page.evaluate(() => {
+  const behaviorCheck = await page.evaluate((cellSize) => {
     const space = window.__loeGame?.scene.keys.space;
-    const empire = space.factionShips.find((ship) => ship.factionId === "empire");
-    const republic = space.factionShips.find((ship) => ship.factionId === "republic");
-    const pirate = space.factionShips.find((ship) => ship.factionId === "pirate");
-    const smuggler = space.factionShips.find((ship) => ship.factionId === "smuggler");
     const playerX = space.shipRoot.x;
     const playerY = space.shipRoot.y;
+    const placements = {
+      empire: { x: playerX + 340, y: playerY },
+      republic: { x: playerX + 520, y: playerY },
+      pirate: { x: playerX - 340, y: playerY },
+      smuggler: { x: playerX, y: playerY + 320 },
+    };
+    const stageFaction = (factionId) => {
+      const state = [...space.shipStates.values()].find((entry) => entry.factionId === factionId && !entry.destroyed);
+      const placement = placements[factionId];
+      state.x = placement.x;
+      state.y = placement.y;
+      state.velocityX = 0;
+      state.velocityY = 0;
+      state.patrolX = placement.x;
+      state.patrolY = placement.y;
+      state.aimX = 0;
+      state.aimY = -1;
+      state.provokedByPlayer = false;
+      state.provokedByShips = [];
+      state.aggressionTimer = 0;
+      state.cellKey = `${Math.max(0, Math.floor(state.x / cellSize))},${Math.max(0, Math.floor(state.y / cellSize))}`;
+      const activeShip = space.factionShips.find((ship) => ship.id === state.id);
+      if (activeShip) {
+        activeShip.root.x = placement.x;
+        activeShip.root.y = placement.y;
+        activeShip.velocity.set(0, 0);
+        activeShip.patrolTarget.set(placement.x, placement.y);
+        activeShip.aimDirection.set(0, -1);
+        activeShip.provokedByPlayer = false;
+        activeShip.provokedByShips.clear();
+        activeShip.aggressionTimer = 0;
+      }
+      return state.id;
+    };
+
+    const empireId = stageFaction("empire");
+    const republicId = stageFaction("republic");
+    const pirateId = stageFaction("pirate");
+    const smugglerId = stageFaction("smuggler");
+    space.syncActiveWorld?.(true);
+
+    const empire = space.factionShips.find((ship) => ship.id === empireId);
+    const republic = space.factionShips.find((ship) => ship.id === republicId);
+    const pirate = space.factionShips.find((ship) => ship.id === pirateId);
+    const smuggler = space.factionShips.find((ship) => ship.id === smugglerId);
 
     const parkFar = (ship, xOffset, yOffset) => {
       ship.root.x = playerX + xOffset;
@@ -178,7 +219,7 @@ try {
       republicVsEmpire: space.isShipHostileToShip(republic, empire),
       pirateVsSmuggler: space.isShipHostileToShip(pirate, smuggler),
     };
-  });
+  }, 3200);
 
   assert(behaviorCheck.empireTarget === "player", "Empire should treat the player as hostile");
   assert(behaviorCheck.republicTarget !== "player", "Republic should not attack the player by default");
@@ -191,12 +232,42 @@ try {
   assert(behaviorCheck.smugglerBefore === null, "Smugglers should be neutral before being attacked");
   assert(behaviorCheck.smugglerProvoked && behaviorCheck.smugglerAfter === "player", "Smuggler did not retaliate after being attacked");
 
-  const combatCheck = await page.evaluate(async () => {
+  const combatCheck = await page.evaluate(async (cellSize) => {
     const space = window.__loeGame?.scene.keys.space;
-    const empire = space.factionShips.find((ship) => ship.factionId === "empire");
-    const republic = space.factionShips.find((ship) => ship.factionId === "republic");
     const playerX = space.shipRoot.x;
     const playerY = space.shipRoot.y;
+    const stageFaction = (factionId, x, y) => {
+      const state = [...space.shipStates.values()].find((entry) => entry.factionId === factionId && !entry.destroyed);
+      state.x = x;
+      state.y = y;
+      state.velocityX = 0;
+      state.velocityY = 0;
+      state.patrolX = x;
+      state.patrolY = y;
+      state.aimX = 0;
+      state.aimY = -1;
+      state.provokedByPlayer = false;
+      state.provokedByShips = [];
+      state.aggressionTimer = 0;
+      state.cellKey = `${Math.max(0, Math.floor(x / cellSize))},${Math.max(0, Math.floor(y / cellSize))}`;
+      const activeShip = space.factionShips.find((ship) => ship.id === state.id);
+      if (activeShip) {
+        activeShip.root.x = x;
+        activeShip.root.y = y;
+        activeShip.velocity.set(0, 0);
+        activeShip.patrolTarget.set(x, y);
+        activeShip.aimDirection.set(0, -1);
+        activeShip.provokedByPlayer = false;
+        activeShip.provokedByShips.clear();
+        activeShip.aggressionTimer = 0;
+      }
+      return state.id;
+    };
+    const empireId = stageFaction("empire", playerX + 1200, playerY);
+    const republicId = stageFaction("republic", playerX + 1480, playerY);
+    space.syncActiveWorld?.(true);
+    const empire = space.factionShips.find((ship) => ship.id === empireId);
+    const republic = space.factionShips.find((ship) => ship.id === republicId);
     empire.root.x = playerX + 1200;
     empire.root.y = playerY;
     empire.velocity.set(0, 0);
@@ -213,7 +284,7 @@ try {
       factionShotCount: space.shots.filter((shot) => shot.ownerKind === "faction").length,
       destroyedFactionShips: space.getDebugSnapshot().destroyedFactionShips,
     };
-  });
+  }, 3200);
 
   assert(
     combatCheck.factionShotCount > 0
