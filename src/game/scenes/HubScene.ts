@@ -28,6 +28,7 @@ import {
 } from "../fx/energyLighting";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { InventoryOverlay } from "../ui/InventoryOverlay";
+import { GalaxyMapOverlay } from "../ui/GalaxyMapOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { MissionBoardOverlay } from "../ui/MissionBoardOverlay";
 
@@ -256,6 +257,7 @@ export class HubScene extends Phaser.Scene {
   private missionBoardOverlay?: MissionBoardOverlay;
   private logbookOverlay?: LogbookOverlay;
   private inventoryOverlay?: InventoryOverlay;
+  private galaxyMapOverlay?: GalaxyMapOverlay;
   private deployOverlay?: Phaser.GameObjects.Container;
   private deploySubtitle?: Phaser.GameObjects.Text;
   private deployStatusText?: Phaser.GameObjects.Text;
@@ -818,6 +820,14 @@ ${getCompanionRoleDisplay(companion)}`, {
     });
 
     this.inventoryOverlay = new InventoryOverlay({
+      scene: this,
+      onClose: () => this.handleCommandOverlayClosed(),
+      onOpenSettings: () => this.openPauseMenu(),
+      onRequestTab: (tab) => this.openDataPadTab(tab),
+    });
+ 
+
+    this.galaxyMapOverlay = new GalaxyMapOverlay({
       scene: this,
       onClose: () => this.handleCommandOverlayClosed(),
       onOpenSettings: () => this.openPauseMenu(),
@@ -1681,6 +1691,9 @@ ${getCompanionRoleDisplay(companion)}`, {
     if (this.inventoryOverlay?.isVisible()) {
       this.inventoryOverlay.hide();
     }
+    if (this.galaxyMapOverlay?.isVisible()) {
+      this.galaxyMapOverlay.hide();
+    }
     this.syncSceneOverlayChrome();
   }
 
@@ -1690,7 +1703,8 @@ ${getCompanionRoleDisplay(companion)}`, {
       || this.deployOverlay?.visible
       || this.missionBoardOverlay?.isVisible()
       || this.logbookOverlay?.isVisible()
-      || this.inventoryOverlay?.isVisible(),
+      || this.inventoryOverlay?.isVisible()
+      || this.galaxyMapOverlay?.isVisible(),
     );
   }
 
@@ -1926,6 +1940,12 @@ ${getCompanionRoleDisplay(companion)}`, {
 
     if (tab === "inventory") {
       this.inventoryOverlay?.show();
+      this.syncSceneOverlayChrome();
+      return;
+    }
+
+    if (tab === "map") {
+      this.galaxyMapOverlay?.show();
       this.syncSceneOverlayChrome();
     }
   }
@@ -2226,6 +2246,9 @@ ${getCompanionRoleDisplay(companion)}`, {
       currentInteraction: this.currentInteraction?.kind ?? null,
       acceptedMissionId: gameSession.acceptedMissionId,
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
+      inventoryVisible: this.inventoryOverlay?.isVisible() ?? false,
+      mapVisible: this.galaxyMapOverlay?.isVisible() ?? false,
+      shipSpacePosition: gameSession.getShipSpacePosition(),
       squadAssignments: gameSession.getSquadAssignments(),
       activeSlot: gameSession.getActiveSlotIndex(),
       shipTravel: gameSession.getShipTravelState(),

@@ -1,4 +1,6 @@
-﻿export type SpaceFieldObjectKind = "asteroid" | "debris";
+import { GALAXY_WORLD_CONFIG } from "./galaxy";
+
+export type SpaceFieldObjectKind = "asteroid" | "debris";
 export type SpaceFactionId = "empire" | "pirate" | "republic" | "smuggler";
 
 export type SpaceWorldConfig = {
@@ -76,13 +78,13 @@ export type SpaceFactionShipSeed = {
 };
 
 export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
-  width: 16000,
-  height: 16000,
+  width: GALAXY_WORLD_CONFIG.width,
+  height: GALAXY_WORLD_CONFIG.height,
   spawn: {
-    x: 8000,
-    y: 8000,
+    x: GALAXY_WORLD_CONFIG.spawn.x,
+    y: GALAXY_WORLD_CONFIG.spawn.y,
   },
-  starCount: 1800,
+  starCount: GALAXY_WORLD_CONFIG.starCount + GALAXY_WORLD_CONFIG.backgroundStarCount,
   nearbyFieldRadius: 1900,
   nearbySafeRadius: 320,
   nearbyObjectCount: 20,

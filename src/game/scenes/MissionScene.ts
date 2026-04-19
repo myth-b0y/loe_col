@@ -46,6 +46,7 @@ import {
 } from "../fx/energyLighting";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { InventoryOverlay, type InventoryOverlaySnapshot } from "../ui/InventoryOverlay";
+import { GalaxyMapOverlay } from "../ui/GalaxyMapOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
 
@@ -421,6 +422,7 @@ export class MissionScene extends Phaser.Scene {
   private pauseButton?: MenuButton;
   private inventoryOverlay?: InventoryOverlay;
   private logbookOverlay?: LogbookOverlay;
+  private galaxyMapOverlay?: GalaxyMapOverlay;
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
   private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
 
@@ -655,6 +657,7 @@ export class MissionScene extends Phaser.Scene {
     this.pauseButton = undefined;
     this.inventoryOverlay = undefined;
     this.logbookOverlay = undefined;
+    this.galaxyMapOverlay = undefined;
     this.touchUiObjects = [];
     this.desktopUiObjects = [];
     this.selectedTarget = null;
@@ -1000,6 +1003,16 @@ export class MissionScene extends Phaser.Scene {
       onOpenSettings: () => this.openPauseMenu(),
       onRequestTab: (tab) => this.openDataPadTab(tab),
     });
+
+
+    this.galaxyMapOverlay = new GalaxyMapOverlay({
+      scene: this,
+      onClose: () => {
+        this.fireHeld = false;
+      },
+      onOpenSettings: () => this.openPauseMenu(),
+      onRequestTab: (tab) => this.openDataPadTab(tab),
+    });
   }
 
   private createTouchUi(): void {
@@ -1187,6 +1200,10 @@ export class MissionScene extends Phaser.Scene {
       }
       if (this.inventoryOverlay?.isVisible()) {
         this.inventoryOverlay.hide();
+        return;
+      }
+      if (this.galaxyMapOverlay?.isVisible()) {
+        this.galaxyMapOverlay.hide();
         return;
       }
       this.openPauseMenu();
@@ -5076,7 +5093,11 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private isMenuOverlayVisible(): boolean {
-    return Boolean(this.logbookOverlay?.isVisible() || this.inventoryOverlay?.isVisible());
+    return Boolean(
+      this.logbookOverlay?.isVisible()
+      || this.inventoryOverlay?.isVisible()
+      || this.galaxyMapOverlay?.isVisible(),
+    );
   }
 
   private getMissionInventorySnapshot(): InventoryOverlaySnapshot {
@@ -5128,16 +5149,22 @@ export class MissionScene extends Phaser.Scene {
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
     this.fireHeld = false;
     this.releaseMissionControls();
+    this.logbookOverlay?.hide();
+    this.inventoryOverlay?.hide();
+    this.galaxyMapOverlay?.hide();
 
     if (tab === "missions") {
-      this.inventoryOverlay?.hide();
       this.logbookOverlay?.show();
       return;
     }
 
     if (tab === "inventory") {
-      this.logbookOverlay?.hide();
       this.inventoryOverlay?.show();
+      return;
+    }
+
+    if (tab === "map") {
+      this.galaxyMapOverlay?.show();
     }
   }
 
@@ -5147,6 +5174,9 @@ export class MissionScene extends Phaser.Scene {
     }
     if (this.inventoryOverlay?.isVisible()) {
       this.inventoryOverlay.hide();
+    }
+    if (this.galaxyMapOverlay?.isVisible()) {
+      this.galaxyMapOverlay.hide();
     }
 
     if (typeof document !== "undefined" && document.pointerLockElement) {
@@ -5966,6 +5996,8 @@ export class MissionScene extends Phaser.Scene {
       sfx: retroSfx.getDebugState(),
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       inventoryVisible: this.inventoryOverlay?.isVisible() ?? false,
+      mapVisible: this.galaxyMapOverlay?.isVisible() ?? false,
+      shipSpacePosition: gameSession.getShipSpacePosition(),
       touchAttackHeld: this.attackPointerId !== null,
       pickupCounts: {
         world: this.worldPickups.length,

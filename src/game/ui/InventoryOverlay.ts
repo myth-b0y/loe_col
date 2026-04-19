@@ -182,7 +182,6 @@ export class InventoryOverlay {
       });
     });
     this.tabButtons.skills?.setEnabled(false);
-    this.tabButtons.map?.setEnabled(false);
     this.tabButtons.starship?.setEnabled(false);
 
     this.closeButton = createMenuButton({
@@ -489,7 +488,7 @@ export class InventoryOverlay {
       return;
     }
 
-    if (tab === "skills" || tab === "map" || tab === "starship") {
+    if (tab === "skills" || tab === "starship") {
       this.statusText.setText(`${TAB_LAYOUT.find((entry) => entry.tab === tab)?.label ?? "This"} tab is scaffolded in the new UI system and will be wired in next.`);
       return;
     }

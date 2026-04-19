@@ -1,7 +1,7 @@
 {
   "name": "loe-col",
   "private": true,
-  "version": "0.0.57",
+  "version": "0.0.58",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,11 @@
     "build": "npm run typecheck && vite build",
     "build:pages": "npm run typecheck && node tools/build_pages.mjs",
     "verify:pages-build": "node tools/verify_pages_build.mjs",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:pages-check": "npm run build:pages && npm run verify:pages-build"
   },
   "dependencies": {
     "phaser": "^3.90.0"

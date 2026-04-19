@@ -1,6 +1,16 @@
 import Phaser from "phaser";
 
 import { retroSfx } from "../audio/retroSfx";
+import {
+  GALAXY_HAZE_NODES,
+  GALAXY_SECTORS,
+  GALAXY_STARS,
+  getGalaxySectorAtPosition,
+  getGalaxySectorPolygonPoints,
+  getMissionPlanetForMission,
+  type GalaxyMissionPlanet,
+  type GalaxySectorConfig,
+} from "../content/galaxy";
 import { getMissionContract } from "../content/missions";
 import {
   SPACE_FACTIONS,
@@ -14,7 +24,6 @@ import {
   type SpaceFactionShipSeed,
   type SpaceFieldObjectKind,
   type SpaceFieldObjectSeed,
-  type SpaceSectorConfig,
 } from "../content/space";
 import { gameSession } from "../core/session";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
@@ -97,7 +106,19 @@ const FACTION_PROJECTILE_LIFETIME = 1.8;
 const FACTION_DAMAGE = 1;
 const PLAYER_DAMAGE = 1;
 const AGGRESSION_DURATION = 12;
-const STAR_COLORS = [0xffffff, 0xb9d8ff, 0x7fb7ff] as const;
+
+function tracePolygonPath(graphics: Phaser.GameObjects.Graphics, points: number[]): void {
+  if (points.length < 4) {
+    return;
+  }
+
+  graphics.beginPath();
+  graphics.moveTo(points[0], points[1]);
+  for (let index = 2; index < points.length; index += 2) {
+    graphics.lineTo(points[index], points[index + 1]);
+  }
+  graphics.closePath();
+}
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -152,6 +173,7 @@ export class SpaceScene extends Phaser.Scene {
   private routeText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private contactText?: Phaser.GameObjects.Text;
+  private coordinateText?: Phaser.GameObjects.Text;
   private returnButton?: MenuButton;
   private inputKeys?: {
     up: Phaser.Input.Keyboard.Key;
@@ -199,6 +221,7 @@ export class SpaceScene extends Phaser.Scene {
     this.drawWorldBackdrop();
     this.createPlayerShip();
     this.createFieldObjects();
+    this.createMissionPlanet();
     this.createFactionShips();
     this.createHud();
     this.bindKeyboard();
@@ -243,24 +266,28 @@ export class SpaceScene extends Phaser.Scene {
       1,
     ).setDepth(-30);
 
-    const nebulae = this.add.graphics().setDepth(-28);
-    nebulae.fillStyle(0x15304d, 0.18);
-    nebulae.fillCircle(SPACE_WORLD_CONFIG.width * 0.28, SPACE_WORLD_CONFIG.height * 0.34, 1100);
-    nebulae.fillStyle(0x291942, 0.16);
-    nebulae.fillCircle(SPACE_WORLD_CONFIG.width * 0.76, SPACE_WORLD_CONFIG.height * 0.62, 960);
-    nebulae.fillStyle(0x12333a, 0.14);
-    nebulae.fillCircle(SPACE_WORLD_CONFIG.width * 0.54, SPACE_WORLD_CONFIG.height * 0.78, 740);
+    const sectorBackdrop = this.add.graphics().setDepth(-29);
+    GALAXY_SECTORS.forEach((sector) => {
+      const polygon = getGalaxySectorPolygonPoints(sector);
+      sectorBackdrop.fillStyle(sector.color, 0.06);
+      tracePolygonPath(sectorBackdrop, polygon);
+      sectorBackdrop.fillPath();
+      sectorBackdrop.lineStyle(2, sector.borderColor, 0.12);
+      tracePolygonPath(sectorBackdrop, polygon);
+      sectorBackdrop.strokePath();
+    });
+
+    const haze = this.add.graphics().setDepth(-28);
+    GALAXY_HAZE_NODES.forEach((node) => {
+      haze.fillStyle(node.color, node.alpha);
+      haze.fillCircle(node.x, node.y, node.radius);
+    });
 
     const stars = this.add.graphics().setDepth(-24);
-    for (let index = 0; index < SPACE_WORLD_CONFIG.starCount; index += 1) {
-      const color = STAR_COLORS[index % STAR_COLORS.length];
-      stars.fillStyle(color, index % 14 === 0 ? 0.95 : index % 6 === 0 ? 0.78 : 0.56);
-      stars.fillCircle(
-        randomBetween(0, SPACE_WORLD_CONFIG.width),
-        randomBetween(0, SPACE_WORLD_CONFIG.height),
-        index % 16 === 0 ? randomBetween(1.6, 2.4) : randomBetween(0.55, 1.45),
-      );
-    }
+    GALAXY_STARS.forEach((star) => {
+      stars.fillStyle(star.color, star.alpha);
+      stars.fillCircle(star.x, star.y, Math.max(0.55, star.size));
+    });
 
     this.add.rectangle(
       SPACE_WORLD_CONFIG.width * 0.5,
@@ -282,7 +309,9 @@ export class SpaceScene extends Phaser.Scene {
     this.shipThruster = this.add.ellipse(0, 23, 14, 24, 0x76dfff, 0.24).setStrokeStyle(1, 0xc5f2ff, 0.3);
     this.shipDamageRing = this.add.circle(0, 0, 26, 0xff9f74, 0).setStrokeStyle(2, 0xffdbbc, 0);
 
-    this.shipRoot = this.add.container(SPACE_WORLD_CONFIG.spawn.x, SPACE_WORLD_CONFIG.spawn.y, [
+    const spawn = gameSession.getShipSpacePosition();
+
+    this.shipRoot = this.add.container(spawn.x, spawn.y, [
       shadow,
       this.shipDamageRing,
       this.shipThruster,
@@ -293,6 +322,32 @@ export class SpaceScene extends Phaser.Scene {
       cockpit,
     ]).setDepth(20);
     this.shipRoot.setSize(62, 58);
+    gameSession.setShipSpacePosition(this.shipRoot.x, this.shipRoot.y);
+  }
+
+  private createMissionPlanet(): void {
+    const missionPlanet = this.getTrackedMissionPlanet();
+    if (!missionPlanet) {
+      return;
+    }
+
+    const halo = this.add.circle(0, 0, missionPlanet.radius, missionPlanet.color, 0.22);
+    const body = this.add.circle(0, 0, missionPlanet.radius * 0.62, missionPlanet.color, 0.94)
+      .setStrokeStyle(2, 0xfff4d9, 0.72);
+    const ring = this.add.ellipse(0, 0, missionPlanet.radius * 1.8, missionPlanet.radius * 0.52, 0xffffff, 0)
+      .setStrokeStyle(2, 0xfff1cb, 0.58);
+    ring.rotation = -0.34;
+    const glow = this.add.circle(-missionPlanet.radius * 0.18, -missionPlanet.radius * 0.2, missionPlanet.radius * 0.14, 0xffffff, 0.32);
+    const label = this.add.text(0, missionPlanet.radius + 18, missionPlanet.name, {
+      fontFamily: "Arial",
+      fontSize: "15px",
+      color: "#fff1cf",
+      fontStyle: "bold",
+      backgroundColor: "#08111bcc",
+      padding: { x: 6, y: 4 },
+    }).setOrigin(0.5, 0);
+
+    this.add.container(missionPlanet.x, missionPlanet.y, [halo, ring, body, glow, label]).setDepth(6);
   }
 
   private createFieldObjects(): void {
@@ -438,6 +493,15 @@ export class SpaceScene extends Phaser.Scene {
       wordWrap: { width: 376 },
     }).setScrollFactor(0).setDepth(51);
 
+    this.coordinateText = this.add.text(GAME_WIDTH - 34, 92, "", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#eef7ff",
+      align: "right",
+      backgroundColor: "#09131fcc",
+      padding: { x: 10, y: 8 },
+    }).setOrigin(1, 0).setScrollFactor(0).setDepth(51);
+
     this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB / Space fire  |  X / Esc return to ship", {
       fontFamily: "Arial",
       fontSize: "15px",
@@ -532,6 +596,7 @@ export class SpaceScene extends Phaser.Scene {
     this.shipRoot.y += this.shipVelocity.y * dt;
     this.shipRoot.x = clampToBounds(this.shipRoot.x, PLAYER_RADIUS, SPACE_WORLD_CONFIG.width - PLAYER_RADIUS);
     this.shipRoot.y = clampToBounds(this.shipRoot.y, PLAYER_RADIUS, SPACE_WORLD_CONFIG.height - PLAYER_RADIUS);
+    gameSession.setShipSpacePosition(this.shipRoot.x, this.shipRoot.y);
 
     const fireHeld = this.input.activePointer.isDown || this.inputKeys.fire.isDown;
     if (fireHeld && this.fireCooldown <= 0) {
@@ -1277,7 +1342,8 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private refreshHud(): void {
-    const sector = this.getCurrentSector();
+    const sector = this.getCurrentGalaxySector();
+    const missionPlanet = this.getTrackedMissionPlanet();
     const localCounts = this.getFactionCounts(1400);
     const localBreakables = this.countNearbyBreakables(1200);
     const speed = Math.round(this.shipVelocity.length());
@@ -1290,14 +1356,21 @@ export class SpaceScene extends Phaser.Scene {
     }).length;
 
     this.routeText?.setText(this.routeMissionId
-      ? `Route staged: ${this.routeTitle}  |  Sector: ${sector?.label ?? "Outer Drift"}`
-      : `Free roam launch  |  Sector: ${sector?.label ?? "Outer Drift"}`);
+      ? `Route staged: ${this.routeTitle}  |  Sector: ${sector.label}`
+      : `Free roam launch  |  Sector: ${sector.label}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}`);
     this.contactText?.setText(`Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`);
+    this.coordinateText?.setText(missionPlanet
+      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`
+      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nSECTOR ${sector.label}`);
   }
 
-  private getCurrentSector(): SpaceSectorConfig | null {
-    return getSpaceSectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+  private getCurrentGalaxySector(): GalaxySectorConfig {
+    return getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+  }
+
+  private getTrackedMissionPlanet(): GalaxyMissionPlanet | null {
+    return getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
   }
 
   private getFactionCounts(radius?: number): Record<SpaceFactionId, number> {
@@ -1379,7 +1452,7 @@ export class SpaceScene extends Phaser.Scene {
         width: SPACE_WORLD_CONFIG.width,
         height: SPACE_WORLD_CONFIG.height,
       },
-      sector: this.getCurrentSector()?.label ?? "Outer Drift",
+      sector: this.getCurrentGalaxySector().label,
       routeMissionId: this.routeMissionId,
       routeTitle: this.routeTitle,
       playerHull: {
@@ -1393,6 +1466,12 @@ export class SpaceScene extends Phaser.Scene {
         vy: Math.round(this.shipVelocity.y),
         facing: Math.round(Phaser.Math.RadToDeg(this.shipRoot.rotation)),
       },
+      missionPlanet: this.getTrackedMissionPlanet() ? {
+        missionId: this.getTrackedMissionPlanet()?.missionId ?? null,
+        name: this.getTrackedMissionPlanet()?.name ?? null,
+        x: Math.round(this.getTrackedMissionPlanet()?.x ?? 0),
+        y: Math.round(this.getTrackedMissionPlanet()?.y ?? 0),
+      } : null,
       asteroidsRemaining: this.asteroids.length,
       destroyedObjects: this.destroyedObjects,
       factionShipsRemaining: this.factionShips.length,

@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { GALAXY_WORLD_CONFIG, clampPointToGalaxyBounds, type GalaxyPoint } from "../content/galaxy";
 import {
   DEFAULT_SQUAD_ASSIGNMENTS,
   canCompanionOccupySlot,
@@ -73,6 +74,8 @@ export type ShipTravelState = {
   lastDepartureAt: string | null;
   lastArrivalAt: string | null;
 };
+export type ShipSpacePosition = GalaxyPoint;
+
 export type ShipRepairState = {
   lastInspectionAt: string | null;
   lastRepairAt: string | null;
@@ -532,6 +535,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   runConfig: RunConfig = clone(DEFAULT_RUN_CONFIG);
   activeMissionId: string | null = null;
   pendingReward: RewardData | null = null;
+  private shipSpacePosition: ShipSpacePosition = { ...GALAXY_WORLD_CONFIG.spawn };
   private activeSlotIndex = 0;
   private saveSlots: Array<SaveData | null> = createEmptySlots();
   private hasTouchInput = false;
@@ -555,6 +559,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.activeSlotIndex = 0;
     this.saveData = clone(DEFAULT_SAVE);
+    this.resetShipSpacePosition();
     this.emit("save-changed", this.saveData);
     this.emit("run-config-changed", this.getRunConfig());
     this.emit("slots-changed", this.getSaveSlots());
@@ -700,6 +705,27 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getShipTravelState(): ShipTravelState {
     return clone(this.saveData.ship.travel);
+  }
+
+  getTrackedMissionId(): string | null {
+    return this.activeMissionId
+      ?? this.saveData.ship.travel.arrivedMissionId
+      ?? this.saveData.ship.travel.destinationMissionId
+      ?? this.getSelectedMissionId();
+  }
+
+  getShipSpacePosition(): ShipSpacePosition {
+    return { ...this.shipSpacePosition };
+  }
+
+  setShipSpacePosition(x: number, y: number): ShipSpacePosition {
+    this.shipSpacePosition = clampPointToGalaxyBounds(Math.round(x), Math.round(y));
+    return this.getShipSpacePosition();
+  }
+
+  resetShipSpacePosition(): ShipSpacePosition {
+    this.shipSpacePosition = { ...GALAXY_WORLD_CONFIG.spawn };
+    return this.getShipSpacePosition();
   }
 
   getArrivedMissionId(): string | null {
@@ -1076,6 +1102,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.activeSlotIndex = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.saveData = clone(DEFAULT_SAVE);
+    this.resetShipSpacePosition();
     this.activeMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
@@ -1120,6 +1147,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
     this.saveData = mergeSaveData(slot);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
+    this.resetShipSpacePosition();
     this.activeSlotIndex = safeSlot;
     this.activeMissionId = null;
     this.pendingReward = null;

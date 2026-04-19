@@ -1,0 +1,506 @@
+import Phaser from "phaser";
+
+import {
+  GALAXY_HAZE_NODES,
+  GALAXY_SECTORS,
+  GALAXY_STARS,
+  GALAXY_WORLD_CONFIG,
+  getGalaxySectorAtPosition,
+  getGalaxySectorLabelPoint,
+  getGalaxySectorPolygonPoints,
+  getMissionPlanetForMission,
+  type GalaxySectorConfig,
+} from "../content/galaxy";
+import { getMissionContract } from "../content/missions";
+import { gameSession } from "../core/session";
+import { createMenuButton, type MenuButton } from "./buttons";
+
+type MapTab = "inventory" | "skills" | "missions" | "map" | "starship";
+
+type GalaxyMapOverlayOptions = {
+  scene: Phaser.Scene;
+  onClose: () => void;
+  onOpenSettings?: () => void;
+  onRequestTab?: (tab: Exclude<MapTab, "map">) => void;
+};
+
+const PANEL_DEPTH = 60;
+const WINDOW = new Phaser.Geom.Rectangle(96, 54, 1088, 612);
+const MAP_RECT = new Phaser.Geom.Rectangle(WINDOW.x + 20, WINDOW.y + 122, 690, 430);
+const INFO_RECT = new Phaser.Geom.Rectangle(WINDOW.right - 334, WINDOW.y + 122, 314, 430);
+const TAB_LAYOUT = [
+  { tab: "inventory", label: "Inventory", x: 428 },
+  { tab: "skills", label: "Skills", x: 562 },
+  { tab: "missions", label: "Missions", x: 696 },
+  { tab: "map", label: "Map", x: 830 },
+  { tab: "starship", label: "Starship", x: 964 },
+] as const;
+
+function colorToCss(value: number): string {
+  return `#${value.toString(16).padStart(6, "0")}`;
+}
+
+export class GalaxyMapOverlay {
+  private readonly onClose: () => void;
+  private readonly onOpenSettings: () => void;
+  private readonly onRequestTab?: (tab: Exclude<MapTab, "map">) => void;
+  private readonly root: Phaser.GameObjects.Container;
+  private readonly backdrop: Phaser.GameObjects.Rectangle;
+  private readonly staticMap: Phaser.GameObjects.Graphics;
+  private readonly markerMap: Phaser.GameObjects.Graphics;
+  private readonly mapInputZone: Phaser.GameObjects.Zone;
+  private readonly title: Phaser.GameObjects.Text;
+  private readonly subtitle: Phaser.GameObjects.Text;
+  private readonly infoTitle: Phaser.GameObjects.Text;
+  private readonly routeText: Phaser.GameObjects.Text;
+  private readonly detailText: Phaser.GameObjects.Text;
+  private readonly hoverText: Phaser.GameObjects.Text;
+  private readonly footerText: Phaser.GameObjects.Text;
+  private readonly playerLabel: Phaser.GameObjects.Text;
+  private readonly missionLabel: Phaser.GameObjects.Text;
+  private readonly hoverLabel: Phaser.GameObjects.Text;
+  private readonly sectorLabels: Phaser.GameObjects.Text[] = [];
+  private readonly closeButton: MenuButton;
+  private readonly settingsButton: MenuButton;
+  private readonly tabButtons: Partial<Record<MapTab, MenuButton>> = {};
+  private hoverWorldPoint: { x: number; y: number } | null = null;
+
+  constructor({ scene, onClose, onOpenSettings, onRequestTab }: GalaxyMapOverlayOptions) {
+    this.onClose = onClose;
+    this.onOpenSettings = onOpenSettings ?? onClose;
+    this.onRequestTab = onRequestTab;
+
+    this.backdrop = scene.add.rectangle(640, 360, 1280, 720, 0x02060c, 0.14)
+      .setDepth(PANEL_DEPTH)
+      .setInteractive();
+    this.backdrop.on("pointerdown", () => this.hide());
+
+    const panel = scene.add.rectangle(WINDOW.centerX, WINDOW.centerY, WINDOW.width, WINDOW.height, 0x08111b, 0.985)
+      .setDepth(PANEL_DEPTH + 1)
+      .setStrokeStyle(3, 0x365a82, 0.82);
+    const panelInset = scene.add.rectangle(WINDOW.centerX, WINDOW.centerY, WINDOW.width - 18, WINDOW.height - 18, 0x091724, 0.985)
+      .setDepth(PANEL_DEPTH + 1)
+      .setStrokeStyle(1, 0x294563, 0.72);
+    const topBar = scene.add.rectangle(WINDOW.centerX, WINDOW.y + 42, WINDOW.width - 40, 58, 0x0b1522, 0.98)
+      .setDepth(PANEL_DEPTH + 1)
+      .setStrokeStyle(2, 0x294563, 0.78);
+
+    this.title = scene.add.text(WINDOW.x + 24, WINDOW.y + 20, "Data Pad", {
+      fontFamily: "Arial",
+      fontSize: "30px",
+      color: "#f5fbff",
+      fontStyle: "bold",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0).setVisible(false);
+
+    this.subtitle = scene.add.text(WINDOW.x + 24, WINDOW.y + 94, "Galaxy Map", {
+      fontFamily: "Arial",
+      fontSize: "16px",
+      color: "#bdd2ec",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0).setVisible(false);
+
+    this.settingsButton = createMenuButton({
+      scene,
+      x: WINDOW.x + 54,
+      y: WINDOW.y + 58,
+      width: 84,
+      height: 36,
+      label: "Pause",
+      onClick: () => {
+        this.hide();
+        this.onOpenSettings();
+      },
+      depth: PANEL_DEPTH + 2,
+      accentColor: 0x283d59,
+    });
+
+    TAB_LAYOUT.forEach(({ tab, label, x }) => {
+      this.tabButtons[tab] = createMenuButton({
+        scene,
+        x,
+        y: WINDOW.y + 58,
+        width: tab === "starship" ? 126 : 118,
+        height: 36,
+        label,
+        onClick: () => this.handleTab(tab),
+        depth: PANEL_DEPTH + 2,
+        accentColor: tab === "map" ? 0x305c86 : 0x214467,
+      });
+    });
+    this.tabButtons.skills?.setEnabled(false);
+    this.tabButtons.starship?.setEnabled(false);
+
+    this.closeButton = createMenuButton({
+      scene,
+      x: WINDOW.right - 54,
+      y: WINDOW.y + 58,
+      width: 84,
+      height: 36,
+      label: "Close",
+      onClick: () => this.hide(),
+      depth: PANEL_DEPTH + 2,
+      accentColor: 0x283d59,
+    });
+
+    const mapPanel = scene.add.rectangle(MAP_RECT.centerX, MAP_RECT.centerY, MAP_RECT.width, MAP_RECT.height, 0x07111d, 0.98)
+      .setDepth(PANEL_DEPTH + 1)
+      .setStrokeStyle(2, 0x365a82, 0.74);
+    const infoPanel = scene.add.rectangle(INFO_RECT.centerX, INFO_RECT.centerY, INFO_RECT.width, INFO_RECT.height, 0x0b1622, 0.98)
+      .setDepth(PANEL_DEPTH + 1)
+      .setStrokeStyle(2, 0x365a82, 0.66);
+
+    const mapHeader = scene.add.text(MAP_RECT.x + 14, MAP_RECT.y - 28, "Shared Galaxy Layout", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#eef6ff",
+      fontStyle: "bold",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    this.infoTitle = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 12, "Current Readout", {
+      fontFamily: "Arial",
+      fontSize: "18px",
+      color: "#eef6ff",
+      fontStyle: "bold",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    this.routeText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 44, "", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#dceafd",
+      lineSpacing: 4,
+      wordWrap: { width: INFO_RECT.width - 28 },
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    this.detailText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 136, "", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#9fc6ff",
+      lineSpacing: 4,
+      wordWrap: { width: INFO_RECT.width - 28 },
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    this.hoverText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 274, "", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#d7e8ff",
+      lineSpacing: 4,
+      wordWrap: { width: INFO_RECT.width - 28 },
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    this.footerText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.bottom - 84, "", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#8da6c3",
+      lineSpacing: 4,
+      wordWrap: { width: INFO_RECT.width - 28 },
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    const legendY = INFO_RECT.bottom - 42;
+    const playerSwatch = scene.add.circle(INFO_RECT.x + 24, legendY, 7, 0x8fe3ff, 1).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+    const missionSwatch = scene.add.circle(INFO_RECT.x + 138, legendY, 7, 0xffb86c, 1).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+    const hoverSwatch = scene.add.circle(INFO_RECT.x + 246, legendY, 7, 0xffffff, 0).setStrokeStyle(2, 0xdcecff, 0.9).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+    const legendPlayer = scene.add.text(INFO_RECT.x + 38, legendY - 9, "Ship", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#d7e8ff",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+    const legendMission = scene.add.text(INFO_RECT.x + 152, legendY - 9, "Mission", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#d7e8ff",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+    const legendHover = scene.add.text(INFO_RECT.x + 260, legendY - 9, "Hover", {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#d7e8ff",
+    }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+
+    this.staticMap = scene.add.graphics().setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
+    this.markerMap = scene.add.graphics().setDepth(PANEL_DEPTH + 3).setScrollFactor(0);
+
+    this.playerLabel = scene.add.text(0, 0, "SHIP", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#dff7ff",
+      fontStyle: "bold",
+      backgroundColor: "#08111bd8",
+      padding: { x: 4, y: 2 },
+    }).setDepth(PANEL_DEPTH + 4).setScrollFactor(0).setVisible(false);
+
+    this.missionLabel = scene.add.text(0, 0, "MISSION", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#fff1d0",
+      fontStyle: "bold",
+      backgroundColor: "#08111bd8",
+      padding: { x: 4, y: 2 },
+    }).setDepth(PANEL_DEPTH + 4).setScrollFactor(0).setVisible(false);
+
+    this.hoverLabel = scene.add.text(0, 0, "", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#eef6ff",
+      backgroundColor: "#08111bd8",
+      padding: { x: 4, y: 2 },
+    }).setDepth(PANEL_DEPTH + 4).setScrollFactor(0).setVisible(false);
+
+    GALAXY_SECTORS.forEach((sector) => {
+      const labelPoint = this.worldToMap(getGalaxySectorLabelPoint(sector));
+      const label = scene.add.text(labelPoint.x, labelPoint.y, sector.label.replace(" ", "\n"), {
+        fontFamily: "Arial",
+        fontSize: "14px",
+        color: colorToCss(sector.borderColor),
+        fontStyle: "bold",
+        align: "center",
+        backgroundColor: "#08111bc4",
+        padding: { x: 4, y: 2 },
+      }).setOrigin(0.5).setDepth(PANEL_DEPTH + 3).setScrollFactor(0);
+      this.sectorLabels.push(label);
+    });
+
+    this.mapInputZone = scene.add.zone(MAP_RECT.x, MAP_RECT.y, MAP_RECT.width, MAP_RECT.height)
+      .setOrigin(0, 0)
+      .setDepth(PANEL_DEPTH + 4)
+      .setScrollFactor(0)
+      .setInteractive({ useHandCursor: true });
+    this.mapInputZone.on("pointermove", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
+    this.mapInputZone.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
+    this.mapInputZone.on("pointerout", () => this.clearHover());
+
+    this.root = scene.add.container(0, 0, [
+      this.backdrop,
+      panel,
+      panelInset,
+      topBar,
+      mapPanel,
+      infoPanel,
+      mapHeader,
+      this.title,
+      this.subtitle,
+      this.infoTitle,
+      this.routeText,
+      this.detailText,
+      this.hoverText,
+      this.footerText,
+      legendPlayer,
+      legendMission,
+      legendHover,
+      playerSwatch,
+      missionSwatch,
+      hoverSwatch,
+      this.staticMap,
+      this.markerMap,
+      this.playerLabel,
+      this.missionLabel,
+      this.hoverLabel,
+      this.mapInputZone,
+      this.settingsButton.container,
+      this.closeButton.container,
+      ...Object.values(this.tabButtons).flatMap((button) => (button ? [button.container] : [])),
+      ...this.sectorLabels,
+    ]).setDepth(PANEL_DEPTH);
+
+    this.root.setVisible(false);
+    this.setInputEnabled(false);
+  }
+
+  show(): void {
+    this.root.setVisible(true);
+    this.setInputEnabled(true);
+    this.refresh();
+  }
+
+  hide(): void {
+    this.root.setVisible(false);
+    this.setInputEnabled(false);
+    this.clearHover();
+    this.onClose();
+  }
+
+  isVisible(): boolean {
+    return this.root.visible;
+  }
+
+  refresh(): void {
+    this.drawMap();
+    this.syncReadout();
+  }
+
+  private handleTab(tab: MapTab): void {
+    if (tab === "map") {
+      return;
+    }
+
+    if (tab === "skills" || tab === "starship") {
+      this.detailText.setText(`${TAB_LAYOUT.find((entry) => entry.tab === tab)?.label ?? "This"} tab is scaffolded and will be wired in after the galaxy foundation settles.`);
+      return;
+    }
+
+    this.hide();
+    this.root.scene.time.delayedCall(0, () => {
+      this.onRequestTab?.(tab as Exclude<MapTab, "map">);
+    });
+  }
+
+  private setInputEnabled(enabled: boolean): void {
+    this.backdrop.input && (this.backdrop.input.enabled = enabled);
+    this.mapInputZone.input && (this.mapInputZone.input.enabled = enabled);
+    this.settingsButton.setInputEnabled(enabled);
+    this.closeButton.setInputEnabled(enabled);
+    Object.values(this.tabButtons).forEach((button) => button?.setInputEnabled(enabled));
+  }
+
+  private drawMap(): void {
+    this.staticMap.clear();
+    this.markerMap.clear();
+
+    this.staticMap.fillStyle(0x050913, 1);
+    this.staticMap.fillRect(MAP_RECT.x + 4, MAP_RECT.y + 4, MAP_RECT.width - 8, MAP_RECT.height - 8);
+
+    this.staticMap.lineStyle(1, 0x17304f, 0.52);
+    for (let step = 1; step < 4; step += 1) {
+      const verticalX = MAP_RECT.x + (MAP_RECT.width * step) / 4;
+      const horizontalY = MAP_RECT.y + (MAP_RECT.height * step) / 4;
+      this.staticMap.lineBetween(verticalX, MAP_RECT.y, verticalX, MAP_RECT.bottom);
+      this.staticMap.lineBetween(MAP_RECT.x, horizontalY, MAP_RECT.right, horizontalY);
+    }
+
+    GALAXY_HAZE_NODES.forEach((node) => {
+      const point = this.worldToMap(node);
+      this.staticMap.fillStyle(node.color, node.alpha * 1.9);
+      this.staticMap.fillCircle(point.x, point.y, (node.radius / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width);
+    });
+
+    GALAXY_SECTORS.forEach((sector) => {
+      this.drawSector(sector);
+    });
+
+    const core = this.worldToMap(GALAXY_WORLD_CONFIG.center);
+    this.staticMap.fillStyle(0x214c71, 0.22);
+    this.staticMap.fillCircle(core.x, core.y, (GALAXY_WORLD_CONFIG.coreRadius / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width * 1.22);
+    this.staticMap.fillStyle(0xe5f4ff, 0.18);
+    this.staticMap.fillCircle(core.x, core.y, (GALAXY_WORLD_CONFIG.coreRadius / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width * 0.48);
+
+    GALAXY_STARS.forEach((star) => {
+      const point = this.worldToMap(star);
+      this.staticMap.fillStyle(star.color, star.alpha);
+      this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
+    });
+  }
+
+  private drawSector(sector: GalaxySectorConfig): void {
+    const polygon = getGalaxySectorPolygonPoints(sector);
+    const mapped: number[] = [];
+    for (let index = 0; index < polygon.length; index += 2) {
+      const point = this.worldToMap({ x: polygon[index], y: polygon[index + 1] });
+      mapped.push(point.x, point.y);
+    }
+
+    const shape = new Phaser.Geom.Polygon(mapped);
+    this.staticMap.fillStyle(sector.color, 0.16);
+    this.staticMap.fillPoints(shape.points, true);
+    this.staticMap.lineStyle(2, sector.borderColor, 0.54);
+    this.staticMap.strokePoints(shape.points, true);
+  }
+
+  private syncReadout(): void {
+    const playerPosition = gameSession.getShipSpacePosition();
+    const playerSector = getGalaxySectorAtPosition(playerPosition.x, playerPosition.y);
+    const missionId = gameSession.getTrackedMissionId();
+    const mission = missionId ? getMissionContract(missionId) : null;
+    const missionPlanet = getMissionPlanetForMission(missionId);
+    const travel = gameSession.getShipTravelState();
+
+    this.routeText.setText([
+      `Ship: X ${playerPosition.x}  Y ${playerPosition.y}`,
+      `Sector: ${playerSector.label}`,
+      `Travel state: ${travel.status}`,
+    ].join("\n"));
+
+    this.detailText.setText(missionPlanet
+      ? [
+          `Current route: ${mission?.title ?? missionPlanet.missionId}`,
+          `Mission planet: ${missionPlanet.name}`,
+          `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
+          `Planet sector: ${getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).label}`,
+        ].join("\n")
+      : "No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.");
+
+    this.hoverText.setText(this.hoverWorldPoint
+      ? (() => {
+          const hoverSector = getGalaxySectorAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y);
+          return [
+            `Hover: X ${this.hoverWorldPoint.x}  Y ${this.hoverWorldPoint.y}`,
+            `Hover sector: ${hoverSector.label}`,
+          ].join("\n");
+        })()
+      : "Hover over the map to inspect live galaxy coordinates.");
+
+    this.footerText.setText("This is the same coordinate space used by the playable space map. Normal flight stays local; the datapad shows the full structure.");
+
+    this.markerMap.clear();
+    const playerMarker = this.worldToMap(playerPosition);
+    this.markerMap.lineStyle(2, 0xcff5ff, 0.98);
+    this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 8);
+    this.markerMap.lineBetween(playerMarker.x - 12, playerMarker.y, playerMarker.x + 12, playerMarker.y);
+    this.markerMap.lineBetween(playerMarker.x, playerMarker.y - 12, playerMarker.x, playerMarker.y + 12);
+    this.playerLabel.setPosition(playerMarker.x + 16, playerMarker.y - 18).setVisible(true);
+    this.playerLabel.setText(`SHIP ${playerPosition.x}, ${playerPosition.y}`);
+
+    if (missionPlanet) {
+      const missionMarker = this.worldToMap(missionPlanet);
+      this.markerMap.fillStyle(missionPlanet.color, 0.9);
+      this.markerMap.fillCircle(missionMarker.x, missionMarker.y, 6);
+      this.markerMap.lineStyle(2, 0xffefc6, 0.96);
+      this.markerMap.strokeCircle(missionMarker.x, missionMarker.y, 12);
+      this.markerMap.strokeCircle(missionMarker.x, missionMarker.y, 18);
+      this.missionLabel
+        .setPosition(missionMarker.x + 16, missionMarker.y + 10)
+        .setText(`${missionPlanet.name}`)
+        .setVisible(true);
+    } else {
+      this.missionLabel.setVisible(false);
+    }
+
+    if (this.hoverWorldPoint) {
+      const hoverMarker = this.worldToMap(this.hoverWorldPoint);
+      this.markerMap.lineStyle(2, 0xdde9ff, 0.96);
+      this.markerMap.strokeCircle(hoverMarker.x, hoverMarker.y, 10);
+      this.hoverLabel
+        .setPosition(hoverMarker.x + 16, hoverMarker.y - 4)
+        .setText(`${this.hoverWorldPoint.x}, ${this.hoverWorldPoint.y}`)
+        .setVisible(true);
+    } else {
+      this.hoverLabel.setVisible(false);
+    }
+  }
+
+  private handlePointerMove(pointer: Phaser.Input.Pointer): void {
+    const worldPoint = this.mapToWorld(pointer.x, pointer.y);
+    this.hoverWorldPoint = worldPoint;
+    this.syncReadout();
+  }
+
+  private clearHover(): void {
+    this.hoverWorldPoint = null;
+    this.hoverLabel.setVisible(false);
+    if (this.root.visible) {
+      this.syncReadout();
+    }
+  }
+
+  private worldToMap(point: { x: number; y: number }): { x: number; y: number } {
+    return {
+      x: MAP_RECT.x + (point.x / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width,
+      y: MAP_RECT.y + (point.y / GALAXY_WORLD_CONFIG.height) * MAP_RECT.height,
+    };
+  }
+
+  private mapToWorld(x: number, y: number): { x: number; y: number } {
+    const clampedX = Phaser.Math.Clamp(x, MAP_RECT.x, MAP_RECT.right);
+    const clampedY = Phaser.Math.Clamp(y, MAP_RECT.y, MAP_RECT.bottom);
+    return {
+      x: Math.round(((clampedX - MAP_RECT.x) / MAP_RECT.width) * GALAXY_WORLD_CONFIG.width),
+      y: Math.round(((clampedY - MAP_RECT.y) / MAP_RECT.height) * GALAXY_WORLD_CONFIG.height),
+    };
+  }
+}
