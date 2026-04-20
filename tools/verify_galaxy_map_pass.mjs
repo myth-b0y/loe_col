@@ -124,17 +124,21 @@ try {
   const sectorDetailState = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
     const overlay = hub?.galaxyMapOverlay;
+    const visibleLabels = overlay?.sectorLabels?.filter?.((label) => label.visible).map?.((label) => label.text) ?? [];
     return {
       subtitle: overlay?.subtitle?.text ?? "",
       infoTitle: overlay?.infoTitle?.text ?? "",
       detailText: overlay?.detailText?.text ?? "",
       backVisible: overlay?.sectorBackButton?.container?.visible ?? false,
       selectedSectorId: overlay?.selectedSectorId ?? null,
+      visibleLabels,
     };
   });
 
   assert(sectorDetailState.selectedSectorId, "Clicking a sector did not enter sector detail mode");
   assert(sectorDetailState.backVisible, "Sector detail mode did not show a return-to-galaxy control");
+  assert(sectorDetailState.visibleLabels.length === 1,
+    `Sector detail view should only expose the selected sector label: ${JSON.stringify(sectorDetailState.visibleLabels)}`);
   assert(sectorDetailState.subtitle.includes("Sector Detail"),
     `Sector detail subtitle did not update: ${sectorDetailState.subtitle}`);
   assert(sectorDetailState.infoTitle.includes("Readout"),

@@ -29,7 +29,7 @@ const PANEL_DEPTH = 60;
 const WINDOW = new Phaser.Geom.Rectangle(96, 54, 1088, 612);
 const MAP_RECT = new Phaser.Geom.Rectangle(WINDOW.x + 20, WINDOW.y + 122, 690, 430);
 const INFO_RECT = new Phaser.Geom.Rectangle(WINDOW.right - 334, WINDOW.y + 122, 314, 430);
-const SECTOR_VIEW_PADDING = 2200;
+const SECTOR_VIEW_PADDING = 900;
 const TAB_LAYOUT = [
   { tab: "inventory", label: "Inventory", x: 428 },
   { tab: "skills", label: "Skills", x: 562 },
@@ -378,6 +378,9 @@ export class GalaxyMapOverlay {
     this.staticMap.clear();
     this.markerMap.clear();
     const viewBounds = this.getMapViewBounds();
+    const selectedSector = this.selectedSectorId
+      ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
+      : null;
 
     this.staticMap.fillStyle(0x050913, 1);
     this.staticMap.fillRect(MAP_RECT.x + 4, MAP_RECT.y + 4, MAP_RECT.width - 8, MAP_RECT.height - 8);
@@ -391,6 +394,9 @@ export class GalaxyMapOverlay {
     }
 
     GALAXY_HAZE_NODES.forEach((node) => {
+      if (selectedSector && !this.isPointInsideSector(node, selectedSector)) {
+        return;
+      }
       if (!this.isWorldPointVisible(node, viewBounds, node.radius)) {
         return;
       }
@@ -399,17 +405,24 @@ export class GalaxyMapOverlay {
       this.staticMap.fillCircle(point.x, point.y, this.scaleWorldLengthToMap(node.radius, viewBounds));
     });
 
-    GALAXY_SECTORS.forEach((sector) => {
-      this.drawSector(sector);
-    });
+    if (selectedSector) {
+      this.drawSector(selectedSector);
+    } else {
+      GALAXY_SECTORS.forEach((sector) => {
+        this.drawSector(sector);
+      });
 
-    const core = this.worldToMap(GALAXY_WORLD_CONFIG.center);
-    this.staticMap.fillStyle(0x214c71, 0.22);
-    this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 1.22, viewBounds));
-    this.staticMap.fillStyle(0xe5f4ff, 0.18);
-    this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 0.48, viewBounds));
+      const core = this.worldToMap(GALAXY_WORLD_CONFIG.center);
+      this.staticMap.fillStyle(0x214c71, 0.22);
+      this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 1.22, viewBounds));
+      this.staticMap.fillStyle(0xe5f4ff, 0.18);
+      this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 0.48, viewBounds));
+    }
 
     GALAXY_STARS.forEach((star) => {
+      if (selectedSector && !this.isPointInsideSector(star, selectedSector)) {
+        return;
+      }
       if (!this.isWorldPointVisible(star, viewBounds, star.size * 10)) {
         return;
       }
