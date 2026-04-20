@@ -5,6 +5,7 @@ import {
   GALAXY_SECTORS,
   GALAXY_STARS,
   GALAXY_WORLD_CONFIG,
+  getGalaxyRadialDistance,
   getGalaxySectorAtPosition,
   getGalaxySectorLabelPoint,
   getGalaxySectorPolygonPoints,
@@ -28,6 +29,7 @@ const PANEL_DEPTH = 60;
 const WINDOW = new Phaser.Geom.Rectangle(96, 54, 1088, 612);
 const MAP_RECT = new Phaser.Geom.Rectangle(WINDOW.x + 20, WINDOW.y + 122, 690, 430);
 const INFO_RECT = new Phaser.Geom.Rectangle(WINDOW.right - 334, WINDOW.y + 122, 314, 430);
+const SECTOR_VIEW_PADDING = 2200;
 const TAB_LAYOUT = [
   { tab: "inventory", label: "Inventory", x: 428 },
   { tab: "skills", label: "Skills", x: 562 },
@@ -61,9 +63,11 @@ export class GalaxyMapOverlay {
   private readonly hoverLabel: Phaser.GameObjects.Text;
   private readonly sectorLabels: Phaser.GameObjects.Text[] = [];
   private readonly closeButton: MenuButton;
+  private readonly sectorBackButton: MenuButton;
   private readonly settingsButton: MenuButton;
   private readonly tabButtons: Partial<Record<MapTab, MenuButton>> = {};
   private hoverWorldPoint: { x: number; y: number } | null = null;
+  private selectedSectorId: string | null = null;
 
   constructor({ scene, onClose, onOpenSettings, onRequestTab }: GalaxyMapOverlayOptions) {
     this.onClose = onClose;
@@ -139,6 +143,18 @@ export class GalaxyMapOverlay {
       onClick: () => this.hide(),
       depth: PANEL_DEPTH + 2,
       accentColor: 0x283d59,
+    });
+
+    this.sectorBackButton = createMenuButton({
+      scene,
+      x: MAP_RECT.right - 76,
+      y: MAP_RECT.y - 28,
+      width: 132,
+      height: 34,
+      label: "Full Galaxy",
+      onClick: () => this.returnToGalaxyView(),
+      depth: PANEL_DEPTH + 2,
+      accentColor: 0x214467,
     });
 
     const mapPanel = scene.add.rectangle(MAP_RECT.centerX, MAP_RECT.centerY, MAP_RECT.width, MAP_RECT.height, 0x07111d, 0.98)
@@ -263,7 +279,7 @@ export class GalaxyMapOverlay {
       .setScrollFactor(0)
       .setInteractive({ useHandCursor: true });
     this.mapInputZone.on("pointermove", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
-    this.mapInputZone.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
+    this.mapInputZone.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handlePointerDown(pointer));
     this.mapInputZone.on("pointerout", () => this.clearHover());
 
     this.root = scene.add.container(0, 0, [
@@ -274,6 +290,7 @@ export class GalaxyMapOverlay {
       mapPanel,
       infoPanel,
       mapHeader,
+      this.sectorBackButton.container,
       this.title,
       this.subtitle,
       this.infoTitle,
@@ -310,6 +327,7 @@ export class GalaxyMapOverlay {
   }
 
   show(): void {
+    this.selectedSectorId = null;
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.refresh();
@@ -352,12 +370,14 @@ export class GalaxyMapOverlay {
     this.mapInputZone.input && (this.mapInputZone.input.enabled = enabled);
     this.settingsButton.setInputEnabled(enabled);
     this.closeButton.setInputEnabled(enabled);
+    this.sectorBackButton.setInputEnabled(enabled && this.selectedSectorId !== null);
     Object.values(this.tabButtons).forEach((button) => button?.setInputEnabled(enabled));
   }
 
   private drawMap(): void {
     this.staticMap.clear();
     this.markerMap.clear();
+    const viewBounds = this.getMapViewBounds();
 
     this.staticMap.fillStyle(0x050913, 1);
     this.staticMap.fillRect(MAP_RECT.x + 4, MAP_RECT.y + 4, MAP_RECT.width - 8, MAP_RECT.height - 8);
@@ -371,9 +391,12 @@ export class GalaxyMapOverlay {
     }
 
     GALAXY_HAZE_NODES.forEach((node) => {
+      if (!this.isWorldPointVisible(node, viewBounds, node.radius)) {
+        return;
+      }
       const point = this.worldToMap(node);
       this.staticMap.fillStyle(node.color, node.alpha * 1.9);
-      this.staticMap.fillCircle(point.x, point.y, (node.radius / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width);
+      this.staticMap.fillCircle(point.x, point.y, this.scaleWorldLengthToMap(node.radius, viewBounds));
     });
 
     GALAXY_SECTORS.forEach((sector) => {
@@ -382,11 +405,14 @@ export class GalaxyMapOverlay {
 
     const core = this.worldToMap(GALAXY_WORLD_CONFIG.center);
     this.staticMap.fillStyle(0x214c71, 0.22);
-    this.staticMap.fillCircle(core.x, core.y, (GALAXY_WORLD_CONFIG.coreRadius / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width * 1.22);
+    this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 1.22, viewBounds));
     this.staticMap.fillStyle(0xe5f4ff, 0.18);
-    this.staticMap.fillCircle(core.x, core.y, (GALAXY_WORLD_CONFIG.coreRadius / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width * 0.48);
+    this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 0.48, viewBounds));
 
     GALAXY_STARS.forEach((star) => {
+      if (!this.isWorldPointVisible(star, viewBounds, star.size * 10)) {
+        return;
+      }
       const point = this.worldToMap(star);
       this.staticMap.fillStyle(star.color, star.alpha);
       this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
@@ -402,19 +428,29 @@ export class GalaxyMapOverlay {
     }
 
     const shape = new Phaser.Geom.Polygon(mapped);
-    this.staticMap.fillStyle(sector.color, 0.16);
+    const isSelectedSector = sector.id === this.selectedSectorId;
+    this.staticMap.fillStyle(sector.color, isSelectedSector ? 0.28 : 0.16);
     this.staticMap.fillPoints(shape.points, true);
-    this.staticMap.lineStyle(2, sector.borderColor, 0.54);
+    this.staticMap.lineStyle(isSelectedSector ? 3 : 2, sector.borderColor, isSelectedSector ? 0.94 : 0.54);
     this.staticMap.strokePoints(shape.points, true);
   }
 
   private syncReadout(): void {
     const playerPosition = gameSession.getShipSpacePosition();
     const playerSector = getGalaxySectorAtPosition(playerPosition.x, playerPosition.y);
+    const selectedSector = this.selectedSectorId
+      ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
+      : null;
+    const viewBounds = this.getMapViewBounds();
     const missionId = gameSession.getTrackedMissionId();
     const mission = missionId ? getMissionContract(missionId) : null;
     const missionPlanet = getMissionPlanetForMission(missionId);
     const travel = gameSession.getShipTravelState();
+
+    this.subtitle.setText(selectedSector ? `${selectedSector.label} Sector Detail` : "Galaxy Map");
+    this.infoTitle.setText(selectedSector ? `${selectedSector.label} Readout` : "Current Readout");
+    this.sectorBackButton.container.setVisible(selectedSector !== null);
+    this.sectorBackButton.setInputEnabled(this.root.visible && selectedSector !== null);
 
     this.routeText.setText([
       `Ship: X ${playerPosition.x}  Y ${playerPosition.y}`,
@@ -422,14 +458,23 @@ export class GalaxyMapOverlay {
       `Travel state: ${travel.status}`,
     ].join("\n"));
 
-    this.detailText.setText(missionPlanet
+    this.detailText.setText(selectedSector
       ? [
-          `Current route: ${mission?.title ?? missionPlanet.missionId}`,
-          `Mission planet: ${missionPlanet.name}`,
-          `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
-          `Planet sector: ${getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).label}`,
+          `${selectedSector.label} uses the same galaxy coordinates as live space.`,
+          `Sector span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
+          missionPlanet && getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).id === selectedSector.id
+            ? `Mission planet in sector: ${missionPlanet.name}`
+            : "Mission planet is outside this sector detail view.",
+          "Future sector content can anchor here without changing the shared map data.",
         ].join("\n")
-      : "No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.");
+      : missionPlanet
+        ? [
+            `Current route: ${mission?.title ?? missionPlanet.missionId}`,
+            `Mission planet: ${missionPlanet.name}`,
+            `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
+            `Planet sector: ${getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).label}`,
+          ].join("\n")
+        : "No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.");
 
     this.hoverText.setText(this.hoverWorldPoint
       ? (() => {
@@ -441,22 +486,28 @@ export class GalaxyMapOverlay {
         })()
       : "Hover over the map to inspect live galaxy coordinates.");
 
-    this.footerText.setText("This is the same coordinate space used by the playable space map. Normal flight stays local; the datapad shows the full structure.");
+    this.footerText.setText(selectedSector
+      ? "Sector detail is a zoomed view of the same playable galaxy. Use Full Galaxy to return to the overview."
+      : "This is the same coordinate space used by the playable space map. Normal flight stays local; the datapad shows the full structure.");
 
     this.markerMap.clear();
-    const playerMarker = this.worldToMap(playerPosition);
-    this.markerMap.fillStyle(0x8fe3ff, 1);
-    this.markerMap.fillCircle(playerMarker.x, playerMarker.y, 5);
-    this.markerMap.lineStyle(3, 0xf3fbff, 0.98);
-    this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 11);
-    this.markerMap.lineStyle(2, 0x8fe3ff, 0.96);
-    this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 17);
-    this.markerMap.lineBetween(playerMarker.x - 14, playerMarker.y, playerMarker.x + 14, playerMarker.y);
-    this.markerMap.lineBetween(playerMarker.x, playerMarker.y - 14, playerMarker.x, playerMarker.y + 14);
-    this.playerLabel.setPosition(playerMarker.x + 18, playerMarker.y - 24).setVisible(true);
-    this.playerLabel.setText("YOU");
+    if (this.isWorldPointVisible(playerPosition, viewBounds)) {
+      const playerMarker = this.worldToMap(playerPosition);
+      this.markerMap.fillStyle(0x8fe3ff, 1);
+      this.markerMap.fillCircle(playerMarker.x, playerMarker.y, 5);
+      this.markerMap.lineStyle(3, 0xf3fbff, 0.98);
+      this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 11);
+      this.markerMap.lineStyle(2, 0x8fe3ff, 0.96);
+      this.markerMap.strokeCircle(playerMarker.x, playerMarker.y, 17);
+      this.markerMap.lineBetween(playerMarker.x - 14, playerMarker.y, playerMarker.x + 14, playerMarker.y);
+      this.markerMap.lineBetween(playerMarker.x, playerMarker.y - 14, playerMarker.x, playerMarker.y + 14);
+      this.playerLabel.setPosition(playerMarker.x + 18, playerMarker.y - 24).setVisible(true);
+      this.playerLabel.setText("YOU");
+    } else {
+      this.playerLabel.setVisible(false);
+    }
 
-    if (missionPlanet) {
+    if (missionPlanet && this.isWorldPointVisible(missionPlanet, viewBounds, missionPlanet.radius)) {
       const missionMarker = this.worldToMap(missionPlanet);
       this.markerMap.fillStyle(missionPlanet.color, 0.9);
       this.markerMap.fillCircle(missionMarker.x, missionMarker.y, 6);
@@ -471,7 +522,7 @@ export class GalaxyMapOverlay {
       this.missionLabel.setVisible(false);
     }
 
-    if (this.hoverWorldPoint) {
+    if (this.hoverWorldPoint && this.isWorldPointVisible(this.hoverWorldPoint, viewBounds)) {
       const hoverMarker = this.worldToMap(this.hoverWorldPoint);
       this.markerMap.lineStyle(2, 0xdde9ff, 0.96);
       this.markerMap.strokeCircle(hoverMarker.x, hoverMarker.y, 10);
@@ -483,16 +534,39 @@ export class GalaxyMapOverlay {
       this.hoverLabel.setVisible(false);
     }
 
+    GALAXY_SECTORS.forEach((sector, index) => {
+      const label = this.sectorLabels[index];
+      const labelPoint = this.worldToMap(getGalaxySectorLabelPoint(sector));
+      const isVisible = (!selectedSector || selectedSector.id === sector.id)
+        && this.isWorldPointVisible(getGalaxySectorLabelPoint(sector), viewBounds);
+      label
+        .setText(selectedSector && selectedSector.id === sector.id ? sector.label : sector.label.replace(" ", "\n"))
+        .setPosition(labelPoint.x, labelPoint.y)
+        .setVisible(isVisible);
+    });
+
     this.root.bringToTop(this.markerMap);
     this.root.bringToTop(this.missionLabel);
     this.root.bringToTop(this.playerLabel);
     this.root.bringToTop(this.hoverLabel);
+    this.root.bringToTop(this.sectorBackButton.container);
     this.root.bringToTop(this.mapInputZone);
   }
 
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
     const worldPoint = this.mapToWorld(pointer.x, pointer.y);
     this.hoverWorldPoint = worldPoint;
+    this.syncReadout();
+  }
+
+  private handlePointerDown(pointer: Phaser.Input.Pointer): void {
+    const worldPoint = this.mapToWorld(pointer.x, pointer.y);
+    this.hoverWorldPoint = worldPoint;
+    const clickedSector = this.getSectorAtWorldPoint(worldPoint);
+    if (clickedSector && clickedSector.id !== this.selectedSectorId) {
+      this.selectedSectorId = clickedSector.id;
+      this.drawMap();
+    }
     this.syncReadout();
   }
 
@@ -504,19 +578,92 @@ export class GalaxyMapOverlay {
     }
   }
 
+  private returnToGalaxyView(): void {
+    if (!this.selectedSectorId) {
+      return;
+    }
+
+    this.selectedSectorId = null;
+    this.drawMap();
+    this.syncReadout();
+  }
+
+  private getMapViewBounds(): Phaser.Geom.Rectangle {
+    if (!this.selectedSectorId) {
+      return new Phaser.Geom.Rectangle(0, 0, GALAXY_WORLD_CONFIG.width, GALAXY_WORLD_CONFIG.height);
+    }
+
+    const sector = GALAXY_SECTORS.find((entry) => entry.id === this.selectedSectorId);
+    if (!sector) {
+      return new Phaser.Geom.Rectangle(0, 0, GALAXY_WORLD_CONFIG.width, GALAXY_WORLD_CONFIG.height);
+    }
+
+    const polygon = getGalaxySectorPolygonPoints(sector);
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    for (let index = 0; index < polygon.length; index += 2) {
+      minX = Math.min(minX, polygon[index]);
+      maxX = Math.max(maxX, polygon[index]);
+      minY = Math.min(minY, polygon[index + 1]);
+      maxY = Math.max(maxY, polygon[index + 1]);
+    }
+
+    const paddedMinX = Phaser.Math.Clamp(minX - SECTOR_VIEW_PADDING, 0, GALAXY_WORLD_CONFIG.width);
+    const paddedMaxX = Phaser.Math.Clamp(maxX + SECTOR_VIEW_PADDING, 0, GALAXY_WORLD_CONFIG.width);
+    const paddedMinY = Phaser.Math.Clamp(minY - SECTOR_VIEW_PADDING, 0, GALAXY_WORLD_CONFIG.height);
+    const paddedMaxY = Phaser.Math.Clamp(maxY + SECTOR_VIEW_PADDING, 0, GALAXY_WORLD_CONFIG.height);
+
+    return new Phaser.Geom.Rectangle(
+      paddedMinX,
+      paddedMinY,
+      Math.max(1, paddedMaxX - paddedMinX),
+      Math.max(1, paddedMaxY - paddedMinY),
+    );
+  }
+
+  private scaleWorldLengthToMap(length: number, viewBounds: Phaser.Geom.Rectangle): number {
+    return (length / viewBounds.width) * MAP_RECT.width;
+  }
+
+  private isWorldPointVisible(
+    point: { x: number; y: number },
+    viewBounds: Phaser.Geom.Rectangle,
+    padding = 0,
+  ): boolean {
+    return point.x >= (viewBounds.x - padding)
+      && point.x <= (viewBounds.right + padding)
+      && point.y >= (viewBounds.y - padding)
+      && point.y <= (viewBounds.bottom + padding);
+  }
+
+  private getSectorAtWorldPoint(point: { x: number; y: number }): GalaxySectorConfig | null {
+    const sector = getGalaxySectorAtPosition(point.x, point.y);
+    return this.isPointInsideSector(point, sector) ? sector : null;
+  }
+
+  private isPointInsideSector(point: { x: number; y: number }, sector: GalaxySectorConfig): boolean {
+    const radialDistance = getGalaxyRadialDistance(point.x, point.y);
+    return radialDistance >= sector.innerRadius && radialDistance <= sector.outerRadius;
+  }
+
   private worldToMap(point: { x: number; y: number }): { x: number; y: number } {
+    const viewBounds = this.getMapViewBounds();
     return {
-      x: MAP_RECT.x + (point.x / GALAXY_WORLD_CONFIG.width) * MAP_RECT.width,
-      y: MAP_RECT.y + (point.y / GALAXY_WORLD_CONFIG.height) * MAP_RECT.height,
+      x: MAP_RECT.x + ((point.x - viewBounds.x) / viewBounds.width) * MAP_RECT.width,
+      y: MAP_RECT.y + ((point.y - viewBounds.y) / viewBounds.height) * MAP_RECT.height,
     };
   }
 
   private mapToWorld(x: number, y: number): { x: number; y: number } {
+    const viewBounds = this.getMapViewBounds();
     const clampedX = Phaser.Math.Clamp(x, MAP_RECT.x, MAP_RECT.right);
     const clampedY = Phaser.Math.Clamp(y, MAP_RECT.y, MAP_RECT.bottom);
     return {
-      x: Math.round(((clampedX - MAP_RECT.x) / MAP_RECT.width) * GALAXY_WORLD_CONFIG.width),
-      y: Math.round(((clampedY - MAP_RECT.y) / MAP_RECT.height) * GALAXY_WORLD_CONFIG.height),
+      x: Math.round(viewBounds.x + (((clampedX - MAP_RECT.x) / MAP_RECT.width) * viewBounds.width)),
+      y: Math.round(viewBounds.y + (((clampedY - MAP_RECT.y) / MAP_RECT.height) * viewBounds.height)),
     };
   }
 }

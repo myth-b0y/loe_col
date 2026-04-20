@@ -102,6 +102,71 @@ try {
     `Hub map route text is missing shared ship coordinates: ${hubMapState.routeText}`);
   assert(hubMapState.detailText.includes("Pyre Verge"), `Hub map detail text is missing the mission planet: ${hubMapState.detailText}`);
 
+  const sectorClickTarget = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    const overlay = hub?.galaxyMapOverlay;
+    const firstVisibleLabel = overlay?.sectorLabels?.find?.((label) => label.visible);
+    return firstVisibleLabel
+      ? {
+          x: firstVisibleLabel.x,
+          y: firstVisibleLabel.y,
+          label: firstVisibleLabel.text,
+        }
+      : null;
+  });
+
+  assert(sectorClickTarget, "Could not find a visible sector label to click for sector detail view");
+
+  await page.mouse.click(sectorClickTarget.x, sectorClickTarget.y);
+  await page.waitForTimeout(220);
+  await capture(page, "hub-map-sector-detail.png");
+
+  const sectorDetailState = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    const overlay = hub?.galaxyMapOverlay;
+    return {
+      subtitle: overlay?.subtitle?.text ?? "",
+      infoTitle: overlay?.infoTitle?.text ?? "",
+      detailText: overlay?.detailText?.text ?? "",
+      backVisible: overlay?.sectorBackButton?.container?.visible ?? false,
+      selectedSectorId: overlay?.selectedSectorId ?? null,
+    };
+  });
+
+  assert(sectorDetailState.selectedSectorId, "Clicking a sector did not enter sector detail mode");
+  assert(sectorDetailState.backVisible, "Sector detail mode did not show a return-to-galaxy control");
+  assert(sectorDetailState.subtitle.includes("Sector Detail"),
+    `Sector detail subtitle did not update: ${sectorDetailState.subtitle}`);
+  assert(sectorDetailState.infoTitle.includes("Readout"),
+    `Sector detail info title did not update: ${sectorDetailState.infoTitle}`);
+
+  const backButtonTarget = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    const overlay = hub?.galaxyMapOverlay;
+    const container = overlay?.sectorBackButton?.container;
+    return container ? { x: container.x, y: container.y } : null;
+  });
+
+  assert(backButtonTarget, "Could not find the Full Galaxy button position");
+
+  await page.mouse.click(backButtonTarget.x, backButtonTarget.y);
+  await page.waitForTimeout(220);
+
+  const galaxyReturnState = await page.evaluate(() => {
+    const hub = window.__loeGame?.scene.keys.hub;
+    const overlay = hub?.galaxyMapOverlay;
+    return {
+      subtitle: overlay?.subtitle?.text ?? "",
+      backVisible: overlay?.sectorBackButton?.container?.visible ?? false,
+      selectedSectorId: overlay?.selectedSectorId ?? null,
+    };
+  });
+
+  assert(galaxyReturnState.selectedSectorId === null, "Full Galaxy did not restore the default galaxy overview");
+  assert(galaxyReturnState.backVisible === false, "Full Galaxy button stayed visible after returning to overview");
+  assert(galaxyReturnState.subtitle === "Galaxy Map",
+    `Galaxy overview subtitle did not restore after returning: ${galaxyReturnState.subtitle}`);
+
   await page.mouse.move(MAP_HOVER_X, MAP_HOVER_Y);
   await page.waitForTimeout(120);
   const hoverState = await page.evaluate(() => {
@@ -199,6 +264,9 @@ try {
   const result = {
     verifiedScenes: ["hub", "space", "hub"],
     initialHubMap: hubMapState,
+    sectorClickTarget,
+    sectorDetailState,
+    galaxyReturnState,
     hoverState,
     spaceStart,
     movedSpace,
