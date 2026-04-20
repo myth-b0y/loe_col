@@ -16,12 +16,18 @@ import {
 import { getMissionContract } from "../content/missions";
 import {
   SPACE_FACTIONS,
+  SHIP_HYPERDRIVE_CONFIG,
   SPACE_WORLD_CONFIG,
+  createShipHyperdriveSystemState,
   createSpaceWorldDefinition,
   createSpacePatrolTarget,
+  getShipHyperdriveTopSpeed,
   getSpaceCellKeyAtPosition,
   getSpaceCellKeysAroundPosition,
   isFactionHostileByDefault,
+  isShipHyperdriveCombatLocked,
+  isShipHyperdriveTurningLocked,
+  type ShipHyperdriveSystemState,
   type SpaceFactionId,
   type SpaceFieldObjectKind,
   type SpaceWorldCellKey,
@@ -145,12 +151,22 @@ type SpacePlayerTarget =
   | { kind: "ship"; ship: SpaceFactionShip }
   | { kind: "field"; fieldObject: SpaceFieldObject };
 
+type SpaceHyperdriveDropTarget = {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  safetyRadius: number;
+  autoDropRadius: number;
+};
+
 const PLAYER_RADIUS = 22;
 const PLAYER_MAX_HULL = 8;
 const PLAYER_ACCELERATION = 720;
 const PLAYER_COAST_DRAG = 2.1;
 const PLAYER_THRUST_DRAG = 0.85;
 const PLAYER_MAX_SPEED = 420;
+const PLAYER_HYPERDRIVE_MAX_SPEED = getShipHyperdriveTopSpeed(PLAYER_MAX_SPEED, SHIP_HYPERDRIVE_CONFIG);
 const PLAYER_BULLET_SPEED = 880;
 const PLAYER_FIRE_COOLDOWN = 0.14;
 const PLAYER_PROJECTILE_LIFETIME = 1.25;
@@ -301,6 +317,8 @@ export class SpaceScene extends Phaser.Scene {
   private destroyedFactionShips = 0;
   private playerHull = PLAYER_MAX_HULL;
   private playerFlash = 0;
+  private hyperdrive: ShipHyperdriveSystemState = createShipHyperdriveSystemState();
+  private hyperdriveCountdownValue = 0;
   private fireCooldown = 0;
   private fireHeld = false;
   private hudRefreshTimerMs = 0;
@@ -311,6 +329,10 @@ export class SpaceScene extends Phaser.Scene {
   private touchMode = false;
   private movePointerId: number | null = null;
   private attackPointerId: number | null = null;
+  private hyperdrivePointerId: number | null = null;
+  private hyperdriveTouchHeld = false;
+  private hyperdriveTouchTapQueued = false;
+  private hyperdriveKeyWasDown = false;
   private selectedTarget: SpacePlayerTarget | null = null;
   private autoAimTarget: SpacePlayerTarget | null = null;
   private moveBase?: Phaser.GameObjects.Arc;
@@ -339,7 +361,7 @@ export class SpaceScene extends Phaser.Scene {
     down: Phaser.Input.Keyboard.Key;
     left: Phaser.Input.Keyboard.Key;
     right: Phaser.Input.Keyboard.Key;
-    fire: Phaser.Input.Keyboard.Key;
+    hyperdrive: Phaser.Input.Keyboard.Key;
     returnToShip: Phaser.Input.Keyboard.Key;
   };
 
@@ -379,6 +401,8 @@ export class SpaceScene extends Phaser.Scene {
     this.missionPlanetView = undefined;
     this.playerHull = PLAYER_MAX_HULL;
     this.playerFlash = 0;
+    this.hyperdrive = createShipHyperdriveSystemState();
+    this.hyperdriveCountdownValue = 0;
     this.fireCooldown = 0;
     this.fireHeld = false;
     this.hudRefreshTimerMs = 0;
@@ -392,6 +416,10 @@ export class SpaceScene extends Phaser.Scene {
     this.autoAimTarget = null;
     this.movePointerId = null;
     this.attackPointerId = null;
+    this.hyperdrivePointerId = null;
+    this.hyperdriveTouchHeld = false;
+    this.hyperdriveTouchTapQueued = false;
+    this.hyperdriveKeyWasDown = false;
     this.touchUiObjects = [];
     this.desktopUiObjects = [];
     this.thrusting = false;
@@ -463,6 +491,7 @@ export class SpaceScene extends Phaser.Scene {
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     this.playerFlash = Math.max(0, this.playerFlash - (dt * 4));
     this.updateAimDirection();
+    this.updateHyperdriveState(dt, delta);
     this.updatePlayerShip(dt);
     this.syncBackdropVisuals();
     this.syncActiveWorld();
@@ -1088,7 +1117,7 @@ export class SpaceScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB / Space fire  |  T target  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
+    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  Space hyperdrive  |  T target  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
       fontFamily: "Arial",
       fontSize: "15px",
       color: "#dcecff",
@@ -1195,11 +1224,12 @@ export class SpaceScene extends Phaser.Scene {
       y: 572,
       width: 134,
       height: 62,
-      label: "Aux 1",
-      onClick: () => undefined,
+      label: "Hyper",
+      onClick: () => this.queueTouchHyperdriveTap(),
+      onPress: (pointer) => this.beginTouchHyperdrive(pointer),
+      onRelease: (pointer) => this.endTouchHyperdrive(pointer),
       depth: 55,
-      accentColor: 0x2a394c,
-      disabled: true,
+      accentColor: 0x32536f,
     });
     this.abilityOneButton.container.setScrollFactor(0);
 
@@ -1263,7 +1293,7 @@ export class SpaceScene extends Phaser.Scene {
       down: Phaser.Input.Keyboard.KeyCodes.S,
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
-      fire: Phaser.Input.Keyboard.KeyCodes.SPACE,
+      hyperdrive: Phaser.Input.Keyboard.KeyCodes.SPACE,
       returnToShip: Phaser.Input.Keyboard.KeyCodes.X,
     }) as SpaceScene["inputKeys"];
 
@@ -1357,6 +1387,9 @@ export class SpaceScene extends Phaser.Scene {
         if (pointer.id === this.attackPointerId) {
           this.endTouchAttack(pointer);
         }
+        if (pointer.id === this.hyperdrivePointerId) {
+          this.endTouchHyperdrive(pointer);
+        }
         return;
       }
 
@@ -1372,7 +1405,29 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updateAimDirection(): void {
+    if (isShipHyperdriveTurningLocked(this.hyperdrive.state)) {
+      const lockedDirection = this.getLockedHyperdriveDirection();
+      if (lockedDirection.lengthSq() <= 0.001) {
+        return;
+      }
+
+      this.aimDirection.copy(lockedDirection);
+      this.shipRoot.rotation = Math.atan2(this.aimDirection.y, this.aimDirection.x) + Math.PI * 0.5;
+      return;
+    }
+
     const baseDirection = this.getBaseAimDirection();
+    if (isShipHyperdriveCombatLocked(this.hyperdrive.state)) {
+      this.autoAimTarget = null;
+      if (baseDirection.lengthSq() <= 0.001) {
+        return;
+      }
+
+      this.aimDirection.copy(baseDirection.normalize());
+      this.shipRoot.rotation = Math.atan2(this.aimDirection.y, this.aimDirection.x) + Math.PI * 0.5;
+      return;
+    }
+
     this.refreshAutoAimTarget(baseDirection);
     const combatDirection = this.getCombatAimDirection(baseDirection);
     if (combatDirection.lengthSq() <= 0.001) {
@@ -1381,6 +1436,215 @@ export class SpaceScene extends Phaser.Scene {
 
     this.aimDirection.copy(combatDirection.normalize());
     this.shipRoot.rotation = Math.atan2(this.aimDirection.y, this.aimDirection.x) + Math.PI * 0.5;
+  }
+
+  private updateHyperdriveState(_dt: number, deltaMs: number): void {
+    if (this.hyperdrive.cooldownRemainingMs > 0) {
+      this.hyperdrive.cooldownRemainingMs = Math.max(0, this.hyperdrive.cooldownRemainingMs - deltaMs);
+      if (this.hyperdrive.cooldownRemainingMs <= 0 && this.hyperdrive.state === "cooldown") {
+        this.hyperdrive.state = "normal";
+        this.hyperdrive.lastDisengageReason = null;
+      }
+    }
+
+    if (this.hyperdrive.exitBlendRemainingMs > 0) {
+      this.hyperdrive.exitBlendRemainingMs = Math.max(0, this.hyperdrive.exitBlendRemainingMs - deltaMs);
+    }
+
+    const chargeHeld = this.isHyperdriveChargeHeld();
+    const manualDropRequested = this.consumeHyperdriveDropRequest();
+
+    if (this.hyperdrive.state === "active") {
+      if (manualDropRequested) {
+        this.disengageHyperdrive("Manual drop complete.");
+        return;
+      }
+
+      const interruptReason = this.getHyperdriveInterruptReason();
+      if (interruptReason) {
+        this.disengageHyperdrive(interruptReason);
+      }
+      return;
+    }
+
+    if (this.hyperdrive.state === "charging") {
+      if (!chargeHeld) {
+        this.cancelHyperdriveCharge("Charge aborted.");
+        return;
+      }
+
+      this.hyperdrive.chargeElapsedMs += deltaMs;
+      this.updateHyperdriveCountdownCue();
+      if (this.hyperdrive.chargeElapsedMs >= SHIP_HYPERDRIVE_CONFIG.chargeDurationMs) {
+        this.engageHyperdrive();
+      }
+      return;
+    }
+
+    if (this.hyperdrive.state === "normal" && chargeHeld) {
+      this.beginHyperdriveCharge();
+      return;
+    }
+
+    if (this.hyperdrive.state === "cooldown" && manualDropRequested) {
+      this.hyperdrive.lastDisengageReason = `Cooldown ${Math.ceil(this.hyperdrive.cooldownRemainingMs / 1000)}s`;
+    }
+  }
+
+  private beginHyperdriveCharge(): void {
+    if (this.hyperdrive.state !== "normal" || this.hyperdrive.cooldownRemainingMs > 0) {
+      return;
+    }
+
+    this.hyperdrive.state = "charging";
+    this.hyperdrive.chargeElapsedMs = 0;
+    this.hyperdrive.lastDisengageReason = "Charging hyperdrive.";
+    this.hyperdriveCountdownValue = Math.ceil(
+      SHIP_HYPERDRIVE_CONFIG.chargeDurationMs / SHIP_HYPERDRIVE_CONFIG.countdownIntervalMs,
+    );
+    retroSfx.play("hyperdrive-charge", {
+      volume: 0.84,
+      pitch: 0.98,
+    });
+    this.playHyperdriveCountdownCue(this.hyperdriveCountdownValue);
+  }
+
+  private cancelHyperdriveCharge(reason: string): void {
+    if (this.hyperdrive.state !== "charging") {
+      return;
+    }
+
+    this.hyperdrive.state = "normal";
+    this.hyperdrive.chargeElapsedMs = 0;
+    this.hyperdriveCountdownValue = 0;
+    this.hyperdrive.lastDisengageReason = reason;
+  }
+
+  private updateHyperdriveCountdownCue(): void {
+    if (this.hyperdrive.state !== "charging") {
+      return;
+    }
+
+    const remainingMs = Math.max(0, SHIP_HYPERDRIVE_CONFIG.chargeDurationMs - this.hyperdrive.chargeElapsedMs);
+    const countdownValue = Math.ceil(remainingMs / SHIP_HYPERDRIVE_CONFIG.countdownIntervalMs);
+    if (countdownValue > 0 && countdownValue < this.hyperdriveCountdownValue) {
+      this.playHyperdriveCountdownCue(countdownValue);
+    }
+    this.hyperdriveCountdownValue = countdownValue;
+  }
+
+  private playHyperdriveCountdownCue(countdownValue: number): void {
+    if (countdownValue <= 0) {
+      return;
+    }
+
+    retroSfx.play("hyperdrive-countdown", {
+      volume: 0.7,
+      pitch: 0.88 + ((3 - countdownValue) * 0.08),
+    });
+  }
+
+  private engageHyperdrive(): void {
+    const lockedDirection = this.aimDirection.clone().normalize();
+    if (lockedDirection.lengthSq() <= 0.001) {
+      lockedDirection.copy(angleToDirection(this.shipRoot.rotation));
+    }
+
+    this.hyperdrive.state = "active";
+    this.hyperdrive.chargeElapsedMs = SHIP_HYPERDRIVE_CONFIG.chargeDurationMs;
+    this.hyperdrive.lockedDirectionX = lockedDirection.x;
+    this.hyperdrive.lockedDirectionY = lockedDirection.y;
+    this.hyperdrive.lastDisengageReason = "Hyperdrive engaged.";
+    this.hyperdriveCountdownValue = 0;
+    this.fireHeld = false;
+    this.shipVelocity.copy(lockedDirection.scale(PLAYER_HYPERDRIVE_MAX_SPEED));
+    retroSfx.play("hyperdrive-engage", {
+      volume: 0.9,
+      pitch: 1.02,
+    });
+  }
+
+  private disengageHyperdrive(reason: string): void {
+    const wasActive = this.hyperdrive.state === "active";
+    if (!wasActive) {
+      return;
+    }
+
+    const lockedDirection = this.getLockedHyperdriveDirection();
+    const recoverySpeed = PLAYER_MAX_SPEED * SHIP_HYPERDRIVE_CONFIG.postDropSpeedMultiplier;
+    this.hyperdrive.state = "cooldown";
+    this.hyperdrive.chargeElapsedMs = 0;
+    this.hyperdrive.cooldownRemainingMs = SHIP_HYPERDRIVE_CONFIG.cooldownDurationMs;
+    this.hyperdrive.exitBlendRemainingMs = SHIP_HYPERDRIVE_CONFIG.exitBlendDurationMs;
+    this.hyperdrive.lastDisengageReason = reason;
+    this.fireHeld = false;
+
+    if (lockedDirection.lengthSq() > 0.001) {
+      const preservedSpeed = Math.max(recoverySpeed, Math.min(this.shipVelocity.length(), PLAYER_HYPERDRIVE_MAX_SPEED));
+      this.shipVelocity.copy(lockedDirection.scale(preservedSpeed));
+    }
+
+    retroSfx.play("hyperdrive-disengage", {
+      volume: 0.82,
+      pitch: 0.96,
+    });
+  }
+
+  private getLockedHyperdriveDirection(): Phaser.Math.Vector2 {
+    const lockedDirection = new Phaser.Math.Vector2(
+      this.hyperdrive.lockedDirectionX,
+      this.hyperdrive.lockedDirectionY,
+    );
+    if (lockedDirection.lengthSq() <= 0.001) {
+      return angleToDirection(this.shipRoot.rotation);
+    }
+
+    return lockedDirection.normalize();
+  }
+
+  private isHyperdriveChargeHeld(): boolean {
+    const keyboardHeld = this.inputKeys?.hyperdrive.isDown ?? false;
+    return keyboardHeld || this.hyperdriveTouchHeld;
+  }
+
+  private consumeHyperdriveDropRequest(): boolean {
+    const keyboardDown = this.inputKeys?.hyperdrive.isDown ?? false;
+    const keyboardTap = keyboardDown && !this.hyperdriveKeyWasDown;
+    this.hyperdriveKeyWasDown = keyboardDown;
+    const touchTap = this.hyperdriveTouchTapQueued;
+    this.hyperdriveTouchTapQueued = false;
+    return keyboardTap || touchTap;
+  }
+
+  private getHyperdriveSafetyTargets(): SpaceHyperdriveDropTarget[] {
+    const missionPlanet = this.getTrackedMissionPlanet();
+    if (!missionPlanet) {
+      return [];
+    }
+
+    return [{
+      id: `mission:${missionPlanet.missionId}`,
+      label: missionPlanet.name,
+      x: missionPlanet.x,
+      y: missionPlanet.y,
+      safetyRadius: missionPlanet.radius + SHIP_HYPERDRIVE_CONFIG.proximitySafetyPadding,
+      autoDropRadius: missionPlanet.radius + SHIP_HYPERDRIVE_CONFIG.waypointAutoDropPadding,
+    }];
+  }
+
+  private getHyperdriveInterruptReason(): string | null {
+    const targets = this.getHyperdriveSafetyTargets();
+    for (const target of targets) {
+      const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, target.x, target.y);
+      if (distance <= target.autoDropRadius) {
+        return `${target.label} waypoint reached. Dropping from hyperdrive.`;
+      }
+      if (distance <= target.safetyRadius) {
+        return `${target.label} proximity alert. Dropping from hyperdrive.`;
+      }
+    }
+
+    return null;
   }
 
   private updatePlayerShip(dt: number): void {
@@ -1404,7 +1668,7 @@ export class SpaceScene extends Phaser.Scene {
 
     if (this.touchCapable && (
       this.keyboardMoveVector.lengthSq() > 0.001
-      || this.inputKeys.fire.isDown
+      || this.inputKeys.hyperdrive.isDown
       || this.inputKeys.returnToShip.isDown
     )) {
       this.reportDesktopInput();
@@ -1414,18 +1678,43 @@ export class SpaceScene extends Phaser.Scene {
       ? this.touchMoveVector
       : this.keyboardMoveVector;
     this.moveDirection.copy(movementSource);
-    this.thrusting = this.moveDirection.lengthSq() > 0;
-    if (this.thrusting) {
-      this.moveDirection.normalize();
-      this.shipVelocity.x += this.moveDirection.x * PLAYER_ACCELERATION * dt;
-      this.shipVelocity.y += this.moveDirection.y * PLAYER_ACCELERATION * dt;
-      this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_THRUST_DRAG * dt)));
+    const hyperdriveActive = isShipHyperdriveTurningLocked(this.hyperdrive.state);
+
+    if (hyperdriveActive) {
+      const lockedDirection = this.getLockedHyperdriveDirection();
+      this.thrusting = true;
+      this.moveDirection.copy(lockedDirection);
+      this.shipVelocity.copy(lockedDirection.scale(PLAYER_HYPERDRIVE_MAX_SPEED));
     } else {
-      this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_COAST_DRAG * dt)));
+      this.thrusting = this.moveDirection.lengthSq() > 0;
+      if (this.thrusting) {
+        this.moveDirection.normalize();
+        this.shipVelocity.x += this.moveDirection.x * PLAYER_ACCELERATION * dt;
+        this.shipVelocity.y += this.moveDirection.y * PLAYER_ACCELERATION * dt;
+        this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_THRUST_DRAG * dt)));
+      } else {
+        this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_COAST_DRAG * dt)));
+      }
+
+      if (this.hyperdrive.exitBlendRemainingMs > 0) {
+        this.shipVelocity.scale(Math.max(0, 1 - (SHIP_HYPERDRIVE_CONFIG.exitDrag * dt)));
+      }
     }
 
-    if (this.shipVelocity.length() > PLAYER_MAX_SPEED) {
-      this.shipVelocity.setLength(PLAYER_MAX_SPEED);
+    let maxSpeed = PLAYER_MAX_SPEED;
+    if (hyperdriveActive) {
+      maxSpeed = PLAYER_HYPERDRIVE_MAX_SPEED;
+    } else if (this.hyperdrive.exitBlendRemainingMs > 0) {
+      const blendProgress = Phaser.Math.Clamp(
+        this.hyperdrive.exitBlendRemainingMs / SHIP_HYPERDRIVE_CONFIG.exitBlendDurationMs,
+        0,
+        1,
+      );
+      maxSpeed = Phaser.Math.Linear(PLAYER_MAX_SPEED, PLAYER_HYPERDRIVE_MAX_SPEED, blendProgress);
+    }
+
+    if (this.shipVelocity.length() > maxSpeed) {
+      this.shipVelocity.setLength(maxSpeed);
     }
 
     this.shipRoot.x += this.shipVelocity.x * dt;
@@ -1433,8 +1722,9 @@ export class SpaceScene extends Phaser.Scene {
     this.constrainMovingBody(this.shipRoot, PLAYER_RADIUS, this.shipVelocity, 0.16);
     gameSession.setShipSpacePosition(this.shipRoot.x, this.shipRoot.y);
 
-    const lockAutoFire = gameSession.settings.controls.autoFire && this.autoAimTarget !== null;
-    if ((this.fireHeld || this.inputKeys.fire.isDown || lockAutoFire) && this.fireCooldown <= 0) {
+    const combatLocked = isShipHyperdriveCombatLocked(this.hyperdrive.state);
+    const lockAutoFire = !combatLocked && gameSession.settings.controls.autoFire && this.autoAimTarget !== null;
+    if (!combatLocked && (this.fireHeld || lockAutoFire) && this.fireCooldown <= 0) {
       this.fireCooldown = PLAYER_FIRE_COOLDOWN;
       this.firePlayerShot();
     }
@@ -1443,8 +1733,20 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updatePlayerVisuals(): void {
-    const speedPulse = Phaser.Math.Clamp(this.shipVelocity.length() / PLAYER_MAX_SPEED, 0, 1);
-    if (this.thrusting) {
+    const activeTopSpeed = this.hyperdrive.state === "active" ? PLAYER_HYPERDRIVE_MAX_SPEED : PLAYER_MAX_SPEED;
+    const speedPulse = Phaser.Math.Clamp(this.shipVelocity.length() / activeTopSpeed, 0, 1);
+    if (this.hyperdrive.state === "active") {
+      this.shipThruster.setFillStyle(0xfff0b0, 0.92);
+      this.shipThruster.setScale(1.18, 2.6);
+    } else if (this.hyperdrive.state === "charging") {
+      const chargeProgress = Phaser.Math.Clamp(
+        this.hyperdrive.chargeElapsedMs / SHIP_HYPERDRIVE_CONFIG.chargeDurationMs,
+        0,
+        1,
+      );
+      this.shipThruster.setFillStyle(0xc9eeff, 0.38 + (chargeProgress * 0.38));
+      this.shipThruster.setScale(1, 1.08 + (chargeProgress * 0.82));
+    } else if (this.thrusting) {
       this.shipThruster.setFillStyle(0x79e6ff, 0.58 + (speedPulse * 0.2));
       this.shipThruster.setScale(1, 1.1 + (speedPulse * 0.45));
     } else {
@@ -1592,7 +1894,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private cycleTargetLock(): void {
-    if (this.playerDestroyed || this.returningToShip) {
+    if (this.playerDestroyed || this.returningToShip || isShipHyperdriveCombatLocked(this.hyperdrive.state)) {
       return;
     }
 
@@ -1735,7 +2037,37 @@ export class SpaceScene extends Phaser.Scene {
     this.fireHeld = false;
   }
 
+  private beginTouchHyperdrive(pointer: Phaser.Input.Pointer): void {
+    if (this.playerDestroyed || this.returningToShip || this.isMenuOverlayVisible()) {
+      return;
+    }
+
+    this.hyperdrivePointerId = pointer.id;
+    if (this.hyperdrive.state !== "active") {
+      this.hyperdriveTouchHeld = true;
+    }
+  }
+
+  private endTouchHyperdrive(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id !== this.hyperdrivePointerId) {
+      return;
+    }
+
+    this.hyperdrivePointerId = null;
+    this.hyperdriveTouchHeld = false;
+  }
+
+  private queueTouchHyperdriveTap(): void {
+    if (this.hyperdrive.state === "active") {
+      this.hyperdriveTouchTapQueued = true;
+    }
+  }
+
   private firePlayerShot(): void {
+    if (isShipHyperdriveCombatLocked(this.hyperdrive.state)) {
+      return;
+    }
+
     const spawnDistance = PLAYER_RADIUS + 10;
     const x = this.shipRoot.x + (this.aimDirection.x * spawnDistance);
     const y = this.shipRoot.y + (this.aimDirection.y * spawnDistance);
@@ -2348,6 +2680,14 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    if (sourceFactionId !== null) {
+      if (this.hyperdrive.state === "active") {
+        this.disengageHyperdrive("Hostile impact interrupted hyperdrive.");
+      } else if (this.hyperdrive.state === "charging") {
+        this.cancelHyperdriveCharge("Charge interrupted by hostile fire.");
+      }
+    }
+
     this.playerHull -= amount;
     this.playerFlash = 1;
     retroSfx.play(this.playerHull <= 0 ? "shield-break" : "shield-hit", {
@@ -2465,11 +2805,14 @@ export class SpaceScene extends Phaser.Scene {
     const localCounts = this.getFactionCounts(1400);
     const localBreakables = this.countNearbyBreakables(1200);
     const speed = Math.round(this.shipVelocity.length());
+    const hyperdriveStatus = this.getHyperdriveStatusLabel();
+    const hyperdriveHint = this.getHyperdriveHintLabel();
     const missionDistance = missionPlanet
       ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionPlanet.x, missionPlanet.y)
       : null;
     const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, missionDistance);
     const touchLocked = this.returningToShip || this.playerDestroyed || this.isMenuOverlayVisible();
+    const hyperdriveCombatLocked = isShipHyperdriveCombatLocked(this.hyperdrive.state);
     const playerHostiles = this.factionShips.filter((ship) => {
       const faction = SPACE_FACTIONS[ship.factionId];
       if (!(faction.attackPlayerByDefault || ship.provokedByPlayer)) {
@@ -2490,23 +2833,23 @@ export class SpaceScene extends Phaser.Scene {
     this.routeText?.setText(trackedMission
       ? `Route staged: ${trackedMission.title}  |  Sector: ${sector.label}`
       : `Free roam launch  |  Sector: ${sector.label}`);
-    this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
+    this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
     this.contactText?.setText(missionPlanet
-      ? `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
-      : `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}`);
+      ? `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
+      : `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`);
     this.coordinateText?.setText(missionPlanet
-      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}`
-      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nSECTOR ${sector.label}`);
+      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\nHYPER ${hyperdriveStatus}`
+      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nSECTOR ${sector.label}\nHYPER ${hyperdriveStatus}`);
     this.returnButton?.setLabel(landingReady ? "Land On Planet" : "Return To Ship");
     this.attackButton?.setLabel("Attack");
     this.attackButton?.setCooldownProgress(0);
-    this.attackButton?.setInputEnabled(this.touchMode && !touchLocked);
+    this.attackButton?.setInputEnabled(this.touchMode && !touchLocked && !hyperdriveCombatLocked);
     this.targetButton?.setLabel(this.autoAimTarget ? "Next\nTarget" : "Target");
     this.targetButton?.setCooldownProgress(0);
-    this.targetButton?.setInputEnabled(this.touchMode && !touchLocked && this.getTargetCycleCandidates().length > 0);
-    this.abilityOneButton?.setLabel("Aux 1");
-    this.abilityOneButton?.setCooldownProgress(0);
-    this.abilityOneButton?.setInputEnabled(false);
+    this.targetButton?.setInputEnabled(this.touchMode && !touchLocked && !hyperdriveCombatLocked && this.getTargetCycleCandidates().length > 0);
+    this.abilityOneButton?.setLabel(this.getHyperdriveTouchLabel());
+    this.abilityOneButton?.setCooldownProgress(this.getHyperdriveTouchProgress());
+    this.abilityOneButton?.setInputEnabled(this.touchMode && !touchLocked && this.hyperdrive.state !== "cooldown");
     this.abilityTwoButton?.setLabel("Aux 2");
     this.abilityTwoButton?.setCooldownProgress(0);
     this.abilityTwoButton?.setInputEnabled(false);
@@ -2570,6 +2913,58 @@ export class SpaceScene extends Phaser.Scene {
     return this.asteroids.filter((fieldObject) => (
       Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, fieldObject.root.x, fieldObject.root.y) <= radius
     )).length;
+  }
+
+  private getHyperdriveStatusLabel(): string {
+    switch (this.hyperdrive.state) {
+      case "charging":
+        return `Charging ${Math.max(0, ((SHIP_HYPERDRIVE_CONFIG.chargeDurationMs - this.hyperdrive.chargeElapsedMs) / 1000)).toFixed(1)}s`;
+      case "active":
+        return "Active";
+      case "cooldown":
+        return `Cooldown ${Math.ceil(this.hyperdrive.cooldownRemainingMs / 1000)}s`;
+      case "normal":
+      default:
+        return "Ready";
+    }
+  }
+
+  private getHyperdriveHintLabel(): string {
+    switch (this.hyperdrive.state) {
+      case "charging":
+        return "Hold Space to commit";
+      case "active":
+        return "Space drops out";
+      case "cooldown":
+        return `Cooldown ${Math.ceil(this.hyperdrive.cooldownRemainingMs / 1000)}s`;
+      case "normal":
+      default:
+        return "Hold Space 3s";
+    }
+  }
+
+  private getHyperdriveTouchLabel(): string {
+    switch (this.hyperdrive.state) {
+      case "charging":
+        return `Charge\n${Math.max(0, ((SHIP_HYPERDRIVE_CONFIG.chargeDurationMs - this.hyperdrive.chargeElapsedMs) / 1000)).toFixed(1)}s`;
+      case "active":
+        return "Drop\nOut";
+      case "cooldown":
+        return `Cool\n${Math.ceil(this.hyperdrive.cooldownRemainingMs / 1000)}s`;
+      case "normal":
+      default:
+        return "Hyper";
+    }
+  }
+
+  private getHyperdriveTouchProgress(): number {
+    if (this.hyperdrive.state === "charging") {
+      return Phaser.Math.Clamp(this.hyperdrive.chargeElapsedMs / SHIP_HYPERDRIVE_CONFIG.chargeDurationMs, 0, 1);
+    }
+    if (this.hyperdrive.state === "cooldown") {
+      return Phaser.Math.Clamp(this.hyperdrive.cooldownRemainingMs / SHIP_HYPERDRIVE_CONFIG.cooldownDurationMs, 0, 1);
+    }
+    return 0;
   }
 
   private canLandOnTrackedMissionPlanet(
@@ -2725,6 +3120,13 @@ export class SpaceScene extends Phaser.Scene {
 
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
     this.fireHeld = false;
+    this.hyperdriveTouchHeld = false;
+    this.hyperdriveTouchTapQueued = false;
+    this.hyperdrivePointerId = null;
+    this.hyperdriveKeyWasDown = false;
+    if (this.hyperdrive.state === "charging") {
+      this.cancelHyperdriveCharge("Charge aborted.");
+    }
     this.releaseTouchControls();
     this.closeCommandOverlays();
 
@@ -2751,6 +3153,9 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    if (this.hyperdrive.state === "charging") {
+      this.cancelHyperdriveCharge("Charge aborted.");
+    }
     this.releaseTouchControls();
     this.closeCommandOverlays();
     this.touchUiObjects.forEach((object) => {
@@ -2781,7 +3186,7 @@ export class SpaceScene extends Phaser.Scene {
     });
     this.attackButton?.container.setAlpha(this.touchMode ? (blocking ? 0.22 : 1) : 0);
     this.targetButton?.container.setAlpha(this.touchMode ? (blocking ? 0.22 : 1) : 0);
-    this.abilityOneButton?.container.setAlpha(this.touchMode ? (blocking ? 0.18 : 0.48) : 0);
+    this.abilityOneButton?.container.setAlpha(this.touchMode ? (blocking ? 0.2 : 0.92) : 0);
     this.abilityTwoButton?.container.setAlpha(this.touchMode ? (blocking ? 0.18 : 0.48) : 0);
   }
 
@@ -2802,7 +3207,11 @@ export class SpaceScene extends Phaser.Scene {
   private releaseTouchControls(): void {
     this.movePointerId = null;
     this.attackPointerId = null;
+    this.hyperdrivePointerId = null;
     this.touchMoveVector.set(0, 0);
+    this.hyperdriveTouchHeld = false;
+    this.hyperdriveTouchTapQueued = false;
+    this.hyperdriveKeyWasDown = false;
     this.fireHeld = false;
     this.resetMoveStick();
   }
@@ -2871,6 +3280,20 @@ export class SpaceScene extends Phaser.Scene {
       touchMode: this.touchMode,
       autoAim: gameSession.settings.controls.autoAim,
       autoFire: gameSession.settings.controls.autoFire,
+      hyperdrive: {
+        state: this.hyperdrive.state,
+        chargeElapsedMs: Math.round(this.hyperdrive.chargeElapsedMs),
+        chargeDurationMs: SHIP_HYPERDRIVE_CONFIG.chargeDurationMs,
+        cooldownRemainingMs: Math.round(this.hyperdrive.cooldownRemainingMs),
+        cooldownDurationMs: SHIP_HYPERDRIVE_CONFIG.cooldownDurationMs,
+        exitBlendRemainingMs: Math.round(this.hyperdrive.exitBlendRemainingMs),
+        maxSpeed: PLAYER_HYPERDRIVE_MAX_SPEED,
+        lockedDirection: {
+          x: Number(this.hyperdrive.lockedDirectionX.toFixed(3)),
+          y: Number(this.hyperdrive.lockedDirectionY.toFixed(3)),
+        },
+        lastReason: this.hyperdrive.lastDisengageReason,
+      },
       playerHull: {
         current: Math.max(0, this.playerHull),
         max: PLAYER_MAX_HULL,
@@ -2917,6 +3340,7 @@ export class SpaceScene extends Phaser.Scene {
           : { kind: "field", id: this.autoAimTarget.fieldObject.id, fieldKind: this.autoAimTarget.fieldObject.kind }
         : null,
       touchAttackHeld: this.attackPointerId !== null,
+      touchHyperdriveHeld: this.hyperdrivePointerId !== null,
       returnReady: !this.returningToShip && !this.playerDestroyed,
       nearestFieldObjects,
       nearestShips,

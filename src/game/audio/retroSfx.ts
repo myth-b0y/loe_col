@@ -38,6 +38,10 @@ export type SfxCue =
   | "loot-pickup-rare"
   | "loot-pickup-legendary"
   | "loot-pickup-mythic"
+  | "hyperdrive-charge"
+  | "hyperdrive-countdown"
+  | "hyperdrive-engage"
+  | "hyperdrive-disengage"
   | "companion-revive";
 
 type CueOptions = {
@@ -113,6 +117,10 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "loot-pickup-rare": 70,
   "loot-pickup-legendary": 90,
   "loot-pickup-mythic": 110,
+  "hyperdrive-charge": 120,
+  "hyperdrive-countdown": 140,
+  "hyperdrive-engage": 160,
+  "hyperdrive-disengage": 140,
   "companion-revive": 140,
 };
 
@@ -316,6 +324,24 @@ class RetroSfxManager {
         return;
       case "loot-pickup-mythic":
         this.playArpeggio(context, [523, 659, 880, 1046], "sawtooth", volume * 0.1, pan, pitch, 0.05, 3000);
+        return;
+      case "hyperdrive-charge":
+        this.tone(context, { type: "triangle", startFreq: 160 * pitch, endFreq: 260 * pitch, duration: 0.28, volume: volume * 0.14, filterFreq: 1400, pan });
+        this.tone(context, { type: "sawtooth", startFreq: 240 * pitch, endFreq: 420 * pitch, duration: 0.42, volume: volume * 0.09, filterFreq: 2000, pan, startOffset: 0.03 });
+        this.noise(context, { duration: 0.08, volume: volume * 0.02, filterFreq: 1600, filterType: "bandpass", pan, startOffset: 0.1 });
+        return;
+      case "hyperdrive-countdown":
+        this.tone(context, { type: "square", startFreq: 520 * pitch, endFreq: 360 * pitch, duration: 0.09, volume: volume * 0.12, filterFreq: 2200, pan });
+        this.tone(context, { type: "triangle", startFreq: 720 * pitch, endFreq: 540 * pitch, duration: 0.06, volume: volume * 0.05, filterFreq: 2600, pan, startOffset: 0.01 });
+        return;
+      case "hyperdrive-engage":
+        this.tone(context, { type: "sawtooth", startFreq: 260 * pitch, endFreq: 900 * pitch, duration: 0.2, volume: volume * 0.18, filterFreq: 2600, pan });
+        this.tone(context, { type: "square", startFreq: 380 * pitch, endFreq: 1280 * pitch, duration: 0.16, volume: volume * 0.08, filterFreq: 3200, pan, startOffset: 0.02 });
+        this.noise(context, { duration: 0.07, volume: volume * 0.04, filterFreq: 2100, filterType: "highpass", pan, startOffset: 0.03 });
+        return;
+      case "hyperdrive-disengage":
+        this.tone(context, { type: "triangle", startFreq: 760 * pitch, endFreq: 210 * pitch, duration: 0.18, volume: volume * 0.14, filterFreq: 1700, pan });
+        this.noise(context, { duration: 0.05, volume: volume * 0.025, filterFreq: 1300, filterType: "bandpass", pan });
         return;
       case "companion-revive":
         this.playArpeggio(context, [262, 330, 392], "triangle", volume * 0.11, pan, pitch, 0.085, 1800);

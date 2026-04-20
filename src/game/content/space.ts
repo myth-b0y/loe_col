@@ -98,6 +98,30 @@ export type SpaceWorldDefinition = {
   factionCounts: Record<SpaceFactionId, number>;
 };
 
+export type SpaceHyperdriveState = "normal" | "charging" | "active" | "cooldown";
+
+export type ShipHyperdriveConfig = {
+  chargeDurationMs: number;
+  countdownIntervalMs: number;
+  cooldownDurationMs: number;
+  speedMultiplier: number;
+  exitBlendDurationMs: number;
+  exitDrag: number;
+  postDropSpeedMultiplier: number;
+  proximitySafetyPadding: number;
+  waypointAutoDropPadding: number;
+};
+
+export type ShipHyperdriveSystemState = {
+  state: SpaceHyperdriveState;
+  chargeElapsedMs: number;
+  cooldownRemainingMs: number;
+  exitBlendRemainingMs: number;
+  lockedDirectionX: number;
+  lockedDirectionY: number;
+  lastDisengageReason: string | null;
+};
+
 const SPACE_SECTOR_SHIPS: Record<string, Partial<Record<SpaceFactionId, number>>> = {
   "olydran-expanse": { republic: 5, smuggler: 2, pirate: 1 },
   "aaruian-reach": { republic: 6, empire: 1, smuggler: 1 },
@@ -213,10 +237,49 @@ export const SPACE_FACTIONS: Record<SpaceFactionId, SpaceFactionConfig> = {
   },
 };
 
+export const SHIP_HYPERDRIVE_CONFIG: ShipHyperdriveConfig = {
+  chargeDurationMs: 3000,
+  countdownIntervalMs: 1000,
+  cooldownDurationMs: 30000,
+  speedMultiplier: 7,
+  exitBlendDurationMs: 650,
+  exitDrag: 6.4,
+  postDropSpeedMultiplier: 0.44,
+  proximitySafetyPadding: 620,
+  waypointAutoDropPadding: 980,
+};
+
 export const SPACE_SECTORS: SpaceSectorConfig[] = GALAXY_SECTORS.map((sector) => ({
   id: sector.id,
   ships: SPACE_SECTOR_SHIPS[sector.id] ?? {},
 }));
+
+export function createShipHyperdriveSystemState(): ShipHyperdriveSystemState {
+  return {
+    state: "normal",
+    chargeElapsedMs: 0,
+    cooldownRemainingMs: 0,
+    exitBlendRemainingMs: 0,
+    lockedDirectionX: 0,
+    lockedDirectionY: -1,
+    lastDisengageReason: null,
+  };
+}
+
+export function getShipHyperdriveTopSpeed(
+  normalMaxSpeed: number,
+  config: ShipHyperdriveConfig = SHIP_HYPERDRIVE_CONFIG,
+): number {
+  return Math.round(normalMaxSpeed * config.speedMultiplier);
+}
+
+export function isShipHyperdriveCombatLocked(state: SpaceHyperdriveState): boolean {
+  return state === "charging" || state === "active";
+}
+
+export function isShipHyperdriveTurningLocked(state: SpaceHyperdriveState): boolean {
+  return state === "active";
+}
 
 class SeededRandom {
   private seed: number;
