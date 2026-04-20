@@ -4,14 +4,14 @@ import { retroSfx } from "../audio/retroSfx";
 import {
   GALAXY_WORLD_CONFIG,
   GALAXY_HAZE_NODES,
-  GALAXY_SECTORS,
   GALAXY_STARS,
   clampPointToGalaxyTravelBounds,
   getGalaxySectorAtPosition,
-  getGalaxySectorPolygonPoints,
   getMissionPlanetForMission,
+  type GalaxyHazeNode,
   type GalaxyMissionPlanet,
   type GalaxySectorConfig,
+  type GalaxyStarSeed,
 } from "../content/galaxy";
 import { getMissionContract } from "../content/missions";
 import {
@@ -165,19 +165,9 @@ const TOUCH_STICK_DEADZONE = 18;
 const HUD_REFRESH_INTERVAL_MS = 120;
 const PROJECTILE_CULL_DISTANCE = SPACE_WORLD_CONFIG.cellSize * 2.2;
 const BURST_CULL_DISTANCE = SPACE_WORLD_CONFIG.cellSize * 1.6;
-
-function tracePolygonPath(graphics: Phaser.GameObjects.Graphics, points: number[]): void {
-  if (points.length < 4) {
-    return;
-  }
-
-  graphics.beginPath();
-  graphics.moveTo(points[0], points[1]);
-  for (let index = 2; index < points.length; index += 2) {
-    graphics.lineTo(points[index], points[index + 1]);
-  }
-  graphics.closePath();
-}
+const BACKDROP_CELL_SIZE = 1600;
+const BACKDROP_CELL_RADIUS = 1;
+const BACKDROP_HAZE_PADDING = 1800;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -222,6 +212,50 @@ function createInitialStrafeSign(seedId: string): 1 | -1 {
   return hashStringToUnitInterval(`${seedId}:strafe`) >= 0.5 ? 1 : -1;
 }
 
+function createBackdropCellKey(cellX: number, cellY: number): SpaceWorldCellKey {
+  return `${cellX},${cellY}`;
+}
+
+function getBackdropCellCoordinatesForPosition(x: number, y: number): { cellX: number; cellY: number } {
+  return {
+    cellX: Math.max(0, Math.floor(x / BACKDROP_CELL_SIZE)),
+    cellY: Math.max(0, Math.floor(y / BACKDROP_CELL_SIZE)),
+  };
+}
+
+function getBackdropCellKeyAtPosition(x: number, y: number): SpaceWorldCellKey {
+  const { cellX, cellY } = getBackdropCellCoordinatesForPosition(x, y);
+  return createBackdropCellKey(cellX, cellY);
+}
+
+function getBackdropCellKeysAroundPosition(x: number, y: number): SpaceWorldCellKey[] {
+  const { cellX, cellY } = getBackdropCellCoordinatesForPosition(x, y);
+  const maxCellX = Math.ceil(SPACE_WORLD_CONFIG.width / BACKDROP_CELL_SIZE) - 1;
+  const maxCellY = Math.ceil(SPACE_WORLD_CONFIG.height / BACKDROP_CELL_SIZE) - 1;
+  const keys: SpaceWorldCellKey[] = [];
+
+  for (let offsetY = -BACKDROP_CELL_RADIUS; offsetY <= BACKDROP_CELL_RADIUS; offsetY += 1) {
+    for (let offsetX = -BACKDROP_CELL_RADIUS; offsetX <= BACKDROP_CELL_RADIUS; offsetX += 1) {
+      const nextCellX = Math.min(maxCellX, Math.max(0, cellX + offsetX));
+      const nextCellY = Math.min(maxCellY, Math.max(0, cellY + offsetY));
+      const key = createBackdropCellKey(nextCellX, nextCellY);
+      if (!keys.includes(key)) {
+        keys.push(key);
+      }
+    }
+  }
+
+  return keys;
+}
+
+function parseBackdropCellKey(cellKey: SpaceWorldCellKey): { cellX: number; cellY: number } {
+  const [cellXRaw, cellYRaw] = cellKey.split(",");
+  return {
+    cellX: Number(cellXRaw),
+    cellY: Number(cellYRaw),
+  };
+}
+
 function angleToDirection(rotation: number): Phaser.Math.Vector2 {
   return new Phaser.Math.Vector2(
     Math.cos(rotation - Math.PI * 0.5),
@@ -241,8 +275,15 @@ export class SpaceScene extends Phaser.Scene {
   private aimDirection = new Phaser.Math.Vector2(1, 0);
   private pointerWorld = new Phaser.Math.Vector2();
   private worldDefinition!: SpaceWorldDefinition;
+  private currentSector!: GalaxySectorConfig;
+  private trackedMissionPlanet: GalaxyMissionPlanet | null = null;
   private fieldStates = new Map<string, SpaceFieldObjectState>();
   private shipStates = new Map<string, SpaceFactionShipState>();
+  private backdropSectorOverlay?: Phaser.GameObjects.Rectangle;
+  private backdropStarSeedsByCell = new Map<SpaceWorldCellKey, GalaxyStarSeed[]>();
+  private activeBackdropCellKeys: SpaceWorldCellKey[] = [];
+  private activeBackdropStarCells = new Map<SpaceWorldCellKey, Phaser.GameObjects.Graphics>();
+  private activeBackdropHazeNodes = new Map<number, Phaser.GameObjects.Arc>();
   private asteroids: SpaceFieldObject[] = [];
   private factionShips: SpaceFactionShip[] = [];
   private shots: SpaceProjectile[] = [];
@@ -319,8 +360,14 @@ export class SpaceScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.worldDefinition = createSpaceWorldDefinition(SPACE_WORLD_CONFIG);
+    this.trackedMissionPlanet = getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
     this.fieldStates.clear();
     this.shipStates.clear();
+    this.backdropStarSeedsByCell.clear();
+    this.activeBackdropCellKeys = [];
+    this.activeBackdropStarCells.clear();
+    this.activeBackdropHazeNodes.clear();
+    this.backdropSectorOverlay = undefined;
     this.asteroids = [];
     this.factionShips = [];
     this.shots = [];
@@ -354,8 +401,9 @@ export class SpaceScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor("#040810");
     this.input.mouse?.disableContextMenu();
 
-    this.drawWorldBackdrop();
     this.createPlayerShip();
+    this.currentSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+    this.drawWorldBackdrop();
     this.initializeWorldStates();
     this.syncActiveWorld(true);
     this.createMissionPlanet();
@@ -369,16 +417,22 @@ export class SpaceScene extends Phaser.Scene {
     this.refreshHud();
 
     const syncInputMode = (): void => this.syncInputMode();
-    const handleResume = (): void => {
+    const handleSettingsChanged = (): void => {
       this.syncInputMode();
+      this.rebuildBackdropVisuals();
       this.refreshHud();
     };
-    gameSession.on("settings-changed", syncInputMode);
+    const handleResume = (): void => {
+      this.syncInputMode();
+      this.syncBackdropVisuals(true);
+      this.refreshHud();
+    };
+    gameSession.on("settings-changed", handleSettingsChanged);
     gameSession.on("input-mode-changed", syncInputMode);
     this.events.on(Phaser.Scenes.Events.RESUME, handleResume);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      gameSession.off("settings-changed", syncInputMode);
+      gameSession.off("settings-changed", handleSettingsChanged);
       gameSession.off("input-mode-changed", syncInputMode);
       this.events.off(Phaser.Scenes.Events.RESUME, handleResume);
       this.releaseTouchControls();
@@ -410,6 +464,7 @@ export class SpaceScene extends Phaser.Scene {
     this.playerFlash = Math.max(0, this.playerFlash - (dt * 4));
     this.updateAimDirection();
     this.updatePlayerShip(dt);
+    this.syncBackdropVisuals();
     this.syncActiveWorld();
     this.updateFieldObjects(dt);
     this.updateFactionShips(dt);
@@ -432,22 +487,14 @@ export class SpaceScene extends Phaser.Scene {
       1,
     ).setDepth(-30);
 
-    const sectorBackdrop = this.add.graphics().setDepth(-29);
-    GALAXY_SECTORS.forEach((sector) => {
-      const polygon = getGalaxySectorPolygonPoints(sector);
-      sectorBackdrop.fillStyle(sector.color, 0.06);
-      tracePolygonPath(sectorBackdrop, polygon);
-      sectorBackdrop.fillPath();
-      sectorBackdrop.lineStyle(2, sector.borderColor, 0.12);
-      tracePolygonPath(sectorBackdrop, polygon);
-      sectorBackdrop.strokePath();
-    });
-
-    const haze = this.add.graphics().setDepth(-28);
-    GALAXY_HAZE_NODES.forEach((node) => {
-      haze.fillStyle(node.color, node.alpha);
-      haze.fillCircle(node.x, node.y, node.radius);
-    });
+    this.backdropSectorOverlay = this.add.rectangle(
+      SPACE_WORLD_CONFIG.width * 0.5,
+      SPACE_WORLD_CONFIG.height * 0.5,
+      SPACE_WORLD_CONFIG.width,
+      SPACE_WORLD_CONFIG.height,
+      this.currentSector.color,
+      0.05,
+    ).setDepth(-29);
 
     this.add.ellipse(
       GALAXY_WORLD_CONFIG.center.x,
@@ -467,12 +514,6 @@ export class SpaceScene extends Phaser.Scene {
       0.2,
     ).setStrokeStyle(2, 0xc3e4ff, 0.1).setDepth(-26);
 
-    const stars = this.add.graphics().setDepth(-24);
-    GALAXY_STARS.forEach((star) => {
-      stars.fillStyle(star.color, star.alpha);
-      stars.fillCircle(star.x, star.y, Math.max(0.55, star.size));
-    });
-
     this.add.rectangle(
       SPACE_WORLD_CONFIG.width * 0.5,
       SPACE_WORLD_CONFIG.height * 0.5,
@@ -481,6 +522,147 @@ export class SpaceScene extends Phaser.Scene {
       0x000000,
       0,
     ).setStrokeStyle(3, 0x183552, 0.42).setDepth(-22);
+
+    this.rebuildBackdropVisuals();
+  }
+
+  private rebuildBackdropVisuals(): void {
+    this.activeBackdropStarCells.forEach((graphics) => graphics.destroy());
+    this.activeBackdropStarCells.clear();
+    this.activeBackdropHazeNodes.forEach((node) => node.destroy());
+    this.activeBackdropHazeNodes.clear();
+    this.activeBackdropCellKeys = [];
+    this.backdropStarSeedsByCell.clear();
+    this.indexBackdropStars();
+    this.syncBackdropVisuals(true);
+  }
+
+  private indexBackdropStars(): void {
+    GALAXY_STARS.forEach((star, index) => {
+      if (!this.shouldRenderBackdropStar(star, index)) {
+        return;
+      }
+
+      const cellKey = getBackdropCellKeyAtPosition(star.x, star.y);
+      const bucket = this.backdropStarSeedsByCell.get(cellKey);
+      if (bucket) {
+        bucket.push(star);
+        return;
+      }
+      this.backdropStarSeedsByCell.set(cellKey, [star]);
+    });
+  }
+
+  private shouldRenderBackdropStar(star: GalaxyStarSeed, index: number): boolean {
+    const quality = gameSession.settings.graphics.quality;
+    if (quality === "High") {
+      return true;
+    }
+
+    const isSmallBackgroundStar = star.armIndex === -1 && star.size <= 1.2 && star.alpha <= 0.55;
+    if (quality === "Balanced") {
+      return isSmallBackgroundStar ? index % 2 === 0 : true;
+    }
+
+    return isSmallBackgroundStar ? index % 4 === 0 : index % 2 === 0;
+  }
+
+  private syncBackdropVisuals(force = false): void {
+    const nextCellKeys = getBackdropCellKeysAroundPosition(this.shipRoot.x, this.shipRoot.y);
+    const backdropCellsChanged = force || !areCellKeyListsEqual(this.activeBackdropCellKeys, nextCellKeys);
+
+    if (!backdropCellsChanged) {
+      return;
+    }
+
+    const activeCellKeySet = new Set(nextCellKeys);
+    this.activeBackdropStarCells.forEach((graphics, cellKey) => {
+      if (activeCellKeySet.has(cellKey)) {
+        return;
+      }
+
+      graphics.destroy();
+      this.activeBackdropStarCells.delete(cellKey);
+    });
+
+    nextCellKeys.forEach((cellKey) => {
+      if (this.activeBackdropStarCells.has(cellKey)) {
+        return;
+      }
+
+      const stars = this.backdropStarSeedsByCell.get(cellKey);
+      if (!stars || stars.length === 0) {
+        return;
+      }
+
+      this.activeBackdropStarCells.set(cellKey, this.createBackdropStarCell(cellKey, stars));
+    });
+
+    this.syncBackdropHazeNodes();
+    this.activeBackdropCellKeys = nextCellKeys;
+  }
+
+  private refreshCurrentSector(): void {
+    const nextSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+    if (nextSector.id === this.currentSector.id) {
+      return;
+    }
+
+    this.currentSector = nextSector;
+    this.backdropSectorOverlay?.setFillStyle(this.currentSector.color, 0.05);
+  }
+
+  private createBackdropStarCell(
+    cellKey: SpaceWorldCellKey,
+    stars: GalaxyStarSeed[],
+  ): Phaser.GameObjects.Graphics {
+    const { cellX, cellY } = parseBackdropCellKey(cellKey);
+    const originX = cellX * BACKDROP_CELL_SIZE;
+    const originY = cellY * BACKDROP_CELL_SIZE;
+    const graphics = this.add.graphics({ x: originX, y: originY }).setDepth(-24);
+
+    stars.forEach((star) => {
+      graphics.fillStyle(star.color, star.alpha);
+      graphics.fillCircle(star.x - originX, star.y - originY, Math.max(0.55, star.size));
+    });
+
+    return graphics;
+  }
+
+  private syncBackdropHazeNodes(): void {
+    const quality = gameSession.settings.graphics.quality;
+    const activeNodeIndexes = new Set<number>();
+
+    if (quality !== "Performance") {
+      GALAXY_HAZE_NODES.forEach((node, index) => {
+        if (!this.isHazeNodeNearPlayer(node)) {
+          return;
+        }
+
+        activeNodeIndexes.add(index);
+        if (this.activeBackdropHazeNodes.has(index)) {
+          return;
+        }
+
+        const alpha = quality === "Balanced" ? node.alpha * 0.78 : node.alpha;
+        const hazeNode = this.add.circle(node.x, node.y, node.radius, node.color, alpha).setDepth(-28);
+        this.activeBackdropHazeNodes.set(index, hazeNode);
+      });
+    }
+
+    this.activeBackdropHazeNodes.forEach((node, index) => {
+      if (activeNodeIndexes.has(index)) {
+        return;
+      }
+
+      node.destroy();
+      this.activeBackdropHazeNodes.delete(index);
+    });
+  }
+
+  private isHazeNodeNearPlayer(node: GalaxyHazeNode): boolean {
+    const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, node.x, node.y);
+    return distance <= node.radius + BACKDROP_HAZE_PADDING;
   }
 
   private createPlayerShip(): void {
@@ -2275,6 +2457,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private refreshHud(): void {
+    this.refreshCurrentSector();
     const sector = this.getCurrentGalaxySector();
     const missionPlanet = this.getTrackedMissionPlanet();
     const trackedMissionId = missionPlanet?.missionId ?? this.routeMissionId ?? gameSession.getTrackedMissionId();
@@ -2334,11 +2517,11 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private getCurrentGalaxySector(): GalaxySectorConfig {
-    return getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+    return this.currentSector;
   }
 
   private getTrackedMissionPlanet(): GalaxyMissionPlanet | null {
-    return getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
+    return this.trackedMissionPlanet;
   }
 
   private getFactionCounts(radius?: number): Record<SpaceFactionId, number> {
@@ -2716,6 +2899,8 @@ export class SpaceScene extends Phaser.Scene {
       activeFactionCounts,
       activeFieldCellKeys: [...this.activeFieldCellKeys],
       activeShipCellKeys: [...this.activeShipCellKeys],
+      activeBackdropStarCells: this.activeBackdropStarCells.size,
+      activeBackdropHazeNodes: this.activeBackdropHazeNodes.size,
       activeShots: this.shots.length,
       activeBurstParticles: this.burstParticles.length,
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
