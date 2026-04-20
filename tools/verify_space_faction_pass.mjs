@@ -113,6 +113,7 @@ try {
   assert(spawnSummary.factionCounts.pirate > 0, "Pirate ships did not spawn");
   assert(spawnSummary.factionCounts.republic > 0, "Republic ships did not spawn");
   assert(spawnSummary.factionCounts.smuggler > 0, "Smuggler ships did not spawn");
+  assert(spawnSummary.shipCount >= 90, `Faction ship population is lower than expected: ${spawnSummary.shipCount}`);
   assert(Object.keys(spawnSummary.sectorCounts).length >= 4, "Sector-based ship spawning is too sparse");
 
   const behaviorCheck = await page.evaluate((cellSize) => {
