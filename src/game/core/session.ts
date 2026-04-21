@@ -276,6 +276,7 @@ export type GameSettings = {
     brightness: 90 | 100 | 110;
     screenShake: boolean;
     hitFlash: boolean;
+    uiColor: number;
   };
   audio: {
     master: 100 | 80 | 60 | 40 | 20 | 0;
@@ -350,6 +351,7 @@ const DEFAULT_SETTINGS: GameSettings = {
     brightness: 100,
     screenShake: true,
     hitFlash: true,
+    uiColor: 0x79c9ff,
   },
   audio: {
     master: 100,
@@ -1316,6 +1318,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   setHitFlash(value: boolean): void {
     this.settings.graphics.hitFlash = value;
+    this.persistSettings();
+  }
+
+  setUiColor(value: number): void {
+    this.settings.graphics.uiColor = value;
     this.persistSettings();
   }
 

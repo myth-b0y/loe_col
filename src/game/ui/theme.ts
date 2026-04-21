@@ -1,5 +1,7 @@
 import Phaser from "phaser";
 
+import { gameSession } from "../core/session";
+
 export const UI_FONT_FAMILY = "Arial";
 
 export const UI_THEME = {
@@ -15,6 +17,10 @@ export const UI_THEME = {
   accent: 0x79c9ff,
   accentSoft: 0x1d3250,
 };
+
+export function getActiveUiAccentColor(): number {
+  return gameSession.settings.graphics.uiColor ?? UI_THEME.accent;
+}
 
 type StarfieldOptions = {
   count?: number;

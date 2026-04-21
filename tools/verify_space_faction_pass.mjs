@@ -227,6 +227,35 @@ try {
     space.damageFactionShip(smuggler, 1, { kind: "player" }, smuggler.root.x);
     const smugglerAfter = space.selectShipTarget(smuggler)?.kind ?? null;
 
+    parkFar(pirate, -2200, 0);
+    empire.root.x = playerX + 620;
+    empire.root.y = playerY;
+    empire.velocity.set(0, 0);
+    empire.patrolTarget.set(empire.root.x, empire.root.y);
+    empire.provokedByPlayer = false;
+    empire.provokedByShips.clear();
+
+    republic.root.x = playerX + 260;
+    republic.root.y = playerY;
+    republic.velocity.set(0, 0);
+    republic.patrolTarget.set(republic.root.x, republic.root.y);
+    republic.provokedByPlayer = false;
+    republic.provokedByShips.clear();
+
+    const empirePrefersShip = space.selectShipTarget(empire)?.kind ?? null;
+    const republicPrefersShip = space.selectShipTarget(republic)?.kind ?? null;
+
+    empire.root.x = playerX - 260;
+    empire.root.y = playerY;
+    empire.velocity.set(0, 0);
+    empire.patrolTarget.set(empire.root.x, empire.root.y);
+
+    pirate.root.x = playerX - 620;
+    pirate.root.y = playerY;
+    pirate.velocity.set(0, 0);
+    pirate.patrolTarget.set(pirate.root.x, pirate.root.y);
+    const piratePrefersShip = space.selectShipTarget(pirate)?.kind ?? null;
+
     return {
       empireTarget,
       republicTarget,
@@ -240,6 +269,9 @@ try {
       empireVsRepublic: space.isShipHostileToShip(empire, republic),
       republicVsEmpire: space.isShipHostileToShip(republic, empire),
       pirateVsSmuggler: space.isShipHostileToShip(pirate, smuggler),
+      empirePrefersShip,
+      republicPrefersShip,
+      piratePrefersShip,
     };
   }, 3200);
 
@@ -251,6 +283,9 @@ try {
   assert(behaviorCheck.empireVsRepublic, "Empire should be hostile to Republic ships");
   assert(behaviorCheck.republicVsEmpire, "Republic should be hostile to Empire ships");
   assert(behaviorCheck.pirateVsSmuggler, "Pirates should be hostile to smugglers");
+  assert(behaviorCheck.empirePrefersShip === "ship", "Empire should prefer hostile ships over the player when they are available");
+  assert(behaviorCheck.republicPrefersShip === "ship", "Republic should prefer hostile ships over the player when they are available");
+  assert(behaviorCheck.piratePrefersShip === "ship", "Pirates should prefer hostile ships over the player when they are available");
   assert(behaviorCheck.smugglerBefore === null, "Smugglers should be neutral before being attacked");
   assert(behaviorCheck.smugglerProvoked && behaviorCheck.smugglerAfter === "player", "Smuggler did not retaliate after being attacked");
 

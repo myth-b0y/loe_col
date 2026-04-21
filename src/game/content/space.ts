@@ -137,13 +137,13 @@ export type ShipHyperdriveSystemState = {
 };
 
 const SPACE_SECTOR_SHIPS: Record<string, Partial<Record<SpaceFactionId, number>>> = {
-  "olydran-expanse": { republic: 18, smuggler: 3, pirate: 4 },
-  "aaruian-reach": { republic: 18, empire: 5, smuggler: 3 },
-  "elsari-veil": { pirate: 16, smuggler: 3 },
-  "nevari-bloom": { smuggler: 6, pirate: 6, republic: 4 },
-  "rakkan-drift": { pirate: 13, empire: 6, smuggler: 2 },
-  "svarin-span": { pirate: 12, empire: 6, smuggler: 2 },
-  "ashari-crown": { empire: 18, pirate: 5, smuggler: 2 },
+  "olydran-expanse": { republic: 12, empire: 10, pirate: 4, smuggler: 3 },
+  "aaruian-reach": { republic: 12, empire: 9, pirate: 4, smuggler: 3 },
+  "elsari-veil": { pirate: 14, empire: 5, smuggler: 3 },
+  "nevari-bloom": { smuggler: 5, pirate: 7, republic: 5, empire: 4 },
+  "rakkan-drift": { pirate: 11, empire: 8, smuggler: 2 },
+  "svarin-span": { pirate: 10, empire: 8, smuggler: 2 },
+  "ashari-crown": { empire: 16, pirate: 6, republic: 4, smuggler: 2 },
 };
 
 const FIELD_WORLD_SEED = 0x3c71_2a6d;
@@ -267,7 +267,7 @@ export const SHIP_RADAR_CONFIG: ShipRadarConfig = {
   range: 2600,
   width: 246,
   height: 66,
-  sweepSpeedDegPerSec: 200,
+  sweepSpeedDegPerSec: 165,
   sweepWidthDeg: 14,
   memoryFadeMs: 1400,
   memoryClearMs: 2400,

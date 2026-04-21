@@ -1192,7 +1192,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.radar = new SpaceRadarDisplay(this, {
       x: GAME_WIDTH * 0.5,
-      y: 46,
+      y: 64,
       width: SHIP_RADAR_CONFIG.width,
       height: SHIP_RADAR_CONFIG.height,
       range: SHIP_RADAR_CONFIG.range,
@@ -2241,15 +2241,6 @@ export class SpaceScene extends Phaser.Scene {
     let bestDistanceSq = Number.POSITIVE_INFINITY;
     let bestTarget: { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null = null;
 
-    if (!this.playerDestroyed && this.canShipAttackPlayer(ship)) {
-      const dx = this.shipRoot.x - ship.root.x;
-      const dy = this.shipRoot.y - ship.root.y;
-      const distanceSq = (dx * dx) + (dy * dy);
-      if (distanceSq <= faction.detectRange * faction.detectRange) {
-        return { kind: "player" };
-      }
-    }
-
     this.factionShips.forEach((targetShip) => {
       if (targetShip.id === ship.id) {
         return;
@@ -2267,6 +2258,19 @@ export class SpaceScene extends Phaser.Scene {
       bestDistanceSq = distanceSq;
       bestTarget = { kind: "ship", ship: targetShip };
     });
+
+    if (bestTarget) {
+      return bestTarget;
+    }
+
+    if (!this.playerDestroyed && this.canShipAttackPlayer(ship)) {
+      const dx = this.shipRoot.x - ship.root.x;
+      const dy = this.shipRoot.y - ship.root.y;
+      const distanceSq = (dx * dx) + (dy * dy);
+      if (distanceSq <= faction.detectRange * faction.detectRange) {
+        return { kind: "player" };
+      }
+    }
 
     return bestTarget;
   }

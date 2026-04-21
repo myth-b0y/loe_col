@@ -1,5 +1,7 @@
 import Phaser from "phaser";
 
+import { UI_THEME, getActiveUiAccentColor } from "./theme";
+
 export type SpaceRadarContactKind =
   | "enemy-ship"
   | "friendly-ship"
@@ -64,7 +66,7 @@ const DEFAULT_WIDTH = 246;
 const DEFAULT_HEIGHT = 66;
 const DEFAULT_DEPTH = 52;
 const DEFAULT_RANGE = 2600;
-const DEFAULT_SWEEP_SPEED_DEG_PER_SEC = 200;
+const DEFAULT_SWEEP_SPEED_DEG_PER_SEC = 165;
 const DEFAULT_SWEEP_WIDTH_DEG = 14;
 const DEFAULT_MEMORY_FADE_MS = 1400;
 const DEFAULT_MEMORY_CLEAR_MS = 2400;
@@ -107,14 +109,14 @@ export class SpaceRadarDisplay {
     this.memoryClearMs = options.memoryClearMs ?? DEFAULT_MEMORY_CLEAR_MS;
 
     this.frame = scene.add.ellipse(0, 0, this.width, this.height, 0x08131e, 0.86)
-      .setStrokeStyle(2, 0x7bb8ff, 0.52);
+      .setStrokeStyle(2, getActiveUiAccentColor(), 0.52);
     this.grid = scene.add.graphics();
     this.contactsGraphics = scene.add.graphics();
     this.sweepGraphics = scene.add.graphics();
     this.label = scene.add.text(0, -(this.height * 0.5) - 6, "RADAR", {
       fontFamily: "Arial",
       fontSize: "12px",
-      color: "#a9d6ff",
+      color: UI_THEME.textSoft,
       fontStyle: "bold",
       letterSpacing: 1,
     }).setOrigin(0.5, 1);
@@ -228,22 +230,24 @@ export class SpaceRadarDisplay {
     this.contactsGraphics.clear();
     this.sweepGraphics.clear();
 
+    const accentColor = getActiveUiAccentColor();
     const radiusX = this.width * 0.5 - 10;
     const radiusY = this.height * 0.5 - 10;
     const sweepEdge = this.getEllipsePoint(this.sweepAngle, radiusX, radiusY);
 
+    this.frame.setStrokeStyle(2, accentColor, 0.52);
     this.grid.clear();
-    this.grid.lineStyle(1, 0x7bb8ff, 0.13);
+    this.grid.lineStyle(1, accentColor, 0.14);
     this.grid.strokeEllipse(0, 0, this.width * 0.88, this.height * 0.72);
-    this.grid.lineStyle(1, 0x7bb8ff, 0.11);
+    this.grid.lineStyle(1, accentColor, 0.1);
     this.grid.lineBetween(-radiusX * 0.72, 0, radiusX * 0.72, 0);
     this.grid.lineBetween(0, -radiusY * 0.62, 0, radiusY * 0.62);
-    this.grid.lineStyle(1, 0xffffff, 0.1);
+    this.grid.lineStyle(1, 0xffffff, 0.08);
     this.grid.strokeEllipse(0, 0, this.width * 0.56, this.height * 0.44);
 
-    this.contactsGraphics.fillStyle(0xcbe8ff, 1);
+    this.contactsGraphics.fillStyle(accentColor, 1);
     this.contactsGraphics.fillCircle(0, 0, 1.8);
-    this.contactsGraphics.lineStyle(1, 0xcbe8ff, 0.16);
+    this.contactsGraphics.lineStyle(1, accentColor, 0.24);
     this.contactsGraphics.strokeCircle(0, 0, 5);
 
     this.memory.forEach((entry) => {
@@ -258,29 +262,27 @@ export class SpaceRadarDisplay {
       const size = this.getContactSize(entry.kind, entry.radius);
       const pulseRadius = size + (alpha > 0.8 ? 4 : 2);
 
-      this.contactsGraphics.fillStyle(entry.color, alpha);
-      this.contactsGraphics.fillCircle(localX, localY, size);
-      this.contactsGraphics.lineStyle(1, 0xf4fbff, alpha * 0.55);
-      this.contactsGraphics.strokeCircle(localX, localY, size + 1.6);
-      this.contactsGraphics.lineStyle(1, entry.color, alpha * 0.3);
+      this.drawContactShape(entry.kind, localX, localY, size, alpha, accentColor);
+      this.contactsGraphics.lineStyle(1, 0xf4fbff, alpha * 0.36);
       this.contactsGraphics.strokeCircle(localX, localY, pulseRadius);
     });
 
-    this.sweepGraphics.lineStyle(4, 0xdff7ff, 0.08);
+    this.sweepGraphics.lineStyle(4, accentColor, 0.08);
     this.sweepGraphics.lineBetween(0, 0, sweepEdge.x, sweepEdge.y);
-    this.sweepGraphics.lineStyle(2, 0xb8ecff, 0.82);
+    this.sweepGraphics.lineStyle(2, accentColor, 0.76);
     this.sweepGraphics.lineBetween(0, 0, sweepEdge.x, sweepEdge.y);
-    this.sweepGraphics.fillStyle(0xdff7ff, 0.88);
+    this.sweepGraphics.fillStyle(accentColor, 0.88);
     this.sweepGraphics.fillCircle(sweepEdge.x, sweepEdge.y, 1.9);
-    this.sweepGraphics.lineStyle(1, 0xb8ecff, 0.14);
+    this.sweepGraphics.lineStyle(1, accentColor, 0.14);
     this.sweepGraphics.strokeEllipse(0, 0, this.width * 0.86, this.height * 0.69);
   }
 
   private drawStaticGrid(): void {
+    const accentColor = getActiveUiAccentColor();
     this.grid.clear();
-    this.grid.lineStyle(1, 0x7bb8ff, 0.12);
+    this.grid.lineStyle(1, accentColor, 0.12);
     this.grid.strokeEllipse(0, 0, this.width * 0.88, this.height * 0.72);
-    this.grid.lineStyle(1, 0x7bb8ff, 0.1);
+    this.grid.lineStyle(1, accentColor, 0.1);
     this.grid.lineBetween(-(this.width * 0.36), 0, this.width * 0.36, 0);
     this.grid.lineBetween(0, -(this.height * 0.18), 0, this.height * 0.18);
     this.grid.lineStyle(1, 0xffffff, 0.09);
@@ -299,17 +301,84 @@ export class SpaceRadarDisplay {
   private getContactSize(kind: SpaceRadarContactKind, radius: number): number {
     switch (kind) {
       case "mission-planet":
-        return Math.max(4.4, radius / 32);
-      case "asteroid":
-        return Math.max(3.2, radius / 20);
       case "station":
-        return Math.max(4.6, radius / 28);
+      case "poi":
+        return Math.max(5.6, radius / 24);
+      case "asteroid":
+        return Math.max(4.4, radius / 20);
       case "enemy-ship":
+        return Math.max(4.8, radius / 18);
       case "friendly-ship":
       case "neutral-ship":
       default:
-        return Math.max(3.4, radius / 22);
+        return Math.max(4.6, radius / 18);
     }
+  }
+
+  private drawContactShape(
+    kind: SpaceRadarContactKind,
+    x: number,
+    y: number,
+    size: number,
+    alpha: number,
+    accentColor: number,
+  ): void {
+    this.contactsGraphics.fillStyle(accentColor, alpha);
+    this.contactsGraphics.lineStyle(1, 0xf4fbff, alpha * 0.42);
+
+    switch (kind) {
+      case "asteroid": {
+        this.contactsGraphics.fillCircle(x, y, size);
+        this.contactsGraphics.strokeCircle(x, y, size + 1.5);
+        return;
+      }
+      case "enemy-ship": {
+        this.contactsGraphics.fillTriangle(
+          x,
+          y - size,
+          x - size * 0.92,
+          y + size,
+          x + size * 0.92,
+          y + size,
+        );
+        this.contactsGraphics.strokeTriangle(
+          x,
+          y - size,
+          x - size * 0.92,
+          y + size,
+          x + size * 0.92,
+          y + size,
+        );
+        return;
+      }
+      case "friendly-ship":
+      case "neutral-ship": {
+        this.contactsGraphics.fillRect(x - size, y - size, size * 2, size * 2);
+        this.contactsGraphics.strokeRect(x - size, y - size, size * 2, size * 2);
+        return;
+      }
+      case "mission-planet":
+      case "station":
+      case "poi":
+      default: {
+        const points = this.getHexagonPoints(x, y, size);
+        this.contactsGraphics.fillPoints(points, true);
+        this.contactsGraphics.strokePoints(points, true);
+      }
+    }
+  }
+
+  private getHexagonPoints(x: number, y: number, size: number): Phaser.Geom.Point[] {
+    const points: Phaser.Geom.Point[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const angle = -Math.PI / 2 + (index * Math.PI / 3);
+      points.push(new Phaser.Geom.Point(
+        x + (Math.cos(angle) * size),
+        y + (Math.sin(angle) * size),
+      ));
+    }
+
+    return points;
   }
 
   private getEllipsePoint(angle: number, radiusX: number, radiusY: number): { x: number; y: number } {

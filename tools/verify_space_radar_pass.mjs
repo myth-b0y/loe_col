@@ -69,9 +69,45 @@ async function focusOnContact(page, contact, filename, freezeTarget = true) {
 
     space.shipRoot.setPosition(playerX, playerY);
     space.shipVelocity.set(0, 0);
+    space.playerHull = 999;
+    space.playerFlash = 0;
+    space.playerDestroyed = false;
+    space.returningToShip = false;
+    if (space.hyperdrive) {
+      space.hyperdrive.state = "normal";
+      space.hyperdrive.chargeElapsedMs = 0;
+      space.hyperdrive.cooldownRemainingMs = 0;
+      space.hyperdrive.exitBlendRemainingMs = 0;
+      space.hyperdrive.lastDisengageReason = null;
+    }
+    if (Array.isArray(space.shots)) {
+      space.shots.forEach((shot) => {
+        shot.sprite.destroy();
+        shot.glow.destroy();
+      });
+      space.shots.length = 0;
+    }
+    if (Array.isArray(space.burstParticles)) {
+      space.burstParticles.forEach((particle) => particle.sprite.destroy());
+      space.burstParticles.length = 0;
+    }
     window.__loeSession?.setShipSpacePosition?.(playerX, playerY);
     space.cameras.main.centerOn(playerX, playerY);
     space.syncActiveWorld?.(true);
+
+    const freezeRadiusSq = 4200 * 4200;
+    space.factionShips.forEach((ship) => {
+      const dx = ship.root.x - playerX;
+      const dy = ship.root.y - playerY;
+      if ((dx * dx) + (dy * dy) <= freezeRadiusSq) {
+        ship.velocity.set(0, 0);
+        ship.patrolTarget.set(ship.root.x, ship.root.y);
+        ship.fireCooldown = Math.max(ship.fireCooldown, 999);
+        ship.aggressionTimer = 0;
+        ship.provokedByPlayer = false;
+        ship.provokedByShips.clear();
+      }
+    });
 
     if (freezeTarget) {
       const targetShip = space.factionShips.find((ship) => ship.id === contact.id);
