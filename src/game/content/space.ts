@@ -29,6 +29,10 @@ export type SpaceWorldConfig = {
   nearbyObjectCount: number;
   galaxyObjectCount: number;
   deepSpaceObjectCount: number;
+  clusterMinSize: number;
+  clusterMaxSize: number;
+  galaxyFloaterCount: number;
+  deepSpaceFloaterCount: number;
   shipSpawnSafeRadius: number;
   sectorInnerPadding: number;
   sectorOuterPadding: number;
@@ -163,9 +167,13 @@ export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
   activeShipCellRadius: 2,
   nearbyFieldRadius: 2400,
   nearbySafeRadius: 360,
-  nearbyObjectCount: 4,
-  galaxyObjectCount: 180,
-  deepSpaceObjectCount: 64,
+  nearbyObjectCount: 3,
+  galaxyObjectCount: 42,
+  deepSpaceObjectCount: 10,
+  clusterMinSize: 3,
+  clusterMaxSize: 6,
+  galaxyFloaterCount: 92,
+  deepSpaceFloaterCount: 28,
   shipSpawnSafeRadius: 1200,
   sectorInnerPadding: 720,
   sectorOuterPadding: 940,
@@ -373,6 +381,7 @@ function createFieldSeed(
   y: number,
   random: () => number,
   config: SpaceWorldConfig,
+  baseVelocity?: { x: number; y: number },
 ): SpaceFieldObjectSeed {
   const radius = kind === "asteroid"
     ? randomBetween(random, 28, 58)
@@ -393,8 +402,12 @@ function createFieldSeed(
     y,
     radius,
     hp,
-    velocityX: Math.cos(heading) * speed,
-    velocityY: Math.sin(heading) * speed,
+    velocityX: baseVelocity
+      ? baseVelocity.x + (Math.cos(heading) * speed * 0.18)
+      : Math.cos(heading) * speed,
+    velocityY: baseVelocity
+      ? baseVelocity.y + (Math.sin(heading) * speed * 0.18)
+      : Math.sin(heading) * speed,
     spin: randomBetween(random, -0.65, 0.65),
     rotation: randomBetween(random, 0, Math.PI * 2),
   };
@@ -556,6 +569,10 @@ function pickKind(random: () => number): SpaceFieldObjectKind {
   return random() > 0.32 ? "asteroid" : "debris";
 }
 
+function pickClusterKind(random: () => number): SpaceFieldObjectKind {
+  return random() > 0.16 ? "asteroid" : "debris";
+}
+
 function pickPointInGalaxySector(
   sector: GalaxySectorConfig,
   config: SpaceWorldConfig,
@@ -628,6 +645,74 @@ function createSpawnClusterSeed(
   return null;
 }
 
+function createClusterDrift(random: () => number, deepSpaceOnly = false): { x: number; y: number } {
+  const speed = deepSpaceOnly
+    ? randomBetween(random, 4, 14)
+    : randomBetween(random, 6, 20);
+  const heading = randomBetween(random, 0, Math.PI * 2);
+  return {
+    x: Math.cos(heading) * speed,
+    y: Math.sin(heading) * speed,
+  };
+}
+
+function createFieldClusterSeeds(
+  center: GalaxyPoint,
+  config: SpaceWorldConfig,
+  seeds: SpaceFieldObjectSeed[],
+  random: () => number,
+  createId: () => string,
+  options?: {
+    deepSpaceOnly?: boolean;
+    minCount?: number;
+    maxCount?: number;
+    radius?: number;
+  },
+): SpaceFieldObjectSeed[] {
+  const created: SpaceFieldObjectSeed[] = [];
+  const minCount = options?.minCount ?? config.clusterMinSize;
+  const maxCount = options?.maxCount ?? config.clusterMaxSize;
+  const clusterRadius = options?.radius ?? randomBetween(random, 260, 720);
+  const baseVelocity = createClusterDrift(random, options?.deepSpaceOnly ?? false);
+  const targetCount = Math.max(minCount, Math.round(randomBetween(random, minCount, maxCount + 0.999)));
+
+  for (let memberIndex = 0; memberIndex < targetCount; memberIndex += 1) {
+    for (let attempt = 0; attempt < 28; attempt += 1) {
+      const angle = randomBetween(random, 0, Math.PI * 2);
+      const distance = Math.pow(random(), 0.72) * clusterRadius;
+      const x = center.x + (Math.cos(angle) * distance);
+      const y = center.y + (Math.sin(angle) * distance);
+      const kind = pickClusterKind(random);
+      const candidate = createFieldSeed(createId(), kind, x, y, random, config, baseVelocity);
+      if (
+        x >= 220
+        && x <= config.width - 220
+        && y >= 220
+        && y <= config.height - 220
+        && canPlaceFieldSeed([...seeds, ...created], x, y, candidate.radius, 12)
+      ) {
+        created.push(candidate);
+        break;
+      }
+    }
+  }
+
+  return created;
+}
+
+function pickSpawnClusterCenter(
+  origin: GalaxyPoint,
+  config: SpaceWorldConfig,
+  random: () => number,
+): GalaxyPoint {
+  const angle = randomBetween(random, 0, Math.PI * 2);
+  const distance = randomBetween(random, config.nearbySafeRadius + 140, config.nearbyFieldRadius - 120);
+  return {
+    x: origin.x + (Math.cos(angle) * distance),
+    y: origin.y + (Math.sin(angle) * distance),
+  };
+}
+
 function createDistantSeed(
   id: string,
   config: SpaceWorldConfig,
@@ -668,30 +753,56 @@ function createSpaceFieldSeedsInternal(
   const rng = new SeededRandom(FIELD_WORLD_SEED);
   const seeds: SpaceFieldObjectSeed[] = [];
   let fieldIndex = 0;
+  const createId = (): string => `field-${fieldIndex++}`;
 
   GALAXY_SECTORS.forEach((sector) => {
     const spawn = getGalaxySpawnPointForRace(sector.raceId);
     for (let clusterIndex = 0; clusterIndex < config.nearbyObjectCount; clusterIndex += 1) {
-      const id = `field-${fieldIndex}`;
-      const seed = createSpawnClusterSeed(id, spawn, config, seeds, () => rng.next());
-      if (!seed) {
+      const center = pickSpawnClusterCenter(spawn, config, () => rng.next());
+      const clusterSeeds = createFieldClusterSeeds(center, config, seeds, () => rng.next(), createId, {
+        minCount: config.clusterMinSize + 1,
+        maxCount: config.clusterMaxSize + 1,
+        radius: randomBetween(() => rng.next(), 240, 560),
+      });
+      if (clusterSeeds.length > 0) {
+        seeds.push(...clusterSeeds);
         continue;
       }
-      seeds.push(seed);
-      fieldIndex += 1;
+
+      const fallbackSeed = createSpawnClusterSeed(createId(), spawn, config, seeds, () => rng.next());
+      if (fallbackSeed) {
+        seeds.push(fallbackSeed);
+      }
     }
   });
 
   for (let index = 0; index < config.galaxyObjectCount; index += 1) {
-    const id = `field-${fieldIndex}`;
-    seeds.push(createDistantSeed(id, config, seeds, () => rng.next(), false));
-    fieldIndex += 1;
+    const center = pickPointInGalaxyBody(config, () => rng.next());
+    const clusterSeeds = createFieldClusterSeeds(center, config, seeds, () => rng.next(), createId);
+    if (clusterSeeds.length > 0) {
+      seeds.push(...clusterSeeds);
+    }
   }
 
   for (let index = 0; index < config.deepSpaceObjectCount; index += 1) {
-    const id = `field-${fieldIndex}`;
-    seeds.push(createDistantSeed(id, config, seeds, () => rng.next(), true));
-    fieldIndex += 1;
+    const center = pickPointInDeepSpace(config, () => rng.next());
+    const clusterSeeds = createFieldClusterSeeds(center, config, seeds, () => rng.next(), createId, {
+      deepSpaceOnly: true,
+      minCount: config.clusterMinSize,
+      maxCount: config.clusterMaxSize - 1,
+      radius: randomBetween(() => rng.next(), 220, 480),
+    });
+    if (clusterSeeds.length > 0) {
+      seeds.push(...clusterSeeds);
+    }
+  }
+
+  for (let index = 0; index < config.galaxyFloaterCount; index += 1) {
+    seeds.push(createDistantSeed(createId(), config, seeds, () => rng.next(), false));
+  }
+
+  for (let index = 0; index < config.deepSpaceFloaterCount; index += 1) {
+    seeds.push(createDistantSeed(createId(), config, seeds, () => rng.next(), true));
   }
 
   return seeds;

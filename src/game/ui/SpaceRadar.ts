@@ -7,6 +7,7 @@ export type SpaceRadarContactKind =
   | "friendly-ship"
   | "neutral-ship"
   | "asteroid"
+  | "planet"
   | "mission-planet"
   | "station"
   | "poi";
@@ -300,10 +301,12 @@ export class SpaceRadarDisplay {
 
   private getContactSize(kind: SpaceRadarContactKind, radius: number): number {
     switch (kind) {
+      case "planet":
       case "mission-planet":
       case "station":
-      case "poi":
         return Math.max(5.6, radius / 24);
+      case "poi":
+        return Math.max(4.8, radius / 24);
       case "asteroid":
         return Math.max(4.4, radius / 20);
       case "enemy-ship":
@@ -328,8 +331,9 @@ export class SpaceRadarDisplay {
 
     switch (kind) {
       case "asteroid": {
-        this.contactsGraphics.fillCircle(x, y, size);
-        this.contactsGraphics.strokeCircle(x, y, size + 1.5);
+        const points = this.getHexagonPoints(x, y, size);
+        this.contactsGraphics.fillPoints(points, true);
+        this.contactsGraphics.strokePoints(points, true);
         return;
       }
       case "enemy-ship": {
@@ -357,13 +361,17 @@ export class SpaceRadarDisplay {
         this.contactsGraphics.strokeRect(x - size, y - size, size * 2, size * 2);
         return;
       }
+      case "planet":
       case "mission-planet":
-      case "station":
+      case "station": {
+        this.contactsGraphics.fillCircle(x, y, size);
+        this.contactsGraphics.strokeCircle(x, y, size + 1.4);
+        return;
+      }
       case "poi":
       default: {
-        const points = this.getHexagonPoints(x, y, size);
-        this.contactsGraphics.fillPoints(points, true);
-        this.contactsGraphics.strokePoints(points, true);
+        this.contactsGraphics.fillPoints(this.getDiamondPoints(x, y, size), true);
+        this.contactsGraphics.strokePoints(this.getDiamondPoints(x, y, size), true);
       }
     }
   }
@@ -379,6 +387,15 @@ export class SpaceRadarDisplay {
     }
 
     return points;
+  }
+
+  private getDiamondPoints(x: number, y: number, size: number): Phaser.Geom.Point[] {
+    return [
+      new Phaser.Geom.Point(x, y - size),
+      new Phaser.Geom.Point(x + size, y),
+      new Phaser.Geom.Point(x, y + size),
+      new Phaser.Geom.Point(x - size, y),
+    ];
   }
 
   private getEllipsePoint(angle: number, radiusX: number, radiusY: number): { x: number; y: number } {

@@ -2,15 +2,21 @@ import Phaser from "phaser";
 
 import { retroSfx } from "../audio/retroSfx";
 import {
-  GALAXY_WORLD_CONFIG,
   GALAXY_HAZE_NODES,
   GALAXY_STARS,
+  GALAXY_WORLD_CONFIG,
   clampPointToGalaxyTravelBounds,
+  getGalaxyRegionLabelAtPosition,
   getGalaxySectorAtPosition,
+  isGalaxyDeepSpaceAtPosition,
+  type GalaxyDefinition,
   type GalaxyHazeNode,
   type GalaxyMissionPlanet,
+  type GalaxyMoonRecord,
+  type GalaxyPlanetRecord,
   type GalaxySectorConfig,
   type GalaxyStarSeed,
+  type GalaxySystemRecord,
 } from "../content/galaxy";
 import { getMissionContract } from "../content/missions";
 import {
@@ -169,6 +175,20 @@ type SpaceHyperdriveDropTarget = {
   autoDropRadius: number;
 };
 
+type SpaceCelestialPlanetView = {
+  planetId: string;
+  root: Phaser.GameObjects.Container;
+  landingRing: Phaser.GameObjects.Arc;
+  label: Phaser.GameObjects.Text;
+};
+
+type SpaceCelestialSystemView = {
+  systemId: string;
+  root: Phaser.GameObjects.Container;
+  planetIds: string[];
+  moonIds: string[];
+};
+
 const PLAYER_RADIUS = 22;
 const PLAYER_MAX_HULL = 8;
 const PLAYER_ACCELERATION = 720;
@@ -193,6 +213,8 @@ const BURST_CULL_DISTANCE = SPACE_WORLD_CONFIG.cellSize * 1.6;
 const BACKDROP_CELL_SIZE = 1600;
 const BACKDROP_CELL_RADIUS = 1;
 const BACKDROP_HAZE_PADDING = 1800;
+const CELESTIAL_CELL_RADIUS = 1;
+const DEEP_SPACE_OVERLAY_COLOR = 0x132033;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -299,9 +321,17 @@ export class SpaceScene extends Phaser.Scene {
   private moveDirection = new Phaser.Math.Vector2();
   private aimDirection = new Phaser.Math.Vector2(1, 0);
   private pointerWorld = new Phaser.Math.Vector2();
+  private galaxyDefinition!: GalaxyDefinition;
   private worldDefinition!: SpaceWorldDefinition;
   private currentSector!: GalaxySectorConfig;
+  private currentRegionLabel = "";
+  private currentRegionIsDeepSpace = false;
   private trackedMissionPlanet: GalaxyMissionPlanet | null = null;
+  private galaxySystemsByCell = new Map<SpaceWorldCellKey, GalaxySystemRecord[]>();
+  private galaxySystemsById = new Map<string, GalaxySystemRecord>();
+  private galaxyPlanetsById = new Map<string, GalaxyPlanetRecord>();
+  private galaxyPlanetsBySystemId = new Map<string, GalaxyPlanetRecord[]>();
+  private galaxyMoonsByPlanetId = new Map<string, GalaxyMoonRecord[]>();
   private fieldStates = new Map<string, SpaceFieldObjectState>();
   private shipStates = new Map<string, SpaceFactionShipState>();
   private backdropSectorOverlay?: Phaser.GameObjects.Rectangle;
@@ -311,6 +341,9 @@ export class SpaceScene extends Phaser.Scene {
   private activeBackdropHazeNodes = new Map<number, Phaser.GameObjects.Arc>();
   private asteroids: SpaceFieldObject[] = [];
   private factionShips: SpaceFactionShip[] = [];
+  private activeCelestialCellKeys: SpaceWorldCellKey[] = [];
+  private activeCelestialSystems = new Map<string, SpaceCelestialSystemView>();
+  private activePlanetViews = new Map<string, SpaceCelestialPlanetView>();
   private shots: SpaceProjectile[] = [];
   private burstParticles: SpaceBurstParticle[] = [];
   private activeFieldCellKeys: SpaceWorldCellKey[] = [];
@@ -318,11 +351,6 @@ export class SpaceScene extends Phaser.Scene {
   private routeMissionId: string | null = null;
   private routeTitle = "Free roam launch";
   private radar?: SpaceRadarDisplay;
-  private missionPlanetView?: {
-    planet: GalaxyMissionPlanet;
-    root: Phaser.GameObjects.Container;
-    landingRing: Phaser.GameObjects.Arc;
-  };
   private destroyedObjects = 0;
   private destroyedFactionShips = 0;
   private playerHull = PLAYER_MAX_HULL;
@@ -391,8 +419,14 @@ export class SpaceScene extends Phaser.Scene {
   create(): void {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
+    this.galaxyDefinition = gameSession.getGalaxyDefinition();
     this.worldDefinition = createSpaceWorldDefinition(SPACE_WORLD_CONFIG);
     this.trackedMissionPlanet = gameSession.getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
+    this.galaxySystemsByCell.clear();
+    this.galaxySystemsById.clear();
+    this.galaxyPlanetsById.clear();
+    this.galaxyPlanetsBySystemId.clear();
+    this.galaxyMoonsByPlanetId.clear();
     this.fieldStates.clear();
     this.shipStates.clear();
     this.backdropStarSeedsByCell.clear();
@@ -403,13 +437,15 @@ export class SpaceScene extends Phaser.Scene {
     this.radar = undefined;
     this.asteroids = [];
     this.factionShips = [];
+    this.activeCelestialCellKeys = [];
+    this.activeCelestialSystems.clear();
+    this.activePlanetViews.clear();
     this.shots = [];
     this.burstParticles = [];
     this.activeFieldCellKeys = [];
     this.activeShipCellKeys = [];
     this.destroyedObjects = 0;
     this.destroyedFactionShips = 0;
-    this.missionPlanetView = undefined;
     this.playerHull = PLAYER_MAX_HULL;
     this.playerFlash = 0;
     this.hyperdrive = createShipHyperdriveSystemState();
@@ -441,11 +477,13 @@ export class SpaceScene extends Phaser.Scene {
     this.input.mouse?.disableContextMenu();
 
     this.createPlayerShip();
+    this.indexGalaxyCelestials();
     this.currentSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
+    this.currentRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y);
+    this.currentRegionIsDeepSpace = isGalaxyDeepSpaceAtPosition(this.shipRoot.x, this.shipRoot.y);
     this.drawWorldBackdrop();
     this.initializeWorldStates();
     this.syncActiveWorld(true);
-    this.createMissionPlanet();
     this.createHud();
     this.createTouchUi();
     this.createCommandOverlays();
@@ -533,8 +571,8 @@ export class SpaceScene extends Phaser.Scene {
       SPACE_WORLD_CONFIG.height * 0.5,
       SPACE_WORLD_CONFIG.width,
       SPACE_WORLD_CONFIG.height,
-      this.currentSector.color,
-      0.05,
+      this.currentRegionIsDeepSpace ? DEEP_SPACE_OVERLAY_COLOR : this.currentSector.color,
+      this.currentRegionIsDeepSpace ? 0.034 : 0.05,
     ).setDepth(-29);
 
     this.add.ellipse(
@@ -645,12 +683,23 @@ export class SpaceScene extends Phaser.Scene {
 
   private refreshCurrentSector(): void {
     const nextSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
-    if (nextSector.id === this.currentSector.id) {
+    const nextRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y);
+    const nextRegionIsDeepSpace = isGalaxyDeepSpaceAtPosition(this.shipRoot.x, this.shipRoot.y);
+    if (
+      nextSector.id === this.currentSector.id
+      && nextRegionLabel === this.currentRegionLabel
+      && nextRegionIsDeepSpace === this.currentRegionIsDeepSpace
+    ) {
       return;
     }
 
     this.currentSector = nextSector;
-    this.backdropSectorOverlay?.setFillStyle(this.currentSector.color, 0.05);
+    this.currentRegionLabel = nextRegionLabel;
+    this.currentRegionIsDeepSpace = nextRegionIsDeepSpace;
+    this.backdropSectorOverlay?.setFillStyle(
+      this.currentRegionIsDeepSpace ? DEEP_SPACE_OVERLAY_COLOR : this.currentSector.color,
+      this.currentRegionIsDeepSpace ? 0.034 : 0.05,
+    );
   }
 
   private createBackdropStarCell(
@@ -732,35 +781,132 @@ export class SpaceScene extends Phaser.Scene {
     gameSession.setShipSpacePosition(this.shipRoot.x, this.shipRoot.y);
   }
 
-  private createMissionPlanet(): void {
-    const missionPlanet = this.getTrackedMissionPlanet();
-    if (!missionPlanet) {
-      return;
-    }
+  private indexGalaxyCelestials(): void {
+    this.galaxyDefinition.systems.forEach((system) => {
+      this.galaxySystemsById.set(system.id, system);
+      const cellKey = getSpaceCellKeyAtPosition(system.x, system.y, SPACE_WORLD_CONFIG);
+      const systemBucket = this.galaxySystemsByCell.get(cellKey);
+      if (systemBucket) {
+        systemBucket.push(system);
+      } else {
+        this.galaxySystemsByCell.set(cellKey, [system]);
+      }
+    });
 
-    const halo = this.add.circle(0, 0, missionPlanet.radius, missionPlanet.color, 0.22);
-    const landingRing = this.add.circle(0, 0, missionPlanet.radius * 1.18, 0xffffff, 0)
-      .setStrokeStyle(2, 0xfff1cb, 0.2);
-    const body = this.add.circle(0, 0, missionPlanet.radius * 0.62, missionPlanet.color, 0.94)
-      .setStrokeStyle(2, 0xfff4d9, 0.72);
-    const ring = this.add.ellipse(0, 0, missionPlanet.radius * 1.8, missionPlanet.radius * 0.52, 0xffffff, 0)
-      .setStrokeStyle(2, 0xfff1cb, 0.58);
-    ring.rotation = -0.34;
-    const glow = this.add.circle(-missionPlanet.radius * 0.18, -missionPlanet.radius * 0.2, missionPlanet.radius * 0.14, 0xffffff, 0.32);
-    const label = this.add.text(0, missionPlanet.radius + 18, missionPlanet.name, {
+    this.galaxyDefinition.planets.forEach((planet) => {
+      this.galaxyPlanetsById.set(planet.id, planet);
+      const systemBucket = this.galaxyPlanetsBySystemId.get(planet.systemId);
+      if (systemBucket) {
+        systemBucket.push(planet);
+      } else {
+        this.galaxyPlanetsBySystemId.set(planet.systemId, [planet]);
+      }
+    });
+
+    this.galaxyDefinition.moons.forEach((moon) => {
+      const planetBucket = this.galaxyMoonsByPlanetId.get(moon.planetId);
+      if (planetBucket) {
+        planetBucket.push(moon);
+      } else {
+        this.galaxyMoonsByPlanetId.set(moon.planetId, [moon]);
+      }
+    });
+  }
+
+  private getSystemStarRenderRadius(system: GalaxySystemRecord): number {
+    return 34 + (system.starSize * 11);
+  }
+
+  private getPlanetRenderRadius(planet: GalaxyPlanetRecord): number {
+    return Math.max(22, planet.radius * (planet.isHomeworld ? 0.66 : 0.54));
+  }
+
+  private getMoonRenderRadius(moon: GalaxyMoonRecord): number {
+    return Math.max(10, moon.radius * 0.48);
+  }
+
+  private createCelestialSystemView(system: GalaxySystemRecord): SpaceCelestialSystemView {
+    const children: Phaser.GameObjects.GameObject[] = [];
+    const starRadius = this.getSystemStarRenderRadius(system);
+    const trackedMissionId = this.getTrackedMissionPlanet()?.missionId ?? null;
+    const systemPlanets = this.galaxyPlanetsBySystemId.get(system.id) ?? [];
+    const planetIds: string[] = [];
+    const moonIds: string[] = [];
+    const starHalo = this.add.circle(0, 0, starRadius * 1.85, system.starColor, 0.09);
+    const starGlow = this.add.circle(0, 0, starRadius * 1.26, system.starColor, 0.2);
+    const starCore = this.add.circle(0, 0, starRadius * 0.56, system.starColor, 0.98)
+      .setStrokeStyle(2, 0xf6fbff, 0.44);
+    const highlight = this.add.circle(-starRadius * 0.16, -starRadius * 0.18, starRadius * 0.18, 0xffffff, 0.24);
+    const starLabel = this.add.text(0, -(starRadius + 16), system.name, {
       fontFamily: "Arial",
-      fontSize: "15px",
-      color: "#fff1cf",
-      fontStyle: "bold",
-      backgroundColor: "#08111bcc",
-      padding: { x: 6, y: 4 },
-    }).setOrigin(0.5, 0);
+      fontSize: "13px",
+      color: "#f6fbff",
+      backgroundColor: "#08111bc0",
+      padding: { x: 5, y: 3 },
+    }).setOrigin(0.5, 1).setAlpha(0.72);
+    children.push(starHalo);
 
-    const root = this.add.container(missionPlanet.x, missionPlanet.y, [halo, landingRing, ring, body, glow, label]).setDepth(6);
-    this.missionPlanetView = {
-      planet: missionPlanet,
+    systemPlanets.forEach((planet) => {
+      const localX = planet.x - system.x;
+      const localY = planet.y - system.y;
+      const orbitDistance = Phaser.Math.Distance.Between(system.x, system.y, planet.x, planet.y);
+      const orbit = this.add.ellipse(0, 0, orbitDistance * 2, orbitDistance * 2, 0xffffff, 0)
+        .setStrokeStyle(1, system.starColor, planet.isHomeworld ? 0.18 : 0.08);
+      children.push(orbit);
+
+      const planetRadius = this.getPlanetRenderRadius(planet);
+      const landingRing = this.add.circle(0, 0, planetRadius * 1.48, 0xffffff, 0)
+        .setStrokeStyle(2, 0xfff1cb, 0.12);
+      const halo = this.add.circle(0, 0, planetRadius * 1.16, planet.color, planet.isHomeworld ? 0.24 : 0.16);
+      const body = this.add.circle(0, 0, planetRadius, planet.color, 0.96)
+        .setStrokeStyle(2, planet.isHomeworld ? 0xfff4d9 : 0xf2fbff, planet.isHomeworld ? 0.82 : 0.44);
+      const glow = this.add.circle(-(planetRadius * 0.18), -(planetRadius * 0.2), planetRadius * 0.18, 0xffffff, 0.24);
+      const label = this.add.text(0, planetRadius + 12, planet.name, {
+        fontFamily: "Arial",
+        fontSize: "12px",
+        color: planet.isHomeworld ? "#fff1cf" : "#dce9ff",
+        fontStyle: planet.isHomeworld ? "bold" : "normal",
+        backgroundColor: "#08111bcc",
+        padding: { x: 5, y: 3 },
+      }).setOrigin(0.5, 0);
+      label.setVisible(planet.isHomeworld || planet.missionIds.includes(trackedMissionId ?? ""));
+
+      const planetRoot = this.add.container(localX, localY, [landingRing, halo, body, glow, label]);
+      planetRoot.setSize(planetRadius * 3, planetRadius * 3);
+      children.push(planetRoot);
+      this.activePlanetViews.set(planet.id, {
+        planetId: planet.id,
+        root: planetRoot,
+        landingRing,
+        label,
+      });
+      planetIds.push(planet.id);
+
+      const moons = this.galaxyMoonsByPlanetId.get(planet.id) ?? [];
+      moons.forEach((moon) => {
+        const localMoonX = moon.x - system.x;
+        const localMoonY = moon.y - system.y;
+        const moonOrbitDistance = Phaser.Math.Distance.Between(planet.x, planet.y, moon.x, moon.y);
+        const moonOrbit = this.add.ellipse(localX, localY, moonOrbitDistance * 2, moonOrbitDistance * 2, 0xffffff, 0)
+          .setStrokeStyle(1, planet.color, 0.1);
+        const moonRadius = this.getMoonRenderRadius(moon);
+        const moonHalo = this.add.circle(localMoonX, localMoonY, moonRadius * 1.18, moon.color, 0.14);
+        const moonBody = this.add.circle(localMoonX, localMoonY, moonRadius, moon.color, 0.9)
+          .setStrokeStyle(1, 0xf4fbff, 0.34);
+        children.push(moonOrbit, moonHalo, moonBody);
+        moonIds.push(moon.id);
+      });
+    });
+
+    children.push(starGlow, starCore, highlight, starLabel);
+
+    const root = this.add.container(system.x, system.y, children).setDepth(5);
+    root.setSize(starRadius * 6, starRadius * 6);
+    return {
+      systemId: system.id,
       root,
-      landingRing,
+      planetIds,
+      moonIds,
     };
   }
 
@@ -828,13 +974,65 @@ export class SpaceScene extends Phaser.Scene {
       this.shipRoot.y,
       SPACE_WORLD_CONFIG.activeShipCellRadius,
     );
+    const desiredCelestialCellKeys = getSpaceCellKeysAroundPosition(
+      this.shipRoot.x,
+      this.shipRoot.y,
+      CELESTIAL_CELL_RADIUS,
+    );
     const shouldRefreshFields = force || !areCellKeyListsEqual(this.activeFieldCellKeys, desiredFieldCellKeys);
     const shouldRefreshShips = force || !areCellKeyListsEqual(this.activeShipCellKeys, desiredShipCellKeys);
+    const shouldRefreshCelestials = force || !areCellKeyListsEqual(this.activeCelestialCellKeys, desiredCelestialCellKeys);
 
     this.activeFieldCellKeys = desiredFieldCellKeys;
     this.activeShipCellKeys = desiredShipCellKeys;
+    this.activeCelestialCellKeys = desiredCelestialCellKeys;
     this.syncActiveFieldObjects(desiredFieldCellKeys, shouldRefreshFields);
     this.syncActiveFactionShips(desiredShipCellKeys, shouldRefreshShips);
+    this.syncActiveCelestialSystems(desiredCelestialCellKeys, shouldRefreshCelestials);
+  }
+
+  private syncActiveCelestialSystems(cellKeys: SpaceWorldCellKey[], shouldActivate: boolean): void {
+    const activeCellKeySet = new Set(cellKeys);
+
+    this.activeCelestialSystems.forEach((systemView, systemId) => {
+      const system = this.galaxySystemsById.get(systemId);
+      if (!system) {
+        this.deactivateCelestialSystem(systemView);
+        return;
+      }
+
+      const currentCellKey = getSpaceCellKeyAtPosition(system.x, system.y, SPACE_WORLD_CONFIG);
+      if (activeCellKeySet.has(currentCellKey)) {
+        return;
+      }
+
+      this.deactivateCelestialSystem(systemView);
+    });
+
+    if (!shouldActivate) {
+      return;
+    }
+
+    const activeSystemIds = new Set(this.activeCelestialSystems.keys());
+    cellKeys.forEach((cellKey) => {
+      const systems = this.galaxySystemsByCell.get(cellKey) ?? [];
+      systems.forEach((system) => {
+        if (activeSystemIds.has(system.id)) {
+          return;
+        }
+
+        const view = this.createCelestialSystemView(system);
+        this.activeCelestialSystems.set(system.id, view);
+      });
+    });
+  }
+
+  private deactivateCelestialSystem(systemView: SpaceCelestialSystemView): void {
+    systemView.planetIds.forEach((planetId) => {
+      this.activePlanetViews.delete(planetId);
+    });
+    systemView.root.destroy(true);
+    this.activeCelestialSystems.delete(systemView.systemId);
   }
 
   private syncActiveFieldObjects(cellKeys: SpaceWorldCellKey[], shouldActivate: boolean): void {
@@ -2898,7 +3096,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private refreshHud(): void {
     this.refreshCurrentSector();
-    const sector = this.getCurrentGalaxySector();
+    const regionLabel = this.getCurrentRegionLabel();
     const missionPlanet = this.getTrackedMissionPlanet();
     const trackedMissionId = missionPlanet?.missionId ?? this.routeMissionId ?? gameSession.getTrackedMissionId();
     const trackedMission = trackedMissionId ? getMissionContract(trackedMissionId) : null;
@@ -2931,15 +3129,15 @@ export class SpaceScene extends Phaser.Scene {
     const autoFire = gameSession.settings.controls.autoFire;
 
     this.routeText?.setText(trackedMission
-      ? `Route staged: ${trackedMission.title}  |  Sector: ${sector.label}`
-      : `Free roam launch  |  Sector: ${sector.label}`);
+      ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
+      : `Free roam launch  |  Region: ${regionLabel}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
     this.contactText?.setText(missionPlanet
       ? `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
       : `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`);
     this.coordinateText?.setText(missionPlanet
       ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\nHYPER ${hyperdriveStatus}`
-      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nSECTOR ${sector.label}\nHYPER ${hyperdriveStatus}`);
+      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\nHYPER ${hyperdriveStatus}`);
     this.returnButton?.setLabel(landingReady ? "Land On Planet" : "Return To Ship");
     this.attackButton?.setLabel("Attack");
     this.attackButton?.setCooldownProgress(0);
@@ -3008,8 +3206,24 @@ export class SpaceScene extends Phaser.Scene {
       });
     });
 
+    this.activePlanetViews.forEach((_planetView, planetId) => {
+      const planet = this.galaxyPlanetsById.get(planetId);
+      if (!planet) {
+        return;
+      }
+      sources.push({
+        id: `planet:${planet.id}`,
+        kind: planet.missionIds.length > 0 ? "mission-planet" : "planet",
+        label: planet.name,
+        x: planet.x,
+        y: planet.y,
+        radius: this.getPlanetRenderRadius(planet),
+        color: planet.color,
+      });
+    });
+
     const missionPlanet = this.getTrackedMissionPlanet();
-    if (missionPlanet) {
+    if (missionPlanet && !this.activePlanetViews.has(missionPlanet.id)) {
       sources.push({
         id: `mission:${missionPlanet.missionId}`,
         kind: "mission-planet",
@@ -3040,6 +3254,10 @@ export class SpaceScene extends Phaser.Scene {
 
   private getCurrentGalaxySector(): GalaxySectorConfig {
     return this.currentSector;
+  }
+
+  private getCurrentRegionLabel(): string {
+    return this.currentRegionLabel;
   }
 
   private getTrackedMissionPlanet(): GalaxyMissionPlanet | null {
@@ -3160,16 +3378,22 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updateMissionPlanetVisuals(missionPlanet: GalaxyMissionPlanet | null, landingReady: boolean): void {
-    if (!this.missionPlanetView || !missionPlanet || this.missionPlanetView.planet.missionId !== missionPlanet.missionId) {
+    if (!missionPlanet) {
       return;
     }
 
-    this.missionPlanetView.landingRing.setStrokeStyle(
+    const planetView = this.activePlanetViews.get(missionPlanet.id);
+    if (!planetView) {
+      return;
+    }
+
+    planetView.label.setVisible(true);
+    planetView.landingRing.setStrokeStyle(
       2,
       landingReady ? 0x9df7c7 : 0xfff1cb,
       landingReady ? 0.9 : 0.2,
     );
-    this.missionPlanetView.landingRing.setFillStyle(landingReady ? 0x9df7c7 : 0xffffff, landingReady ? 0.08 : 0);
+    planetView.landingRing.setFillStyle(landingReady ? 0x9df7c7 : 0xffffff, landingReady ? 0.08 : 0);
   }
 
   private updateWaypointIndicator(
@@ -3454,6 +3678,8 @@ export class SpaceScene extends Phaser.Scene {
         restrictedCoreRadius: GALAXY_WORLD_CONFIG.restrictedCoreRadius,
       },
       sector: this.getCurrentGalaxySector().label,
+      region: this.getCurrentRegionLabel(),
+      isDeepSpace: this.currentRegionIsDeepSpace,
       playerRaceId: gameSession.getPlayerRaceId(),
       routeMissionId: this.routeMissionId,
       routeTitle: this.routeTitle,
@@ -3494,6 +3720,9 @@ export class SpaceScene extends Phaser.Scene {
       landingReady: this.canLandOnTrackedMissionPlanet(),
       asteroidsRemaining: this.getRemainingFieldObjectCount(),
       activeAsteroids: this.asteroids.length,
+      activeCelestialSystems: this.activeCelestialSystems.size,
+      activeCelestialPlanets: this.activePlanetViews.size,
+      activeCelestialMoons: [...this.activeCelestialSystems.values()].reduce((sum, entry) => sum + entry.moonIds.length, 0),
       destroyedObjects: this.destroyedObjects,
       factionShipsRemaining: [...this.shipStates.values()].filter((state) => !state.destroyed).length,
       activeFactionShips: this.factionShips.length,

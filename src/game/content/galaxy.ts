@@ -165,6 +165,18 @@ const ACTIVE_SYSTEM_RING_IDS = ["inner", "second", "third", "outer"] as const;
 const GALAXY_SYSTEM_MIN_DISTANCE = 1080;
 const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
+const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
+const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
+const GALAXY_SYSTEM_NAME_PARTS = [
+  "al", "an", "ar", "bel", "cal", "cer", "dor", "el", "eris", "fen",
+  "gal", "hal", "ion", "jor", "ka", "lor", "mer", "nyx", "or", "pra",
+  "quor", "ryl", "sol", "tal", "ul", "vor", "wyr", "xer", "yor", "zen",
+] as const;
+const GALAXY_WORLD_NAME_PARTS = [
+  "ae", "al", "an", "ara", "bel", "ca", "cel", "dra", "el", "eon",
+  "fal", "gan", "hel", "ia", "jor", "ka", "lor", "myr", "na", "or",
+  "pra", "qua", "ria", "sel", "ta", "ul", "va", "wen", "xan", "yor",
+] as const;
 
 const GALAXY_HOMEWORLD_SPECS: Record<RaceId, GalaxyHomeworldSpec> = {
   nevari: { name: "Nevaeh", moonCount: 1 },
@@ -563,13 +575,70 @@ function pickWeighted<T>(entries: Array<{ value: T; weight: number }>, rng: Seed
   return entries[entries.length - 1].value;
 }
 
-function sanitizeSectorToken(sector: GalaxySectorConfig): string {
-  return sector.label.split(" ")[0] ?? sector.id;
+function getGalaxyAngleDeg(x: number, y: number): number {
+  const dx = x - GALAXY_WORLD_CONFIG.center.x;
+  const dy = (y - GALAXY_WORLD_CONFIG.center.y) / GALAXY_WORLD_CONFIG.verticalScale;
+  return wrapAngleDegrees((Math.atan2(dy, dx) * 180) / Math.PI);
 }
 
-function toRomanNumeral(value: number): string {
-  const numerals = ["I", "II", "III", "IV", "V", "VI"] as const;
-  return numerals[Math.max(0, Math.min(numerals.length - 1, value - 1))] ?? `${value}`;
+function normalizeSectorAngle(angleDeg: number, sector: GalaxySectorConfig): number {
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  let candidate = wrapAngleDegrees(angleDeg);
+  if (candidate < start) {
+    candidate += 360;
+  }
+  return Math.max(start, Math.min(end, candidate));
+}
+
+function getSectorInteriorMarginDegrees(sector: GalaxySectorConfig): number {
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  return Math.min(GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG, (end - start) * 0.18);
+}
+
+function getPlanetAngularMarginFromSectorEdge(planet: GalaxyPlanetRecord, sector: GalaxySectorConfig): number {
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  const angleDeg = normalizeSectorAngle(getGalaxyAngleDeg(planet.x, planet.y), sector);
+  return Math.min(angleDeg - start, end - angleDeg);
+}
+
+function getHomeworldCandidateScore(planet: GalaxyPlanetRecord, sector: GalaxySectorConfig): number {
+  const ring = getGalaxyRingByIdLocal("third");
+  const ringMid = (ring.minRadius + ring.maxRadius) * 0.5;
+  const ringHalfSpan = Math.max(1, (ring.maxRadius - ring.minRadius) * 0.5);
+  const radialDistance = getGalaxyRadialDistance(planet.x, planet.y);
+  const radialScore = Math.abs(radialDistance - ringMid) / ringHalfSpan;
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  const sectorMid = (start + end) * 0.5;
+  const angleDeg = normalizeSectorAngle(getGalaxyAngleDeg(planet.x, planet.y), sector);
+  const angularScore = Math.abs(angleDeg - sectorMid) / Math.max(1, (end - start) * 0.5);
+  const orbitScore = planet.orbitIndex * 0.08;
+  return radialScore + angularScore + orbitScore;
+}
+
+function createProceduralName(
+  rng: SeededRandom,
+  usedNames: Set<string>,
+  parts: readonly string[],
+  minParts: number,
+  maxParts: number,
+): string {
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const partCount = rng.int(minParts, maxParts);
+    let raw = "";
+    for (let index = 0; index < partCount; index += 1) {
+      raw += rng.pick(parts);
+    }
+    const trimmed = raw.replace(/([aeiou])\1+/g, "$1").replace(/q(?!u)/g, "qu");
+    const candidate = `${trimmed.slice(0, 1).toUpperCase()}${trimmed.slice(1)}`;
+    if (!usedNames.has(candidate)) {
+      usedNames.add(candidate);
+      return candidate;
+    }
+  }
+
+  const fallback = `World-${usedNames.size + 1}`;
+  usedNames.add(fallback);
+  return fallback;
 }
 
 function getPlanetCount(rng: SeededRandom): number {
@@ -611,10 +680,7 @@ function allocateRingSystemCounts(total: number, rng: SeededRandom): GalaxyRingS
 
 function clampAngleToSector(angleDeg: number, sector: GalaxySectorConfig): number {
   const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
-  let candidate = wrapAngleDegrees(angleDeg);
-  if (candidate < start) {
-    candidate += 360;
-  }
+  const candidate = normalizeSectorAngle(angleDeg, sector);
   return wrapAngleDegrees(Math.max(start, Math.min(end, candidate)));
 }
 
@@ -702,8 +768,12 @@ function createCandidateSystemPoint(
   return pointFromDegrees(getGalaxySectorMidAngleDeg(sector), pickRadiusInRing(ring, rng));
 }
 
-function buildSystemName(sector: GalaxySectorConfig, index: number): string {
-  return `${sanitizeSectorToken(sector)}-${index.toString().padStart(2, "0")}`;
+function buildSystemName(rng: SeededRandom, usedNames: Set<string>): string {
+  return createProceduralName(rng, usedNames, GALAXY_SYSTEM_NAME_PARTS, 2, 3);
+}
+
+function buildPlanetName(rng: SeededRandom, usedNames: Set<string>): string {
+  return createProceduralName(rng, usedNames, GALAXY_WORLD_NAME_PARTS, 2, 3);
 }
 
 function buildPlanetColor(sector: GalaxySectorConfig, rng: SeededRandom, orbitIndex: number): number {
@@ -721,6 +791,7 @@ function createPlanetsForSystem(
   sector: GalaxySectorConfig,
   planets: GalaxyPlanetRecord[],
   rng: SeededRandom,
+  usedPlanetNames: Set<string>,
 ): void {
   const planetCount = getPlanetCount(rng);
   const baseOrbit = 240 + rng.range(0, 90);
@@ -741,7 +812,7 @@ function createPlanetsForSystem(
       sectorId: system.sectorId,
       ringId: system.ringId,
       orbitIndex,
-      name: `${system.name} ${toRomanNumeral(orbitIndex + 1)}`,
+      name: buildPlanetName(rng, usedPlanetNames),
       x: Math.round(point.x),
       y: Math.round(point.y),
       radius: Math.round(92 + rng.range(0, 34) + (orbitIndex * 4)),
@@ -756,8 +827,9 @@ function createPlanetsForSystem(
   }
 }
 
-function assignHomeworlds(planets: GalaxyPlanetRecord[], rng: SeededRandom): GalaxyHomeworldRecord[] {
+function assignHomeworlds(planets: GalaxyPlanetRecord[]): GalaxyHomeworldRecord[] {
   const homeworlds: GalaxyHomeworldRecord[] = [];
+  const thirdRing = getGalaxyRingByIdLocal("third");
 
   GALAXY_SECTORS.forEach((sector) => {
     const spec = GALAXY_HOMEWORLD_SPECS[sector.raceId];
@@ -767,8 +839,17 @@ function assignHomeworlds(planets: GalaxyPlanetRecord[], rng: SeededRandom): Gal
       && !planet.isHomeworld
     ));
     const fallbackCandidates = planets.filter((planet) => planet.sectorId === sector.id && !planet.isHomeworld);
-    const candidatePool = candidates.length > 0 ? candidates : fallbackCandidates;
-    const homeworldPlanet = candidatePool[rng.int(0, candidatePool.length - 1)];
+    const safeCandidates = candidates.filter((planet) => {
+      const angularMargin = getPlanetAngularMarginFromSectorEdge(planet, sector);
+      const radialDistance = getGalaxyRadialDistance(planet.x, planet.y);
+      return angularMargin >= getSectorInteriorMarginDegrees(sector)
+        && radialDistance >= thirdRing.minRadius + GALAXY_HOMEWORLD_RING_EDGE_MARGIN
+        && radialDistance <= thirdRing.maxRadius - GALAXY_HOMEWORLD_RING_EDGE_MARGIN;
+    });
+    const candidatePool = (safeCandidates.length > 0 ? safeCandidates : candidates.length > 0 ? candidates : fallbackCandidates)
+      .slice()
+      .sort((left, right) => getHomeworldCandidateScore(left, sector) - getHomeworldCandidateScore(right, sector));
+    const homeworldPlanet = candidatePool[0] ?? fallbackCandidates[0];
     homeworldPlanet.isHomeworld = true;
     homeworldPlanet.homeworldRaceId = sector.raceId;
     homeworldPlanet.name = spec.name;
@@ -869,6 +950,8 @@ function createSectorSystems(
   systems: GalaxySystemRecord[],
   planets: GalaxyPlanetRecord[],
   rng: SeededRandom,
+  usedSystemNames: Set<string>,
+  usedPlanetNames: Set<string>,
 ): void {
   const systemCount = rng.int(20, 40);
   const ringCounts = allocateRingSystemCounts(systemCount, rng);
@@ -886,7 +969,7 @@ function createSectorSystems(
       const systemId = `system-${sectorIndex + 1}-${sectorSystemIndex + 1}`;
       const system: GalaxySystemRecord = {
         id: systemId,
-        name: buildSystemName(sector, sectorSystemIndex + 1),
+        name: buildSystemName(rng, usedSystemNames),
         sectorId: sector.id,
         ringId,
         starId: `${systemId}-star`,
@@ -897,7 +980,7 @@ function createSectorSystems(
         planetIds: [],
       };
       systems.push(system);
-      createPlanetsForSystem(system, sector, planets, rng);
+      createPlanetsForSystem(system, sector, planets, rng, usedPlanetNames);
       sectorSystemIndex += 1;
     }
   });
@@ -911,12 +994,14 @@ export function createGalaxyDefinition(seed = createGalaxySeed()): GalaxyDefinit
   const rng = new SeededRandom(seed);
   const systems: GalaxySystemRecord[] = [];
   const planets: GalaxyPlanetRecord[] = [];
+  const usedSystemNames = new Set<string>();
+  const usedPlanetNames = new Set<string>(Object.values(GALAXY_HOMEWORLD_SPECS).map((spec) => spec.name));
 
   GALAXY_SECTORS.forEach((sector, sectorIndex) => {
-    createSectorSystems(sector, sectorIndex, systems, planets, rng);
+    createSectorSystems(sector, sectorIndex, systems, planets, rng, usedSystemNames, usedPlanetNames);
   });
 
-  const homeworlds = assignHomeworlds(planets, rng);
+  const homeworlds = assignHomeworlds(planets);
   const moons: GalaxyMoonRecord[] = [];
   createMoonsForPlanets(planets, homeworlds, moons, rng);
   const missionAssignments = assignMissionTargets(planets, rng);
@@ -1031,9 +1116,7 @@ export function getGalaxySectorByRace(raceId: RaceId): GalaxySectorConfig {
 }
 
 export function getGalaxySectorAtPosition(x: number, y: number): GalaxySectorConfig {
-  const dx = x - GALAXY_WORLD_CONFIG.center.x;
-  const dy = (y - GALAXY_WORLD_CONFIG.center.y) / GALAXY_WORLD_CONFIG.verticalScale;
-  const angleDeg = wrapAngleDegrees((Math.atan2(dy, dx) * 180) / Math.PI);
+  const angleDeg = getGalaxyAngleDeg(x, y);
   const matching = GALAXY_SECTORS.find((sector) => {
     const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
     let candidate = angleDeg;
@@ -1044,6 +1127,16 @@ export function getGalaxySectorAtPosition(x: number, y: number): GalaxySectorCon
   });
 
   return matching ?? GALAXY_SECTORS[0];
+}
+
+export function isGalaxyDeepSpaceAtPosition(x: number, y: number): boolean {
+  return getGalaxyRingAtPosition(x, y).id === "deep-space";
+}
+
+export function getGalaxyRegionLabelAtPosition(x: number, y: number): string {
+  return isGalaxyDeepSpaceAtPosition(x, y)
+    ? "Deep space"
+    : getGalaxySectorAtPosition(x, y).label;
 }
 
 export function getGalaxySectorMidAngleDeg(sector: GalaxySectorConfig): number {

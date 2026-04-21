@@ -11,12 +11,59 @@ const DATAPAD_BUTTON_Y = 54;
 const MAP_HOVER_X = 276;
 const MAP_HOVER_Y = 248;
 const TEST_SHIP_POSITION = { x: 8120, y: 7880 };
-const RETURN_SHIP_POSITION = { x: 9033, y: 7422 };
+const DEEP_SPACE_POSITION = { x: 77000, y: 6200 };
+const HOMEWORLD_RING_MARGIN = 520;
+const HOMEWORLD_EDGE_MARGIN_DEG = 7;
+const THIRD_RING_ID = "third";
+const SECTOR_ARCS = {
+  "olydran-expanse": { startAngleDeg: 338, endAngleDeg: 28 },
+  "aaruian-reach": { startAngleDeg: 28, endAngleDeg: 78 },
+  "elsari-veil": { startAngleDeg: 78, endAngleDeg: 130 },
+  "nevari-bloom": { startAngleDeg: 130, endAngleDeg: 184 },
+  "rakkan-drift": { startAngleDeg: 184, endAngleDeg: 238 },
+  "svarin-span": { startAngleDeg: 238, endAngleDeg: 292 },
+  "ashari-crown": { startAngleDeg: 292, endAngleDeg: 338 },
+};
 
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function wrapAngleDegrees(angleDeg) {
+  let wrapped = angleDeg % 360;
+  if (wrapped < 0) {
+    wrapped += 360;
+  }
+  return wrapped;
+}
+
+function expandWrappedArc(startAngleDeg, endAngleDeg) {
+  const start = wrapAngleDegrees(startAngleDeg);
+  let end = wrapAngleDegrees(endAngleDeg);
+  if (end <= start) {
+    end += 360;
+  }
+  return { start, end };
+}
+
+function getGalaxyRadialDistance(point) {
+  const dx = point.x - 40000;
+  const dy = (point.y - 40000) / 0.72;
+  return Math.sqrt((dx * dx) + (dy * dy));
+}
+
+function getAngularMarginFromSectorEdge(point, sectorId) {
+  const sector = SECTOR_ARCS[sectorId];
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  const dx = point.x - 40000;
+  const dy = (point.y - 40000) / 0.72;
+  let angleDeg = wrapAngleDegrees((Math.atan2(dy, dx) * 180) / Math.PI);
+  if (angleDeg < start) {
+    angleDeg += 360;
+  }
+  return Math.min(angleDeg - start, end - angleDeg);
 }
 
 async function ensureDir(dir) {
@@ -92,10 +139,12 @@ try {
       routeText: overlay?.routeText?.text ?? "",
       detailText: overlay?.detailText?.text ?? "",
       hoverText: overlay?.hoverText?.text ?? "",
+      mapDebug: overlay?.getDebugSnapshot?.() ?? null,
       shipSpacePosition: window.__loeSession?.getShipSpacePosition?.() ?? null,
       trackedMissionId: window.__loeSession?.getTrackedMissionId?.() ?? null,
       missionPlanet,
       homeworldPlanets,
+      galaxy,
       galaxySummary: galaxy
         ? {
             systemCountsBySector: galaxy.systems.reduce((counts, system) => {
@@ -115,6 +164,8 @@ try {
     `Unexpected initial ship position on hub map: ${JSON.stringify(hubMapState.shipSpacePosition)}`);
   assert(hubMapState.routeText.includes(`Ship: X ${TEST_SHIP_POSITION.x}  Y ${TEST_SHIP_POSITION.y}`),
     `Hub map route text is missing shared ship coordinates: ${hubMapState.routeText}`);
+  assert(hubMapState.routeText.includes("Region: "),
+    `Hub map route text is missing the region label: ${hubMapState.routeText}`);
   assert(hubMapState.missionPlanet, "Hub map did not resolve a generated mission planet for ember-watch");
   assert(hubMapState.detailText.includes(hubMapState.missionPlanet.name),
     `Hub map detail text is missing the generated mission planet: ${hubMapState.detailText}`);
@@ -125,6 +176,31 @@ try {
   Object.entries(hubMapState.galaxySummary?.systemCountsBySector ?? {}).forEach(([sectorId, count]) => {
     assert(count >= 20 && count <= 40, `Sector ${sectorId} should have 20-40 systems, got ${count}`);
   });
+  const thirdRing = hubMapState.galaxy?.rings?.find?.((ring) => ring.id === THIRD_RING_ID) ?? null;
+  assert(thirdRing, "Galaxy is missing the third-ring definition needed for homeworld placement");
+  const homeworldPlanetsById = new Map((hubMapState.homeworldPlanets ?? []).map((planet) => [planet.id, planet]));
+  (hubMapState.galaxy?.homeworlds ?? []).forEach((homeworld) => {
+    const planet = homeworldPlanetsById.get(homeworld.planetId);
+    assert(planet, `Homeworld planet record missing for ${homeworld.name}`);
+    assert(planet.ringId === THIRD_RING_ID, `Homeworld ${homeworld.name} is not in the third ring`);
+    const radialDistance = getGalaxyRadialDistance(planet);
+    assert(radialDistance >= thirdRing.minRadius + HOMEWORLD_RING_MARGIN,
+      `Homeworld ${homeworld.name} is too close to the inner third-ring edge`);
+    assert(radialDistance <= thirdRing.maxRadius - HOMEWORLD_RING_MARGIN,
+      `Homeworld ${homeworld.name} is too close to the outer third-ring edge`);
+    assert(getAngularMarginFromSectorEdge(planet, homeworld.sectorId) >= HOMEWORLD_EDGE_MARGIN_DEG,
+      `Homeworld ${homeworld.name} is too close to the edge of ${homeworld.sectorId}`);
+  });
+  const placeholderNamePattern = /^(Ashari|Aaruian|Nevari|Rakkan|Svarin|Olydran|Elsari|Averna|Elysiem|Nevaeh|Olympos|Nar'Akka|A'aru|Svaria)-/i;
+  (hubMapState.galaxy?.planets ?? [])
+    .filter((planet) => !planet.isHomeworld)
+    .slice(0, 28)
+    .forEach((planet) => {
+      assert(!placeholderNamePattern.test(planet.name),
+        `Generated non-home planet still uses a placeholder/race-style name: ${planet.name}`);
+    });
+  assert((hubMapState.mapDebug?.visibleSystems ?? 0) > 0, "Galaxy map did not report any visible generated systems");
+  assert((hubMapState.mapDebug?.visiblePlanets ?? 0) > 0, "Galaxy map did not report any visible generated planets");
 
   const sectorClickTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
@@ -153,6 +229,7 @@ try {
       subtitle: overlay?.subtitle?.text ?? "",
       infoTitle: overlay?.infoTitle?.text ?? "",
       detailText: overlay?.detailText?.text ?? "",
+      mapDebug: overlay?.getDebugSnapshot?.() ?? null,
       backVisible: overlay?.sectorBackButton?.container?.visible ?? false,
       selectedSectorId: overlay?.selectedSectorId ?? null,
       visibleLabels,
@@ -167,6 +244,10 @@ try {
     `Sector detail subtitle did not update: ${sectorDetailState.subtitle}`);
   assert(sectorDetailState.infoTitle.includes("Readout"),
     `Sector detail info title did not update: ${sectorDetailState.infoTitle}`);
+  assert((sectorDetailState.mapDebug?.visiblePlanets ?? 0) > 0,
+    "Sector detail view did not report any visible generated planets");
+  assert((sectorDetailState.mapDebug?.visibleMoons ?? 0) > 0,
+    "Sector detail view did not report any visible generated moons");
 
   const backButtonTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
@@ -202,10 +283,12 @@ try {
     return {
       hoverText: hub?.galaxyMapOverlay?.hoverText?.text ?? "",
       hoverLabel: hub?.galaxyMapOverlay?.hoverLabel?.text ?? "",
+      mapDebug: hub?.galaxyMapOverlay?.getDebugSnapshot?.() ?? null,
     };
   });
 
   assert(hoverState.hoverText.includes("Hover: X "), `Map hover readout did not populate: ${hoverState.hoverText}`);
+  assert(hoverState.hoverText.includes("Hover region: "), `Map hover readout did not expose the hover region: ${hoverState.hoverText}`);
   assert(hoverState.hoverLabel.length > 0, "Map hover label did not render live coordinates");
 
   await page.evaluate(() => {
@@ -232,6 +315,36 @@ try {
   assert(spaceStart.coordinateText.includes(`POS X ${TEST_SHIP_POSITION.x}  Y ${TEST_SHIP_POSITION.y}`),
     `Space HUD is missing player coordinates: ${spaceStart.coordinateText}`);
 
+  await page.evaluate((missionPlanet) => {
+    const space = window.__loeGame?.scene.keys.space;
+    if (!space || !missionPlanet) {
+      return;
+    }
+    const nextX = missionPlanet.x - 540;
+    const nextY = missionPlanet.y;
+    space.shipRoot.x = nextX;
+    space.shipRoot.y = nextY;
+    space.shipVelocity.set(0, 0);
+    window.__loeSession?.setShipSpacePosition?.(nextX, nextY);
+    space.syncActiveWorld?.(true);
+    space.refreshHud?.();
+  }, hubMapState.missionPlanet);
+  await page.waitForTimeout(150);
+  await capture(page, "space-generated-system-nearby.png");
+
+  const nearbyCelestialState = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    return {
+      snapshot: space?.getDebugSnapshot?.() ?? null,
+      coordinateText: space?.coordinateText?.text ?? "",
+    };
+  });
+
+  assert((nearbyCelestialState.snapshot?.activeCelestialSystems ?? 0) > 0,
+    `Space scene did not activate any generated celestial systems near the mission target: ${JSON.stringify(nearbyCelestialState.snapshot)}`);
+  assert((nearbyCelestialState.snapshot?.activeCelestialPlanets ?? 0) > 0,
+    `Space scene did not activate any generated planets near the mission target: ${JSON.stringify(nearbyCelestialState.snapshot)}`);
+
   await page.evaluate((shipPosition) => {
     const space = window.__loeGame?.scene.keys.space;
     if (!space) {
@@ -241,9 +354,11 @@ try {
     space.shipRoot.y = shipPosition.y;
     space.shipVelocity.set(0, 0);
     window.__loeSession?.setShipSpacePosition?.(shipPosition.x, shipPosition.y);
+    space.syncActiveWorld?.(true);
     space.refreshHud?.();
-  }, RETURN_SHIP_POSITION);
+  }, DEEP_SPACE_POSITION);
   await page.waitForTimeout(100);
+  await capture(page, "space-deep-space-region.png");
 
   const movedSpace = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -254,12 +369,16 @@ try {
     };
   });
 
-  assert(movedSpace.snapshot?.ship?.x === RETURN_SHIP_POSITION.x && movedSpace.snapshot?.ship?.y === RETURN_SHIP_POSITION.y,
+  assert(movedSpace.snapshot?.ship?.x === DEEP_SPACE_POSITION.x && movedSpace.snapshot?.ship?.y === DEEP_SPACE_POSITION.y,
     `Space ship position did not update to the expected coordinates: ${JSON.stringify(movedSpace.snapshot?.ship)}`);
-  assert(movedSpace.sessionShipPosition?.x === RETURN_SHIP_POSITION.x && movedSpace.sessionShipPosition?.y === RETURN_SHIP_POSITION.y,
+  assert(movedSpace.sessionShipPosition?.x === DEEP_SPACE_POSITION.x && movedSpace.sessionShipPosition?.y === DEEP_SPACE_POSITION.y,
     `Session ship position did not track the moved ship: ${JSON.stringify(movedSpace.sessionShipPosition)}`);
-  assert(movedSpace.coordinateText.includes(`POS X ${RETURN_SHIP_POSITION.x}  Y ${RETURN_SHIP_POSITION.y}`),
+  assert(movedSpace.coordinateText.includes(`POS X ${DEEP_SPACE_POSITION.x}  Y ${DEEP_SPACE_POSITION.y}`),
     `Space HUD did not refresh to the moved ship position: ${movedSpace.coordinateText}`);
+  assert(movedSpace.snapshot?.region === "Deep space",
+    `Space region label did not switch to Deep space outside the galaxy body: ${JSON.stringify(movedSpace.snapshot)}`);
+  assert(movedSpace.snapshot?.isDeepSpace === true,
+    `Space debug snapshot did not flag the player as being in deep space: ${JSON.stringify(movedSpace.snapshot)}`);
 
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -286,10 +405,12 @@ try {
   });
 
   assert(returnedHubMap.snapshot?.mapVisible === true, "Map tab did not reopen after returning from space");
-  assert(returnedHubMap.shipSpacePosition?.x === RETURN_SHIP_POSITION.x && returnedHubMap.shipSpacePosition?.y === RETURN_SHIP_POSITION.y,
+  assert(returnedHubMap.shipSpacePosition?.x === DEEP_SPACE_POSITION.x && returnedHubMap.shipSpacePosition?.y === DEEP_SPACE_POSITION.y,
     `Returned hub map lost the shared ship position: ${JSON.stringify(returnedHubMap.shipSpacePosition)}`);
-  assert(returnedHubMap.routeText.includes(`Ship: X ${RETURN_SHIP_POSITION.x}  Y ${RETURN_SHIP_POSITION.y}`),
+  assert(returnedHubMap.routeText.includes(`Ship: X ${DEEP_SPACE_POSITION.x}  Y ${DEEP_SPACE_POSITION.y}`),
     `Returned hub map is missing the updated ship coordinates: ${returnedHubMap.routeText}`);
+  assert(returnedHubMap.routeText.includes("Region: Deep space"),
+    `Returned hub map did not report Deep space after moving outside the galaxy body: ${returnedHubMap.routeText}`);
 
   const result = {
     verifiedScenes: ["hub", "space", "hub"],
