@@ -2,9 +2,19 @@ import Phaser from "phaser";
 
 import {
   clampPointToGalaxyTravelBounds,
+  createGalaxyDefinition,
+  createGalaxySeed,
   getDefaultGalaxySpawnPoint,
+  getGalaxyHomeworldByRace,
+  getGalaxyHomeworldPlanets,
+  getGalaxyPlanetById,
   getGalaxySpawnPointForRace,
+  getMissionPlanetForMission as getMissionPlanetForMissionFromGalaxy,
+  normalizeGalaxyDefinition,
+  type GalaxyDefinition,
+  type GalaxyMissionPlanet,
   type GalaxyPoint,
+  type GalaxyPlanetRecord,
 } from "../content/galaxy";
 import {
   DEFAULT_SQUAD_ASSIGNMENTS,
@@ -300,7 +310,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 8;
+  version: 9;
   meta: {
     lastSavedAt: string | null;
   };
@@ -330,6 +340,7 @@ export type SaveData = {
     exhaustedMissionIds: string[];
     unlockedMissionIds: string[];
   };
+  galaxy: GalaxyDefinition;
   ship: ShipState;
 };
 
@@ -374,43 +385,74 @@ const DEFAULT_SETTINGS: GameSettings = {
   },
 };
 
-const DEFAULT_SAVE: SaveData = {
-  version: 8,
-  meta: {
-    lastSavedAt: null,
-  },
-  profile: {
-    callsign: "Champion",
-    raceId: "olydran",
-    level: 1,
-    xp: 0,
-    credits: 140,
-  },
-  loadout: {
-    weapon: "Unarmed",
-    ability: "Pulse Burst",
-    support: "Arc Lance",
-    companion: "Rook / Sera / Lyra",
-    squad: clone([...DEFAULT_SQUAD_ASSIGNMENTS]),
-    equipment: cloneEquipmentLoadout(DEFAULT_EQUIPMENT),
-    cargo: cloneCargoSlots(DEFAULT_CARGO_SLOTS),
-    crafting: cloneCraftingMaterials(DEFAULT_CRAFTING_MATERIALS),
-  },
-  missions: {
-    acceptedMissionIds: [],
-    selectedMissionId: null,
-  },
-  progression: {
-    completedMissionIds: [],
-    exhaustedMissionIds: [],
-    unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
-  },
-  ship: createDefaultShipState(),
-};
-
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
+
+function hashSeedFragment(seed: number, fragment: string): number {
+  let nextSeed = seed >>> 0;
+  for (let index = 0; index < fragment.length; index += 1) {
+    nextSeed ^= fragment.charCodeAt(index);
+    nextSeed = Math.imul(nextSeed, 16777619);
+  }
+  return nextSeed >>> 0;
+}
+
+function deriveLegacyGalaxySeed(parsed: Partial<SaveData>, raceId: RaceId): number {
+  const fragments = [
+    parsed.meta?.lastSavedAt ?? "",
+    parsed.profile?.callsign ?? "Champion",
+    parsed.profile?.raceId ?? raceId,
+    `${parsed.profile?.level ?? 1}`,
+    `${parsed.profile?.xp ?? 0}`,
+    `${parsed.profile?.credits ?? 140}`,
+    [...(parsed.missions?.acceptedMissionIds ?? [])].sort().join("|"),
+    [...(parsed.progression?.completedMissionIds ?? [])].sort().join("|"),
+    [...(parsed.progression?.exhaustedMissionIds ?? [])].sort().join("|"),
+  ];
+
+  const hashed = fragments.reduce((seed, fragment) => hashSeedFragment(seed, fragment), 2166136261);
+  return hashed === 0 ? 0x41c6_ce57 : hashed;
+}
+
+function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
+  return {
+    version: 9,
+    meta: {
+      lastSavedAt: null,
+    },
+    profile: {
+      callsign: "Champion",
+      raceId: "olydran",
+      level: 1,
+      xp: 0,
+      credits: 140,
+    },
+    loadout: {
+      weapon: "Unarmed",
+      ability: "Pulse Burst",
+      support: "Arc Lance",
+      companion: "Rook / Sera / Lyra",
+      squad: clone([...DEFAULT_SQUAD_ASSIGNMENTS]),
+      equipment: cloneEquipmentLoadout(DEFAULT_EQUIPMENT),
+      cargo: cloneCargoSlots(DEFAULT_CARGO_SLOTS),
+      crafting: cloneCraftingMaterials(DEFAULT_CRAFTING_MATERIALS),
+    },
+    missions: {
+      acceptedMissionIds: [],
+      selectedMissionId: null,
+    },
+    progression: {
+      completedMissionIds: [],
+      exhaustedMissionIds: [],
+      unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
+    },
+    galaxy: createGalaxyDefinition(galaxySeed),
+    ship: createDefaultShipState(),
+  };
+}
+
+const DEFAULT_SAVE: SaveData = createDefaultSaveData(0x41c6_ce57);
 
 function createEmptySlots(): Array<SaveData | null> {
   return Array.from({ length: SLOT_COUNT }, () => null);
@@ -488,7 +530,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 8 as const,
+    version: 9 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -503,6 +545,10 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...clone(DEFAULT_SAVE.progression),
       ...parsed.progression,
     },
+    galaxy: normalizeGalaxyDefinition(
+      parsed.galaxy as Partial<GalaxyDefinition> | undefined,
+      deriveLegacyGalaxySeed(parsed, profile.raceId),
+    ),
     ship: {
       ...createDefaultShipState(profile.raceId),
       ...parsed.ship,
@@ -731,6 +777,29 @@ export class GameSession extends Phaser.Events.EventEmitter {
       ?? this.saveData.ship.travel.arrivedMissionId
       ?? this.saveData.ship.travel.destinationMissionId
       ?? this.getSelectedMissionId();
+  }
+
+  getGalaxyDefinition(): GalaxyDefinition {
+    return clone(this.saveData.galaxy);
+  }
+
+  getMissionPlanetForMission(missionId = this.getTrackedMissionId()): GalaxyMissionPlanet | null {
+    const missionPlanet = getMissionPlanetForMissionFromGalaxy(missionId, this.saveData.galaxy);
+    return missionPlanet ? clone(missionPlanet) : null;
+  }
+
+  getHomeworldPlanetByRace(raceId = this.getPlayerRaceId()): GalaxyPlanetRecord | null {
+    const homeworld = getGalaxyHomeworldByRace(this.saveData.galaxy, raceId);
+    if (!homeworld) {
+      return null;
+    }
+
+    const planet = getGalaxyPlanetById(this.saveData.galaxy, homeworld.planetId);
+    return planet ? clone(planet) : null;
+  }
+
+  getHomeworldPlanets(): GalaxyPlanetRecord[] {
+    return clone(getGalaxyHomeworldPlanets(this.saveData.galaxy));
   }
 
   getShipSpacePosition(): ShipSpacePosition {
@@ -1120,7 +1189,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   startNewGame(slotIndex = this.firstEmptySlotOrActive()): void {
     this.activeSlotIndex = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
-    this.saveData = clone(DEFAULT_SAVE);
+    this.saveData = createDefaultSaveData();
     this.saveData.ship = createDefaultShipState(this.saveData.profile.raceId);
     this.activeMissionId = null;
     this.pendingReward = null;

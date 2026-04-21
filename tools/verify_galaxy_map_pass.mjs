@@ -83,6 +83,9 @@ try {
   const hubMapState = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
     const overlay = hub?.galaxyMapOverlay;
+    const galaxy = window.__loeSession?.getGalaxyDefinition?.() ?? null;
+    const missionPlanet = window.__loeSession?.getMissionPlanetForMission?.("ember-watch") ?? null;
+    const homeworldPlanets = window.__loeSession?.getHomeworldPlanets?.() ?? [];
     return {
       snapshot: hub?.getDebugSnapshot?.() ?? null,
       visible: overlay?.isVisible?.() ?? false,
@@ -91,6 +94,18 @@ try {
       hoverText: overlay?.hoverText?.text ?? "",
       shipSpacePosition: window.__loeSession?.getShipSpacePosition?.() ?? null,
       trackedMissionId: window.__loeSession?.getTrackedMissionId?.() ?? null,
+      missionPlanet,
+      homeworldPlanets,
+      galaxySummary: galaxy
+        ? {
+            systemCountsBySector: galaxy.systems.reduce((counts, system) => {
+              counts[system.sectorId] = (counts[system.sectorId] ?? 0) + 1;
+              return counts;
+            }, {}),
+            homeworldCount: galaxy.homeworlds.length,
+            ringIds: galaxy.rings.map((ring) => ring.id),
+          }
+        : null,
     };
   });
 
@@ -100,7 +115,16 @@ try {
     `Unexpected initial ship position on hub map: ${JSON.stringify(hubMapState.shipSpacePosition)}`);
   assert(hubMapState.routeText.includes(`Ship: X ${TEST_SHIP_POSITION.x}  Y ${TEST_SHIP_POSITION.y}`),
     `Hub map route text is missing shared ship coordinates: ${hubMapState.routeText}`);
-  assert(hubMapState.detailText.includes("Pyre Verge"), `Hub map detail text is missing the mission planet: ${hubMapState.detailText}`);
+  assert(hubMapState.missionPlanet, "Hub map did not resolve a generated mission planet for ember-watch");
+  assert(hubMapState.detailText.includes(hubMapState.missionPlanet.name),
+    `Hub map detail text is missing the generated mission planet: ${hubMapState.detailText}`);
+  assert(hubMapState.galaxySummary?.ringIds?.join("|") === "inner|second|third|outer|deep-space",
+    `Galaxy ring framework is missing or out of order: ${JSON.stringify(hubMapState.galaxySummary?.ringIds)}`);
+  assert(hubMapState.galaxySummary?.homeworldCount === 7,
+    `Expected exactly 7 homeworlds, got ${hubMapState.galaxySummary?.homeworldCount}`);
+  Object.entries(hubMapState.galaxySummary?.systemCountsBySector ?? {}).forEach(([sectorId, count]) => {
+    assert(count >= 20 && count <= 40, `Sector ${sectorId} should have 20-40 systems, got ${count}`);
+  });
 
   const sectorClickTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
@@ -203,6 +227,8 @@ try {
 
   assert(spaceStart.snapshot?.missionPlanet?.missionId === "ember-watch",
     `Space scene did not expose the ember-watch mission planet: ${JSON.stringify(spaceStart.snapshot?.missionPlanet)}`);
+  assert(spaceStart.snapshot?.missionPlanet?.name === hubMapState.missionPlanet.name,
+    `Space scene mission planet does not match the generated mission target: ${JSON.stringify(spaceStart.snapshot?.missionPlanet)}`);
   assert(spaceStart.coordinateText.includes(`POS X ${TEST_SHIP_POSITION.x}  Y ${TEST_SHIP_POSITION.y}`),
     `Space HUD is missing player coordinates: ${spaceStart.coordinateText}`);
 

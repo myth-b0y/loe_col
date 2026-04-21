@@ -7,7 +7,6 @@ import {
   GALAXY_STARS,
   clampPointToGalaxyTravelBounds,
   getGalaxySectorAtPosition,
-  getMissionPlanetForMission,
   type GalaxyHazeNode,
   type GalaxyMissionPlanet,
   type GalaxySectorConfig,
@@ -393,7 +392,7 @@ export class SpaceScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.worldDefinition = createSpaceWorldDefinition(SPACE_WORLD_CONFIG);
-    this.trackedMissionPlanet = getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
+    this.trackedMissionPlanet = gameSession.getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
     this.fieldStates.clear();
     this.shipStates.clear();
     this.backdropStarSeedsByCell.clear();

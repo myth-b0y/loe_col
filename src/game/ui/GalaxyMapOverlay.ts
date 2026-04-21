@@ -9,7 +9,6 @@ import {
   getGalaxySectorAtPosition,
   getGalaxySectorLabelPoint,
   getGalaxySectorPolygonPoints,
-  getMissionPlanetForMission,
   type GalaxySectorConfig,
 } from "../content/galaxy";
 import { getMissionContract } from "../content/missions";
@@ -378,6 +377,8 @@ export class GalaxyMapOverlay {
     this.staticMap.clear();
     this.markerMap.clear();
     const viewBounds = this.getMapViewBounds();
+    const galaxy = gameSession.getGalaxyDefinition();
+    const homeworlds = gameSession.getHomeworldPlanets();
     const selectedSector = this.selectedSectorId
       ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
       : null;
@@ -430,6 +431,34 @@ export class GalaxyMapOverlay {
       this.staticMap.fillStyle(star.color, star.alpha);
       this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
     });
+
+    galaxy.systems.forEach((system) => {
+      if (selectedSector && system.sectorId !== selectedSector.id) {
+        return;
+      }
+      if (!this.isWorldPointVisible(system, viewBounds, 120)) {
+        return;
+      }
+
+      const point = this.worldToMap(system);
+      this.staticMap.fillStyle(system.starColor, selectedSector ? 0.96 : 0.82);
+      this.staticMap.fillCircle(point.x, point.y, Math.max(1.3, system.starSize * (selectedSector ? 0.82 : 0.68)));
+    });
+
+    homeworlds.forEach((planet) => {
+      if (selectedSector && planet.sectorId !== selectedSector.id) {
+        return;
+      }
+      if (!this.isWorldPointVisible(planet, viewBounds, planet.radius)) {
+        return;
+      }
+
+      const point = this.worldToMap(planet);
+      this.staticMap.fillStyle(planet.color, 0.96);
+      this.staticMap.fillCircle(point.x, point.y, 4.8);
+      this.staticMap.lineStyle(2, 0xfff3cf, 0.94);
+      this.staticMap.strokeCircle(point.x, point.y, 8.6);
+    });
   }
 
   private drawSector(sector: GalaxySectorConfig): void {
@@ -451,14 +480,18 @@ export class GalaxyMapOverlay {
   private syncReadout(): void {
     const playerPosition = gameSession.getShipSpacePosition();
     const playerSector = getGalaxySectorAtPosition(playerPosition.x, playerPosition.y);
+    const homeworldPlanets = gameSession.getHomeworldPlanets();
     const selectedSector = this.selectedSectorId
       ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
       : null;
     const viewBounds = this.getMapViewBounds();
     const missionId = gameSession.getTrackedMissionId();
     const mission = missionId ? getMissionContract(missionId) : null;
-    const missionPlanet = getMissionPlanetForMission(missionId);
+    const missionPlanet = gameSession.getMissionPlanetForMission(missionId);
     const travel = gameSession.getShipTravelState();
+    const sectorHomeworld = selectedSector
+      ? homeworldPlanets.find((planet) => planet.sectorId === selectedSector.id) ?? null
+      : null;
 
     this.subtitle.setText(selectedSector ? `${selectedSector.label} Sector Detail` : "Galaxy Map");
     this.infoTitle.setText(selectedSector ? `${selectedSector.label} Readout` : "Current Readout");
@@ -475,6 +508,9 @@ export class GalaxyMapOverlay {
       ? [
           `${selectedSector.label} uses the same galaxy coordinates as live space.`,
           `Sector span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
+          sectorHomeworld
+            ? `Homeworld: ${sectorHomeworld.name}`
+            : "Homeworld: pending sector generation readout.",
           missionPlanet && getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).id === selectedSector.id
             ? `Mission planet in sector: ${missionPlanet.name}`
             : "Mission planet is outside this sector detail view.",
