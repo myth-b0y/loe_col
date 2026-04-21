@@ -156,6 +156,59 @@ try {
             ringIds: galaxy.rings.map((ring) => ring.id),
           }
         : null,
+      orbitSpeedSummary: galaxy
+        ? (() => {
+            const planetsBySystem = galaxy.planets.reduce((lookup, planet) => {
+              const bucket = lookup.get(planet.systemId) ?? [];
+              bucket.push(planet);
+              lookup.set(planet.systemId, bucket);
+              return lookup;
+            }, new Map());
+            const moonsByPlanet = galaxy.moons.reduce((lookup, moon) => {
+              const bucket = lookup.get(moon.planetId) ?? [];
+              bucket.push(moon);
+              lookup.set(moon.planetId, bucket);
+              return lookup;
+            }, new Map());
+            const planetSystemsChecked = [...planetsBySystem.values()]
+              .filter((planets) => planets.length >= 2)
+              .map((planets) => planets.slice().sort((left, right) => left.orbitRadius - right.orbitRadius));
+            const planetOrderingFailures = planetSystemsChecked
+              .filter((planets) => planets.some((planet, index) => index > 0 && planets[index - 1].orbitSpeed < planet.orbitSpeed))
+              .slice(0, 4)
+              .map((planets) => ({
+                systemId: planets[0]?.systemId ?? null,
+                speeds: planets.map((planet) => ({
+                  id: planet.id,
+                  orbitRadius: planet.orbitRadius,
+                  orbitSpeed: planet.orbitSpeed,
+                })),
+              }));
+            const moonSpeedChecks = galaxy.planets
+              .map((planet) => {
+                const moons = moonsByPlanet.get(planet.id) ?? [];
+                if (moons.length === 0) {
+                  return null;
+                }
+                const averageMoonOrbitSpeed = moons.reduce((sum, moon) => sum + moon.orbitSpeed, 0) / moons.length;
+                return {
+                  planetId: planet.id,
+                  planetOrbitSpeed: planet.orbitSpeed,
+                  averageMoonOrbitSpeed,
+                };
+              })
+              .filter(Boolean);
+            const moonSpeedFailures = moonSpeedChecks
+              .filter((entry) => entry.averageMoonOrbitSpeed <= entry.planetOrbitSpeed)
+              .slice(0, 4);
+            return {
+              planetSystemsChecked: planetSystemsChecked.length,
+              moonSpeedChecks: moonSpeedChecks.length,
+              planetOrderingFailures,
+              moonSpeedFailures,
+            };
+          })()
+        : null,
     };
   });
 
@@ -211,6 +264,14 @@ try {
   assert((hubMapState.mapDebug?.visibleSystems ?? 0) > 0, "Galaxy map did not report any visible generated systems");
   assert((hubMapState.mapDebug?.visiblePlanets ?? 0) > 0, "Galaxy map did not report any visible generated planets");
   assert((hubMapState.mapDebug?.visibleStations ?? 0) > 0, "Galaxy map did not report any visible generated stations");
+  assert((hubMapState.orbitSpeedSummary?.planetSystemsChecked ?? 0) > 0,
+    `Galaxy verifier could not find any multi-planet systems to validate orbit-speed ordering: ${JSON.stringify(hubMapState.orbitSpeedSummary)}`);
+  assert((hubMapState.orbitSpeedSummary?.planetOrderingFailures ?? []).length === 0,
+    `Inner planets should orbit faster than outer planets: ${JSON.stringify(hubMapState.orbitSpeedSummary?.planetOrderingFailures)}`);
+  assert((hubMapState.orbitSpeedSummary?.moonSpeedChecks ?? 0) > 0,
+    `Galaxy verifier could not find any moon-bearing planets to validate moon-speed behavior: ${JSON.stringify(hubMapState.orbitSpeedSummary)}`);
+  assert((hubMapState.orbitSpeedSummary?.moonSpeedFailures ?? []).length === 0,
+    `Moons should orbit faster than their parent planets: ${JSON.stringify(hubMapState.orbitSpeedSummary?.moonSpeedFailures)}`);
 
   const sectorClickTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;

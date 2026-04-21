@@ -190,13 +190,27 @@ const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
 const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
-const GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND = 0.16;
-const GALAXY_MOON_ORBIT_DEGREES_PER_SECOND = 0.22;
+const GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND = 0.12;
+const GALAXY_MOON_ORBIT_DEGREES_PER_SECOND = 0.18;
 const GALAXY_STATION_RADIUS = 180;
 const GALAXY_STATION_RING_EDGE_MARGIN = 460;
 const GALAXY_STATION_SYSTEM_BUFFER = 1180;
 const GALAXY_STATION_SECTOR_EDGE_MARGIN_DEG = 6;
 const GALAXY_STATION_SEED_SALT = 0x5f37_29df;
+const GALAXY_PLANET_ORBIT_SPEED_RANGE = {
+  minRadius: 220,
+  maxRadius: 860,
+  fastest: 1.24,
+  slowest: 0.82,
+  variation: 0.02,
+} as const;
+const GALAXY_MOON_ORBIT_SPEED_RANGE = {
+  minRadius: 140,
+  maxRadius: 260,
+  fastest: 1.58,
+  slowest: 1.3,
+  variation: 0.01,
+} as const;
 const GALAXY_SYSTEM_NAME_PARTS = [
   "al", "an", "ar", "bel", "cal", "cer", "dor", "el", "eris", "fen",
   "gal", "hal", "ion", "jor", "ka", "lor", "mer", "nyx", "or", "pra",
@@ -438,17 +452,51 @@ function getAngleDegreesBetweenPoints(originX: number, originY: number, targetX:
   return normalizeAngleDegrees(Math.atan2(targetY - originY, targetX - originX) * (180 / Math.PI));
 }
 
-function getOrbitSpeed(rng: SeededRandom): number {
-  return pickWeighted<number>([
-    { value: 1, weight: 0.18 },
-    { value: 2, weight: 0.38 },
-    { value: 3, weight: 0.28 },
-    { value: 4, weight: 0.16 },
-  ], rng);
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
-function getDeterministicOrbitSpeed(recordId: string): number {
-  return (hashStringToSeed(recordId) % 4) + 1;
+function roundOrbitSpeed(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function getOrbitVariationMultiplier(recordId: string, variation: number): number {
+  const unit = hashStringToSeed(recordId) / 0xffff_ffff;
+  return 1 + (((unit * 2) - 1) * variation);
+}
+
+function getDistanceWeightedOrbitSpeed(
+  orbitRadius: number,
+  recordId: string,
+  config: {
+    minRadius: number;
+    maxRadius: number;
+    fastest: number;
+    slowest: number;
+    variation: number;
+  },
+): number {
+  const normalizedDistance = clamp01(
+    (orbitRadius - config.minRadius) / Math.max(1, config.maxRadius - config.minRadius),
+  );
+  const baseSpeed = config.fastest - ((config.fastest - config.slowest) * normalizedDistance);
+  return roundOrbitSpeed(baseSpeed * getOrbitVariationMultiplier(recordId, config.variation));
+}
+
+function getPlanetOrbitSpeedForRadius(orbitRadius: number, recordId: string): number {
+  return getDistanceWeightedOrbitSpeed(orbitRadius, recordId, GALAXY_PLANET_ORBIT_SPEED_RANGE);
+}
+
+function getMoonOrbitSpeedForRadius(orbitRadius: number, recordId: string): number {
+  return getDistanceWeightedOrbitSpeed(orbitRadius, recordId, GALAXY_MOON_ORBIT_SPEED_RANGE);
+}
+
+function isLegacyOrbitSpeed(value: number | undefined): boolean {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && Number.isInteger(value)
+    && value >= 1
+    && value <= 4;
 }
 
 function getOrbitPositionAtTime(
@@ -483,10 +531,12 @@ function getNormalizedOrbitBaseAngleDeg(value: number | undefined, fallbackValue
 }
 
 function getNormalizedOrbitSpeed(value: number | undefined, fallbackValue: number): number {
-  const candidate = typeof value === "number" && Number.isFinite(value)
-    ? Math.round(value)
+  const candidate = typeof value === "number"
+    && Number.isFinite(value)
+    && !isLegacyOrbitSpeed(value)
+    ? value
     : fallbackValue;
-  return Math.max(1, Math.min(4, candidate));
+  return roundOrbitSpeed(Math.max(0.72, Math.min(1.62, candidate)));
 }
 
 function getGalaxyWorldMaxRadius(config: GalaxyWorldConfig): number {
@@ -1080,7 +1130,7 @@ function createPlanetsForSystem(
       orbitIndex,
       orbitRadius: Math.round(orbitDistance),
       orbitBaseAngleDeg,
-      orbitSpeed: getOrbitSpeed(rng),
+      orbitSpeed: getPlanetOrbitSpeedForRadius(orbitDistance, planetId),
       name: buildPlanetName(rng, usedPlanetNames),
       x: Math.round(point.x),
       y: Math.round(point.y),
@@ -1178,7 +1228,7 @@ function createMoonsForPlanets(
         orbitIndex,
         orbitRadius: Math.round(orbitDistance),
         orbitBaseAngleDeg,
-        orbitSpeed: getOrbitSpeed(rng),
+        orbitSpeed: getMoonOrbitSpeedForRadius(orbitDistance, `${planet.id}-moon-${orbitIndex + 1}`),
         name: `${planet.name} ${String.fromCharCode(65 + orbitIndex)}`,
         x: Math.round(point.x),
         y: Math.round(point.y),
@@ -1257,9 +1307,9 @@ function createSectorSystems(
         x: Math.round(point.x),
         y: Math.round(point.y),
         starColor: interpolateColor(
-          interpolateColor(sector.color, sector.borderColor, 0.64),
-          0xffffff,
-          0.3 + rng.range(0, 0.12),
+          interpolateColor(sector.color, sector.borderColor, 0.72),
+          0xfff7eb,
+          0.16 + rng.range(0, 0.1),
         ),
         starSize: 2.2 + rng.range(0, 1.8),
         planetIds: [],
@@ -1340,7 +1390,13 @@ export function normalizeGalaxyDefinition(
         ...planet,
         orbitRadius: getNormalizedOrbitRadius(planet.orbitRadius, fallbackOrbitRadius),
         orbitBaseAngleDeg: getNormalizedOrbitBaseAngleDeg(planet.orbitBaseAngleDeg, fallbackOrbitAngleDeg),
-        orbitSpeed: getNormalizedOrbitSpeed(planet.orbitSpeed, getDeterministicOrbitSpeed(planet.id)),
+        orbitSpeed: getNormalizedOrbitSpeed(
+          planet.orbitSpeed,
+          getPlanetOrbitSpeedForRadius(
+            getNormalizedOrbitRadius(planet.orbitRadius, fallbackOrbitRadius),
+            planet.id,
+          ),
+        ),
         moonIds: [...planet.moonIds],
         missionIds: [...planet.missionIds],
       };
@@ -1366,7 +1422,13 @@ export function normalizeGalaxyDefinition(
           ...moon,
           orbitRadius: getNormalizedOrbitRadius(moon.orbitRadius, fallbackOrbitRadius),
           orbitBaseAngleDeg: getNormalizedOrbitBaseAngleDeg(moon.orbitBaseAngleDeg, fallbackOrbitAngleDeg),
-          orbitSpeed: getNormalizedOrbitSpeed(moon.orbitSpeed, getDeterministicOrbitSpeed(moon.id)),
+          orbitSpeed: getNormalizedOrbitSpeed(
+            moon.orbitSpeed,
+            getMoonOrbitSpeedForRadius(
+              getNormalizedOrbitRadius(moon.orbitRadius, fallbackOrbitRadius),
+              moon.id,
+            ),
+          ),
         };
       }),
       homeworlds: galaxy.homeworlds.map((homeworld) => ({ ...homeworld })),

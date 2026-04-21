@@ -1035,22 +1035,28 @@ export class SpaceScene extends Phaser.Scene {
     const systemPlanets = this.galaxyPlanetsBySystemId.get(system.id) ?? [];
     const homeworldPlanet = systemPlanets.find((planet) => planet.isHomeworld) ?? null;
     const systemIsHomeworld = Boolean(homeworldPlanet);
+    const starCoreColor = Phaser.Display.Color.Interpolate.ColorWithColor(
+      Phaser.Display.Color.IntegerToColor(system.starColor),
+      Phaser.Display.Color.IntegerToColor(0xffffff),
+      100,
+      systemIsHomeworld ? 42 : 34,
+    ).color;
     const planetIds: string[] = [];
     const moonIds: string[] = [];
-    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.34 : 1.18), system.starColor, systemIsHomeworld ? 0.14 : 0.09);
-    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 0.82 : 0.72), system.starColor, systemIsHomeworld ? 0.18 : 0.12);
+    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.42 : 1.24), system.starColor, systemIsHomeworld ? 0.2 : 0.14);
+    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 0.9 : 0.78), system.starColor, systemIsHomeworld ? 0.32 : 0.24);
     const starBurst = createStarburstGraphic(
       this,
       starRadius * (systemIsHomeworld ? 0.98 : 0.84),
       starRadius * (systemIsHomeworld ? 0.42 : 0.34),
       systemIsHomeworld ? 8 : 4,
       system.starColor,
-      systemIsHomeworld ? 0.94 : 0.86,
+      systemIsHomeworld ? 0.99 : 0.95,
       0xffffff,
-      systemIsHomeworld ? 0.34 : 0.22,
-      1.6,
+      systemIsHomeworld ? 0.5 : 0.34,
+      1.8,
     );
-    const starCoreGlow = this.add.circle(0, 0, starRadius * 0.14, 0xffffff, systemIsHomeworld ? 0.24 : 0.16);
+    const starCoreGlow = this.add.circle(0, 0, starRadius * 0.22, starCoreColor, systemIsHomeworld ? 0.32 : 0.24);
     const starLabel = this.add.text(0, -(starRadius + 16), system.name, {
       fontFamily: "Arial",
       fontSize: systemIsHomeworld ? "14px" : "13px",

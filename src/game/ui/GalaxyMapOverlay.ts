@@ -34,6 +34,7 @@ const WINDOW = new Phaser.Geom.Rectangle(96, 54, 1088, 612);
 const MAP_RECT = new Phaser.Geom.Rectangle(WINDOW.x + 20, WINDOW.y + 122, 690, 430);
 const INFO_RECT = new Phaser.Geom.Rectangle(WINDOW.right - 334, WINDOW.y + 122, 314, 430);
 const SECTOR_VIEW_PADDING = 900;
+const MAP_SNAPSHOT_REDRAW_INTERVAL_MS = 1200;
 const TAB_LAYOUT = [
   { tab: "inventory", label: "Inventory", x: 428 },
   { tab: "skills", label: "Skills", x: 562 },
@@ -74,6 +75,12 @@ export class GalaxyMapOverlay {
   private readonly tabButtons: Partial<Record<MapTab, MenuButton>> = {};
   private hoverWorldPoint: { x: number; y: number } | null = null;
   private selectedSectorId: string | null = null;
+  private cachedGalaxy: GalaxyDefinition | null = null;
+  private cachedHomeworlds: ReturnType<typeof gameSession.getHomeworldPlanets> = [];
+  private cachedPlanetsBySystemId = new Map<string, GalaxyDefinition["planets"]>();
+  private cachedMoonsByPlanetId = new Map<string, GalaxyDefinition["moons"]>();
+  private cachedStaticViewKey = "";
+  private lastStaticDrawMs = Number.NEGATIVE_INFINITY;
 
   constructor({ scene, onClose, onOpenSettings, onRequestTab }: GalaxyMapOverlayOptions) {
     this.scene = scene;
@@ -346,9 +353,10 @@ export class GalaxyMapOverlay {
 
   show(): void {
     this.selectedSectorId = null;
+    this.captureGalaxySnapshot();
     this.root.setVisible(true);
     this.setInputEnabled(true);
-    this.refresh();
+    this.refresh(true);
   }
 
   hide(): void {
@@ -362,9 +370,16 @@ export class GalaxyMapOverlay {
     return this.root.visible;
   }
 
-  refresh(): void {
-    this.drawMap();
-    this.syncReadout();
+  refresh(forceStatic = false): void {
+    this.ensureGalaxySnapshot();
+    const viewBounds = this.getMapViewBounds();
+    const orbitTimeMs = this.scene.time.now;
+    if (this.shouldRedrawStaticMap(viewBounds, orbitTimeMs, forceStatic)) {
+      this.drawMap(viewBounds, orbitTimeMs);
+      this.cachedStaticViewKey = this.getStaticViewKey(viewBounds);
+      this.lastStaticDrawMs = orbitTimeMs;
+    }
+    this.syncReadout(viewBounds, orbitTimeMs);
   }
 
   private handleTab(tab: MapTab): void {
@@ -392,12 +407,76 @@ export class GalaxyMapOverlay {
     Object.values(this.tabButtons).forEach((button) => button?.setInputEnabled(enabled));
   }
 
-  private drawMap(): void {
+  private captureGalaxySnapshot(): void {
+    this.cachedGalaxy = gameSession.getGalaxyDefinition();
+    this.cachedHomeworlds = gameSession.getHomeworldPlanets();
+    this.cachedPlanetsBySystemId.clear();
+    this.cachedMoonsByPlanetId.clear();
+
+    this.cachedGalaxy.planets.forEach((planet) => {
+      const bucket = this.cachedPlanetsBySystemId.get(planet.systemId);
+      if (bucket) {
+        bucket.push(planet);
+        return;
+      }
+      this.cachedPlanetsBySystemId.set(planet.systemId, [planet]);
+    });
+
+    this.cachedGalaxy.moons.forEach((moon) => {
+      const bucket = this.cachedMoonsByPlanetId.get(moon.planetId);
+      if (bucket) {
+        bucket.push(moon);
+        return;
+      }
+      this.cachedMoonsByPlanetId.set(moon.planetId, [moon]);
+    });
+
+    this.cachedStaticViewKey = "";
+    this.lastStaticDrawMs = Number.NEGATIVE_INFINITY;
+  }
+
+  private ensureGalaxySnapshot(): void {
+    if (!this.cachedGalaxy) {
+      this.captureGalaxySnapshot();
+    }
+  }
+
+  private getStaticViewKey(viewBounds: Phaser.Geom.Rectangle): string {
+    return [
+      this.selectedSectorId ?? "galaxy",
+      Math.round(viewBounds.x),
+      Math.round(viewBounds.y),
+      Math.round(viewBounds.width),
+      Math.round(viewBounds.height),
+    ].join(":");
+  }
+
+  private shouldRedrawStaticMap(
+    viewBounds: Phaser.Geom.Rectangle,
+    orbitTimeMs: number,
+    forceStatic: boolean,
+  ): boolean {
+    if (forceStatic || !this.cachedGalaxy) {
+      return true;
+    }
+
+    if (this.cachedStaticViewKey !== this.getStaticViewKey(viewBounds)) {
+      return true;
+    }
+
+    return (orbitTimeMs - this.lastStaticDrawMs) >= MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
+  }
+
+  private getCachedGalaxySnapshot(): GalaxyDefinition {
+    this.ensureGalaxySnapshot();
+    return this.cachedGalaxy!;
+  }
+
+  private drawMap(viewBounds: Phaser.Geom.Rectangle, orbitTimeMs: number): void {
     this.staticMap.clear();
     this.markerMap.clear();
-    const viewBounds = this.getMapViewBounds();
-    const galaxy = gameSession.getGalaxyDefinition();
-    const homeworlds = gameSession.getHomeworldPlanets();
+    const galaxy = this.getCachedGalaxySnapshot();
+    const homeworlds = this.cachedHomeworlds;
     const selectedSector = this.selectedSectorId
       ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
       : null;
@@ -414,7 +493,7 @@ export class GalaxyMapOverlay {
     }
 
     if (!selectedSector) {
-      const centerPoint = this.worldToMap(GALAXY_WORLD_CONFIG.center);
+      const centerPoint = this.worldToMapWithBounds(GALAXY_WORLD_CONFIG.center, viewBounds);
       GALAXY_RINGS.forEach((ring) => {
         if (ring.id === "deep-space") {
           return;
@@ -438,19 +517,19 @@ export class GalaxyMapOverlay {
       if (!this.isWorldPointVisible(node, viewBounds, node.radius)) {
         return;
       }
-      const point = this.worldToMap(node);
+      const mappedPoint = this.worldToMapWithBounds(node, viewBounds);
       this.staticMap.fillStyle(node.color, node.alpha * 1.9);
-      this.staticMap.fillCircle(point.x, point.y, this.scaleWorldLengthToMap(node.radius, viewBounds));
+      this.staticMap.fillCircle(mappedPoint.x, mappedPoint.y, this.scaleWorldLengthToMap(node.radius, viewBounds));
     });
 
     if (selectedSector) {
-      this.drawSector(selectedSector);
+      this.drawSector(selectedSector, viewBounds);
     } else {
       GALAXY_SECTORS.forEach((sector) => {
-        this.drawSector(sector);
+        this.drawSector(sector, viewBounds);
       });
 
-      const core = this.worldToMap(GALAXY_WORLD_CONFIG.center);
+      const core = this.worldToMapWithBounds(GALAXY_WORLD_CONFIG.center, viewBounds);
       this.staticMap.fillStyle(0x214c71, 0.22);
       this.staticMap.fillCircle(core.x, core.y, this.scaleWorldLengthToMap(GALAXY_WORLD_CONFIG.coreRadius * 1.22, viewBounds));
       this.staticMap.fillStyle(0xe5f4ff, 0.18);
@@ -464,12 +543,12 @@ export class GalaxyMapOverlay {
       if (!this.isWorldPointVisible(star, viewBounds, star.size * 10)) {
         return;
       }
-      const point = this.worldToMap(star);
+      const point = this.worldToMapWithBounds(star, viewBounds);
       this.staticMap.fillStyle(star.color, star.alpha);
       this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
     });
 
-    this.drawGeneratedBodies(galaxy, viewBounds, selectedSector?.id ?? null, homeworlds);
+    this.drawGeneratedBodies(galaxy, viewBounds, selectedSector?.id ?? null, homeworlds, orbitTimeMs);
   }
 
   private drawGeneratedBodies(
@@ -477,26 +556,8 @@ export class GalaxyMapOverlay {
     viewBounds: Phaser.Geom.Rectangle,
     selectedSectorId: string | null,
     homeworlds: ReturnType<typeof gameSession.getHomeworldPlanets>,
+    orbitTimeMs: number,
   ): void {
-    const orbitTimeMs = this.scene.time.now;
-    const planetsBySystemId = galaxy.planets.reduce<Map<string, typeof galaxy.planets>>((lookup, planet) => {
-      const bucket = lookup.get(planet.systemId);
-      if (bucket) {
-        bucket.push(planet);
-        return lookup;
-      }
-      lookup.set(planet.systemId, [planet]);
-      return lookup;
-    }, new Map());
-    const moonsByPlanetId = galaxy.moons.reduce<Map<string, typeof galaxy.moons>>((lookup, moon) => {
-      const bucket = lookup.get(moon.planetId);
-      if (bucket) {
-        bucket.push(moon);
-        return lookup;
-      }
-      lookup.set(moon.planetId, [moon]);
-      return lookup;
-    }, new Map());
     const homeworldIds = new Set(homeworlds.map((planet) => planet.id));
 
     galaxy.systems.forEach((system) => {
@@ -507,8 +568,8 @@ export class GalaxyMapOverlay {
         return;
       }
 
-      const systemPoint = this.worldToMap(system);
-      const planets = planetsBySystemId.get(system.id) ?? [];
+      const systemPoint = this.worldToMapWithBounds(system, viewBounds);
+      const planets = this.cachedPlanetsBySystemId.get(system.id) ?? [];
       const systemHasHomeworld = planets.some((planet) => homeworldIds.has(planet.id));
       const showOrbitLinks = selectedSectorId !== null;
       this.drawSystemStarGlyph(
@@ -527,7 +588,7 @@ export class GalaxyMapOverlay {
           return;
         }
 
-        const planetPoint = this.worldToMap(planetPosition);
+        const planetPoint = this.worldToMapWithBounds(planetPosition, viewBounds);
         const isHomeworld = homeworldIds.has(planet.id);
         if (showOrbitLinks || isHomeworld) {
           this.staticMap.lineStyle(1, system.starColor, showOrbitLinks ? 0.16 : 0.08);
@@ -553,14 +614,14 @@ export class GalaxyMapOverlay {
           );
         }
 
-        const moons = moonsByPlanetId.get(planet.id) ?? [];
+        const moons = this.cachedMoonsByPlanetId.get(planet.id) ?? [];
         moons.forEach((moon) => {
           const moonPosition = getGalaxyMoonPositionAtTime(galaxy, moon, orbitTimeMs);
           if (!this.isWorldPointVisible(moonPosition, viewBounds, moon.radius)) {
             return;
           }
 
-          const moonPoint = this.worldToMap(moonPosition);
+          const moonPoint = this.worldToMapWithBounds(moonPosition, viewBounds);
           if (showOrbitLinks) {
             this.staticMap.lineStyle(1, planet.color, 0.12);
             this.staticMap.lineBetween(planetPoint.x, planetPoint.y, moonPoint.x, moonPoint.y);
@@ -579,7 +640,7 @@ export class GalaxyMapOverlay {
         return;
       }
 
-      const stationPoint = this.worldToMap(station);
+      const stationPoint = this.worldToMapWithBounds(station, viewBounds);
       this.drawStationGlyph(
         stationPoint.x,
         stationPoint.y,
@@ -600,22 +661,22 @@ export class GalaxyMapOverlay {
     detailView: boolean,
   ): void {
     const lineAlpha = detailView
-      ? isHomeworldSystem ? 0.92 : 0.72
-      : isHomeworldSystem ? 0.84 : 0.5;
+      ? isHomeworldSystem ? 0.96 : 0.82
+      : isHomeworldSystem ? 0.9 : 0.62;
     const lineWidth = detailView
       ? isHomeworldSystem ? 2.2 : 1.6
       : isHomeworldSystem ? 1.8 : 1.1;
     const diagonalSize = size * 0.68;
 
-    this.staticMap.fillStyle(color, detailView ? 0.16 : isHomeworldSystem ? 0.16 : 0.08);
-    this.staticMap.fillCircle(x, y, isHomeworldSystem ? size * 0.44 : size * 0.3);
+    this.staticMap.fillStyle(color, detailView ? 0.24 : isHomeworldSystem ? 0.22 : 0.12);
+    this.staticMap.fillCircle(x, y, isHomeworldSystem ? size * 0.5 : size * 0.34);
     this.staticMap.lineStyle(lineWidth, color, lineAlpha);
     this.staticMap.lineBetween(x - size, y, x + size, y);
     this.staticMap.lineBetween(x, y - size, x, y + size);
     this.staticMap.lineBetween(x - diagonalSize, y - diagonalSize, x + diagonalSize, y + diagonalSize);
     this.staticMap.lineBetween(x - diagonalSize, y + diagonalSize, x + diagonalSize, y - diagonalSize);
-    this.staticMap.fillStyle(isHomeworldSystem ? 0xfff4d8 : 0xf3fbff, isHomeworldSystem ? 0.96 : detailView ? 0.9 : 0.76);
-    this.staticMap.fillCircle(x, y, isHomeworldSystem ? 2.2 : detailView ? 1.7 : 1.3);
+    this.staticMap.fillStyle(isHomeworldSystem ? 0xfff4d8 : 0xf8fcff, isHomeworldSystem ? 0.98 : detailView ? 0.94 : 0.82);
+    this.staticMap.fillCircle(x, y, isHomeworldSystem ? 2.5 : detailView ? 1.9 : 1.5);
     if (isHomeworldSystem) {
       this.staticMap.lineStyle(detailView ? 1.2 : 1, 0xfff0c2, detailView ? 0.54 : 0.4);
       this.staticMap.strokeCircle(x, y, size + (detailView ? 1.6 : 1));
@@ -657,11 +718,11 @@ export class GalaxyMapOverlay {
       : Phaser.Math.Clamp(scaled, 1.4, 4.4);
   }
 
-  private drawSector(sector: GalaxySectorConfig): void {
+  private drawSector(sector: GalaxySectorConfig, viewBounds: Phaser.Geom.Rectangle): void {
     const polygon = getGalaxySectorPolygonPoints(sector);
     const mapped: number[] = [];
     for (let index = 0; index < polygon.length; index += 2) {
-      const point = this.worldToMap({ x: polygon[index], y: polygon[index + 1] });
+      const point = this.worldToMapWithBounds({ x: polygon[index], y: polygon[index + 1] }, viewBounds);
       mapped.push(point.x, point.y);
     }
 
@@ -673,18 +734,20 @@ export class GalaxyMapOverlay {
     this.staticMap.strokePoints(shape.points, true);
   }
 
-  private syncReadout(): void {
+  private syncReadout(
+    viewBounds: Phaser.Geom.Rectangle = this.getMapViewBounds(),
+    orbitTimeMs = this.scene.time.now,
+  ): void {
     const playerPosition = gameSession.getShipSpacePosition();
     const playerRegionLabel = getGalaxyRegionLabelAtPosition(playerPosition.x, playerPosition.y);
-    const homeworldPlanets = gameSession.getHomeworldPlanets();
-    const galaxy = gameSession.getGalaxyDefinition();
+    const homeworldPlanets = this.cachedHomeworlds;
+    const galaxy = this.getCachedGalaxySnapshot();
     const selectedSector = this.selectedSectorId
       ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
       : null;
-    const viewBounds = this.getMapViewBounds();
     const missionId = gameSession.getTrackedMissionId();
     const mission = missionId ? getMissionContract(missionId) : null;
-    const missionPlanet = gameSession.getMissionPlanetForMission(missionId, this.scene.time.now);
+    const missionPlanet = gameSession.getMissionPlanetForMission(missionId, orbitTimeMs);
     const travel = gameSession.getShipTravelState();
     const sectorHomeworld = selectedSector
       ? homeworldPlanets.find((planet) => planet.sectorId === selectedSector.id) ?? null
@@ -748,7 +811,7 @@ export class GalaxyMapOverlay {
     this.markerMap.clear();
     this.homeworldLabel.setVisible(false);
     if (this.isWorldPointVisible(playerPosition, viewBounds)) {
-      const playerMarker = this.worldToMap(playerPosition);
+      const playerMarker = this.worldToMapWithBounds(playerPosition, viewBounds);
       this.markerMap.fillStyle(0x8fe3ff, 1);
       this.markerMap.fillCircle(playerMarker.x, playerMarker.y, 5);
       this.markerMap.lineStyle(3, 0xf3fbff, 0.98);
@@ -764,7 +827,7 @@ export class GalaxyMapOverlay {
     }
 
     if (missionPlanet && this.isWorldPointVisible(missionPlanet, viewBounds, missionPlanet.radius)) {
-      const missionMarker = this.worldToMap(missionPlanet);
+      const missionMarker = this.worldToMapWithBounds(missionPlanet, viewBounds);
       this.markerMap.fillStyle(missionPlanet.color, 0.9);
       this.markerMap.fillCircle(missionMarker.x, missionMarker.y, 6);
       this.markerMap.lineStyle(2, 0xffefc6, 0.96);
@@ -779,7 +842,7 @@ export class GalaxyMapOverlay {
     }
 
     if (this.hoverWorldPoint && this.isWorldPointVisible(this.hoverWorldPoint, viewBounds)) {
-      const hoverMarker = this.worldToMap(this.hoverWorldPoint);
+      const hoverMarker = this.worldToMapWithBounds(this.hoverWorldPoint, viewBounds);
       this.markerMap.lineStyle(2, 0xdde9ff, 0.96);
       this.markerMap.strokeCircle(hoverMarker.x, hoverMarker.y, 10);
       this.hoverLabel
@@ -792,7 +855,7 @@ export class GalaxyMapOverlay {
 
     GALAXY_SECTORS.forEach((sector, index) => {
       const label = this.sectorLabels[index];
-      const labelPlacement = this.getSectorLabelPlacement(sector);
+      const labelPlacement = this.getSectorLabelPlacement(sector, viewBounds);
       const isVisible = (!selectedSector || selectedSector.id === sector.id)
         && (selectedSector?.id === sector.id || this.isWorldPointVisible(labelPlacement.worldPoint, viewBounds));
       label
@@ -813,7 +876,7 @@ export class GalaxyMapOverlay {
   }
 
   getDebugSnapshot(): Record<string, unknown> {
-    const galaxy = gameSession.getGalaxyDefinition();
+    const galaxy = this.getCachedGalaxySnapshot();
     const viewBounds = this.getMapViewBounds();
     const selectedSectorId = this.selectedSectorId;
     const visibleSystems = galaxy.systems.filter((system) => (
@@ -861,7 +924,8 @@ export class GalaxyMapOverlay {
     const clickedSector = this.getSectorAtWorldPoint(worldPoint);
     if (clickedSector && clickedSector.id !== this.selectedSectorId) {
       this.selectedSectorId = clickedSector.id;
-      this.drawMap();
+      this.refresh(true);
+      return;
     }
     this.syncReadout();
   }
@@ -880,8 +944,7 @@ export class GalaxyMapOverlay {
     }
 
     this.selectedSectorId = null;
-    this.drawMap();
-    this.syncReadout();
+    this.refresh(true);
   }
 
   private getMapViewBounds(): Phaser.Geom.Rectangle {
@@ -949,8 +1012,10 @@ export class GalaxyMapOverlay {
     return radialDistance >= sector.innerRadius && radialDistance <= sector.outerRadius;
   }
 
-  private worldToMap(point: { x: number; y: number }): { x: number; y: number } {
-    const viewBounds = this.getMapViewBounds();
+  private worldToMapWithBounds(
+    point: { x: number; y: number },
+    viewBounds: Phaser.Geom.Rectangle,
+  ): { x: number; y: number } {
     return {
       x: MAP_RECT.x + ((point.x - viewBounds.x) / viewBounds.width) * MAP_RECT.width,
       y: MAP_RECT.y + ((point.y - viewBounds.y) / viewBounds.height) * MAP_RECT.height,
@@ -967,7 +1032,10 @@ export class GalaxyMapOverlay {
     };
   }
 
-  private getSectorLabelPlacement(sector: GalaxySectorConfig): {
+  private getSectorLabelPlacement(
+    sector: GalaxySectorConfig,
+    viewBounds: Phaser.Geom.Rectangle = this.getMapViewBounds(),
+  ): {
     point: { x: number; y: number };
     worldPoint: { x: number; y: number };
     originX: number;
@@ -994,7 +1062,7 @@ export class GalaxyMapOverlay {
       x: GALAXY_WORLD_CONFIG.center.x + (offsetX * radiusScale),
       y: GALAXY_WORLD_CONFIG.center.y + (offsetY * radiusScale),
     };
-    const point = this.worldToMap(worldPoint);
+    const point = this.worldToMapWithBounds(worldPoint, viewBounds);
 
     return {
       point,
