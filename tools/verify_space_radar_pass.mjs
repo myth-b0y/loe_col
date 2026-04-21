@@ -20,6 +20,13 @@ async function getState(page) {
   return JSON.parse(raw);
 }
 
+async function getRadarSnapshot(page) {
+  return page.evaluate(() => {
+    const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
+    return state.snapshot?.radar ?? null;
+  });
+}
+
 async function waitForScene(page, sceneKey, timeoutMs = 8000) {
   const start = Date.now();
   while ((Date.now() - start) < timeoutMs) {
@@ -36,6 +43,20 @@ async function capture(page, filename) {
   await page.screenshot({ path: path.join(OUTPUT_DIR, filename), fullPage: false });
 }
 
+async function waitForRadarContact(page, predicate, timeoutMs = 6000) {
+  const start = Date.now();
+  let lastRadar = null;
+  while ((Date.now() - start) < timeoutMs) {
+    lastRadar = await getRadarSnapshot(page);
+    if (lastRadar && predicate(lastRadar)) {
+      return lastRadar;
+    }
+    await page.waitForTimeout(140);
+  }
+
+  throw new Error(`Timed out waiting for expected radar contact. Last radar state: ${JSON.stringify(lastRadar)}`);
+}
+
 async function getSpaceSeeds(page) {
   return page.evaluate(() => {
     const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
@@ -45,11 +66,18 @@ async function getSpaceSeeds(page) {
     }
 
     const factionSeeds = space.worldDefinition?.factionSeeds ?? [];
+    const fieldSeeds = space.worldDefinition?.fieldSeeds ?? [];
+    const galaxy = window.__loeSession?.getGalaxyDefinition?.() ?? null;
     const pickSeed = (factionId) => factionSeeds.find((seed) => seed.factionId === factionId) ?? null;
+    const homeworld = galaxy?.homeworlds?.[0] ?? null;
+    const homeSystem = galaxy?.systems?.find?.((system) => system.id === homeworld?.systemId) ?? null;
     return {
       enemy: pickSeed("pirate"),
-      friendly: pickSeed("republic"),
+      guard: pickSeed("homeguard"),
       neutral: pickSeed("smuggler"),
+      asteroid: fieldSeeds.find((seed) => seed.kind === "asteroid") ?? null,
+      largeAsteroid: fieldSeeds.find((seed) => seed.kind === "asteroid" && seed.isLarge) ?? null,
+      homeSystem,
       missionPlanet: state.snapshot?.missionPlanet ?? null,
     };
   });
@@ -181,47 +209,59 @@ try {
   await page.waitForTimeout(320);
   await capture(page, "space-radar-start.png");
 
-  const localRadarState = await page.evaluate(() => {
-    const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
-    return {
-      snapshot: state.snapshot ?? null,
-      radar: state.snapshot?.radar ?? null,
-    };
-  });
+  const localRadarState = {
+    snapshot: await getState(page),
+    radar: await getRadarSnapshot(page),
+  };
 
   assert(localRadarState.radar, "Radar state was missing from the space snapshot");
-  assert(localRadarState.radar.trackedContacts > 0, "Radar did not track any local contacts");
-  assert(localRadarState.radar.contacts.some((contact) => contact.kind === "asteroid"),
-    `Radar did not report an asteroid contact: ${JSON.stringify(localRadarState.radar.contacts)}`);
+  assert(localRadarState.radar.range === 2200,
+    `Radar range drifted from the tuned value: ${JSON.stringify(localRadarState.radar)}`);
 
   const spaceSeeds = await getSpaceSeeds(page);
   assert(spaceSeeds, "Could not read space seed data for radar verification");
+  assert(spaceSeeds.enemy, "Could not resolve an enemy faction seed for radar verification");
+  assert(spaceSeeds.guard, "Could not resolve a homeguard seed for radar verification");
+  assert(spaceSeeds.neutral, "Could not resolve a neutral smuggler seed for radar verification");
+  assert(spaceSeeds.asteroid, "Could not resolve an asteroid seed for radar verification");
+  assert(spaceSeeds.homeSystem, "Could not resolve a generated home system for radar verification");
+  assert(spaceSeeds.missionPlanet, "Could not resolve a tracked mission world for radar verification");
+
+  const asteroidMoveState = await focusOnContact(page, spaceSeeds.asteroid, "space-radar-asteroid.png");
+  const asteroidRadarState = await waitForRadarContact(page, (radar) => (
+    radar.contacts.some((contact) => contact.kind === "asteroid")
+  ));
+  assert(asteroidMoveState, "Asteroid state was not available for radar verification");
+  assert(asteroidRadarState.contacts.some((contact) => contact.kind === "asteroid"),
+    `Radar did not report an asteroid contact after moving into a field: ${JSON.stringify(asteroidRadarState.contacts)}`);
 
   const enemyMoveState = await focusOnContact(page, spaceSeeds.enemy, "space-radar-enemy.png");
-  const enemyRadarState = await page.evaluate(() => {
-    const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
-    return state.snapshot?.radar ?? null;
-  });
+  const enemyRadarState = await waitForRadarContact(page, (radar) => (
+    radar.contacts.some((contact) => contact.kind === "enemy-ship")
+  ));
   assert(enemyMoveState, "Enemy ship state was not available for radar verification");
   assert(enemyRadarState, "Radar state was missing after moving near an enemy ship");
   assert(enemyRadarState.contacts.some((contact) => contact.kind === "enemy-ship"),
     `Radar did not report an enemy ship contact: ${JSON.stringify(enemyRadarState.contacts)}`);
 
-  const friendlyMoveState = await focusOnContact(page, spaceSeeds.friendly, "space-radar-friendly.png");
-  const friendlyRadarState = await page.evaluate(() => {
-    const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
-    return state.snapshot?.radar ?? null;
-  });
-  assert(friendlyMoveState, "Friendly ship state was not available for radar verification");
-  assert(friendlyRadarState, "Radar state was missing after moving near a friendly ship");
-  assert(friendlyRadarState.contacts.some((contact) => contact.kind === "friendly-ship" || contact.kind === "neutral-ship"),
-    `Radar did not report a friendly or neutral ship contact: ${JSON.stringify(friendlyRadarState.contacts)}`);
+  const guardMoveState = await focusOnContact(page, spaceSeeds.guard, "space-radar-homeguard.png");
+  const guardRadarState = await waitForRadarContact(page, (radar) => (
+    radar.contacts.some((contact) => contact.kind === "friendly-ship")
+      && radar.contacts.some((contact) => contact.kind === "star")
+  ));
+  assert(guardMoveState, "Homeguard ship state was not available for radar verification");
+  assert(guardRadarState, "Radar state was missing after moving near a homeguard ship");
+  assert(guardRadarState.contacts.some((contact) => contact.kind === "friendly-ship"),
+    `Radar did not report a friendly homeguard contact: ${JSON.stringify(guardRadarState.contacts)}`);
+  assert(guardRadarState.contacts.some((contact) => contact.kind === "star"),
+    `Radar did not report a star contact near the home system: ${JSON.stringify(guardRadarState.contacts)}`);
+  assert(guardRadarState.contacts.every((contact) => contact.kind !== "planet"),
+    `Radar should not show ordinary planets near a home system: ${JSON.stringify(guardRadarState.contacts)}`);
 
   const neutralMoveState = await focusOnContact(page, spaceSeeds.neutral, "space-radar-neutral.png");
-  const neutralRadarState = await page.evaluate(() => {
-    const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
-    return state.snapshot?.radar ?? null;
-  });
+  const neutralRadarState = await waitForRadarContact(page, (radar) => (
+    radar.contacts.some((contact) => contact.kind === "neutral-ship")
+  ));
   assert(neutralMoveState, "Neutral ship state was not available for radar verification");
   assert(neutralRadarState, "Radar state was missing after moving near a neutral ship");
   assert(neutralRadarState.contacts.some((contact) => contact.kind === "neutral-ship"),
@@ -236,14 +276,15 @@ try {
     radius: spaceSeeds.missionPlanet?.radius ?? 0,
     color: spaceSeeds.missionPlanet?.color ?? 0xffffff,
   }, "space-radar-mission.png", false);
-  const missionRadarState = await page.evaluate(() => {
-    const state = JSON.parse(window.render_game_to_text?.() ?? "{}");
-    return state.snapshot?.radar ?? null;
-  });
+  const missionRadarState = await waitForRadarContact(page, (radar) => (
+    radar.contacts.some((contact) => contact.kind === "mission-planet")
+  ));
   assert(missionPlanetMoveState, "Mission planet state was not available for radar verification");
   assert(missionRadarState, "Radar state was missing after moving near the mission planet");
   assert(missionRadarState.contacts.some((contact) => contact.kind === "mission-planet"),
     `Radar did not report the mission planet contact: ${JSON.stringify(missionRadarState.contacts)}`);
+  assert(missionRadarState.contacts.every((contact) => contact.kind !== "planet"),
+    `Radar should only show the mission-relevant world marker, not ordinary planets: ${JSON.stringify(missionRadarState.contacts)}`);
 
   const sweepBefore = localRadarState.radar.sweepAngleDeg;
   const sweepAfter = missionRadarState.sweepAngleDeg;
@@ -253,10 +294,12 @@ try {
     url: URL,
     localRadarState,
     spaceSeeds,
+    asteroidMoveState,
+    asteroidRadarState,
     enemyMoveState,
     enemyRadarState,
-    friendlyMoveState,
-    friendlyRadarState,
+    guardMoveState,
+    guardRadarState,
     neutralMoveState,
     neutralRadarState,
     missionPlanetMoveState,

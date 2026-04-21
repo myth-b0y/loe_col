@@ -233,6 +233,10 @@ try {
       backVisible: overlay?.sectorBackButton?.container?.visible ?? false,
       selectedSectorId: overlay?.selectedSectorId ?? null,
       visibleLabels,
+      homeworldLabel: {
+        visible: overlay?.homeworldLabel?.visible ?? false,
+        text: overlay?.homeworldLabel?.text ?? "",
+      },
     };
   });
 
@@ -248,6 +252,10 @@ try {
     "Sector detail view did not report any visible generated planets");
   assert((sectorDetailState.mapDebug?.visibleMoons ?? 0) > 0,
     "Sector detail view did not report any visible generated moons");
+  assert(sectorDetailState.homeworldLabel.visible === true,
+    `Sector detail view did not show the homeworld map label: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
+  assert(sectorDetailState.homeworldLabel.text.includes("HOME"),
+    `Sector detail homeworld label did not read as a home marker: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
 
   const backButtonTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
@@ -344,6 +352,58 @@ try {
     `Space scene did not activate any generated celestial systems near the mission target: ${JSON.stringify(nearbyCelestialState.snapshot)}`);
   assert((nearbyCelestialState.snapshot?.activeCelestialPlanets ?? 0) > 0,
     `Space scene did not activate any generated planets near the mission target: ${JSON.stringify(nearbyCelestialState.snapshot)}`);
+  assert((nearbyCelestialState.snapshot?.radar?.contacts ?? []).every((contact) => contact.kind !== "planet"),
+    `Radar should not show normal planets after the cleanup pass: ${JSON.stringify(nearbyCelestialState.snapshot?.radar)}`);
+
+  const homeworldSpaceTarget = await page.evaluate(() => {
+    const galaxy = window.__loeSession?.getGalaxyDefinition?.();
+    const firstHomeworld = galaxy?.homeworlds?.[0] ?? null;
+    const homeworldPlanet = galaxy?.planets?.find?.((planet) => planet.id === firstHomeworld?.planetId) ?? null;
+    const homeworldSystem = galaxy?.systems?.find?.((system) => system.id === firstHomeworld?.systemId) ?? null;
+    return firstHomeworld && homeworldPlanet && homeworldSystem
+      ? {
+          homeworld: firstHomeworld,
+          planet: homeworldPlanet,
+          system: homeworldSystem,
+        }
+      : null;
+  });
+
+  assert(homeworldSpaceTarget, "Could not resolve a generated homeworld target for the guard-fleet verification");
+
+  await page.evaluate((target) => {
+    const space = window.__loeGame?.scene.keys.space;
+    if (!space || !target) {
+      return;
+    }
+    const nextX = target.system.x - 720;
+    const nextY = target.system.y + 140;
+    space.shipRoot.x = nextX;
+    space.shipRoot.y = nextY;
+    space.shipVelocity.set(0, 0);
+    window.__loeSession?.setShipSpacePosition?.(nextX, nextY);
+    space.syncActiveWorld?.(true);
+    space.refreshHud?.();
+  }, homeworldSpaceTarget);
+  await page.waitForTimeout(180);
+  await capture(page, "space-homeworld-guard.png");
+
+  const homeworldSpaceState = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    return {
+      snapshot: space?.getDebugSnapshot?.() ?? null,
+      nearestShips: space?.getDebugSnapshot?.()?.nearestShips ?? [],
+    };
+  });
+
+  assert((homeworldSpaceState.snapshot?.activeCelestialSystems ?? 0) > 0,
+    `Homeworld system did not activate in space: ${JSON.stringify(homeworldSpaceState.snapshot)}`);
+  assert((homeworldSpaceState.snapshot?.activeFactionCounts?.homeguard ?? 0) > 0,
+    `Homeworld guard fleet did not activate near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.activeFactionCounts)}`);
+  assert((homeworldSpaceState.snapshot?.radar?.contacts ?? []).some((contact) => contact.kind === "star"),
+    `Radar did not expose a nearby star contact near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.radar)}`);
+  assert((homeworldSpaceState.snapshot?.radar?.contacts ?? []).every((contact) => contact.kind !== "planet"),
+    `Radar should not show normal planets near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.radar)}`);
 
   await page.evaluate((shipPosition) => {
     const space = window.__loeGame?.scene.keys.space;

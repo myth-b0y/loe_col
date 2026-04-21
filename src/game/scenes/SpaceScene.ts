@@ -36,6 +36,7 @@ import {
   type ShipHyperdriveSystemState,
   type SpaceFactionId,
   type SpaceFieldObjectKind,
+  type SpaceFieldPlacementType,
   type SpaceWorldCellKey,
   type SpaceWorldDefinition,
 } from "../content/space";
@@ -54,9 +55,13 @@ type SpaceSceneData = {
 type SpaceFieldObject = {
   id: string;
   kind: SpaceFieldObjectKind;
+  placementType: SpaceFieldPlacementType;
+  isLarge: boolean;
   root: Phaser.GameObjects.Container;
+  visualRoot: Phaser.GameObjects.Container;
   damageRing: Phaser.GameObjects.Arc;
   velocity: Phaser.Math.Vector2;
+  baseRadius: number;
   radius: number;
   hp: number;
   maxHp: number;
@@ -68,8 +73,11 @@ type SpaceFieldObjectState = {
   id: string;
   cellKey: SpaceWorldCellKey;
   kind: SpaceFieldObjectKind;
+  placementType: SpaceFieldPlacementType;
+  isLarge: boolean;
   x: number;
   y: number;
+  baseRadius: number;
   radius: number;
   hp: number;
   maxHp: number;
@@ -95,6 +103,11 @@ type SpaceFactionShip = {
   velocity: Phaser.Math.Vector2;
   aimDirection: Phaser.Math.Vector2;
   patrolTarget: Phaser.Math.Vector2;
+  customColor: number | null;
+  customTrimColor: number | null;
+  customGlowColor: number | null;
+  guardAnchor: Phaser.Math.Vector2 | null;
+  guardRadius: number;
   radius: number;
   hp: number;
   maxHp: number;
@@ -122,6 +135,12 @@ type SpaceFactionShipState = {
   rotation: number;
   patrolX: number;
   patrolY: number;
+  customColor: number | null;
+  customTrimColor: number | null;
+  customGlowColor: number | null;
+  guardAnchorX: number | null;
+  guardAnchorY: number | null;
+  guardRadius: number | null;
   aimX: number;
   aimY: number;
   radius: number;
@@ -241,6 +260,35 @@ function createRockPoints(radius: number, seedKey: string): number[] {
   }
 
   return points;
+}
+
+function createStarPoints(
+  outerRadius: number,
+  innerRadius: number,
+  pointCount = 4,
+): number[] {
+  const points: number[] = [];
+  const totalPoints = pointCount * 2;
+  for (let index = 0; index < totalPoints; index += 1) {
+    const angle = (index / totalPoints) * Math.PI * 2 - (Math.PI * 0.5);
+    const radius = index % 2 === 0 ? outerRadius : innerRadius;
+    points.push(Math.cos(angle) * radius, Math.sin(angle) * radius);
+  }
+  return points;
+}
+
+function getDistanceToCameraView(view: Phaser.Geom.Rectangle, x: number, y: number): number {
+  const dx = x < view.left
+    ? view.left - x
+    : x > view.right
+      ? x - view.right
+      : 0;
+  const dy = y < view.top
+    ? view.top - y
+    : y > view.bottom
+      ? y - view.bottom
+      : 0;
+  return Math.sqrt((dx * dx) + (dy * dy));
 }
 
 function areCellKeyListsEqual(left: SpaceWorldCellKey[], right: SpaceWorldCellKey[]): boolean {
@@ -420,7 +468,11 @@ export class SpaceScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.galaxyDefinition = gameSession.getGalaxyDefinition();
-    this.worldDefinition = createSpaceWorldDefinition(SPACE_WORLD_CONFIG);
+    this.worldDefinition = createSpaceWorldDefinition(
+      SPACE_WORLD_CONFIG,
+      this.galaxyDefinition,
+      Date.now() >>> 0,
+    );
     this.trackedMissionPlanet = gameSession.getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
     this.galaxySystemsByCell.clear();
     this.galaxySystemsById.clear();
@@ -830,21 +882,33 @@ export class SpaceScene extends Phaser.Scene {
     const starRadius = this.getSystemStarRenderRadius(system);
     const trackedMissionId = this.getTrackedMissionPlanet()?.missionId ?? null;
     const systemPlanets = this.galaxyPlanetsBySystemId.get(system.id) ?? [];
+    const homeworldPlanet = systemPlanets.find((planet) => planet.isHomeworld) ?? null;
+    const systemIsHomeworld = Boolean(homeworldPlanet);
     const planetIds: string[] = [];
     const moonIds: string[] = [];
-    const starHalo = this.add.circle(0, 0, starRadius * 1.85, system.starColor, 0.09);
-    const starGlow = this.add.circle(0, 0, starRadius * 1.26, system.starColor, 0.2);
-    const starCore = this.add.circle(0, 0, starRadius * 0.56, system.starColor, 0.98)
+    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 2.2 : 1.85), system.starColor, systemIsHomeworld ? 0.18 : 0.09);
+    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.52 : 1.26), system.starColor, systemIsHomeworld ? 0.32 : 0.2);
+    const starBurst = this.add.polygon(
+      0,
+      0,
+      createStarPoints(starRadius * (systemIsHomeworld ? 1.3 : 1.12), starRadius * 0.42, systemIsHomeworld ? 8 : 4),
+      system.starColor,
+      systemIsHomeworld ? 0.34 : 0.2,
+    ).setStrokeStyle(2, 0xf6fbff, systemIsHomeworld ? 0.4 : 0.18);
+    const starCoreBurst = this.add.polygon(0, 0, createStarPoints(starRadius * 0.84, starRadius * 0.36, 4), 0xfff3d6, 0.92)
+      .setStrokeStyle(1, 0xffffff, 0.54);
+    const starCore = this.add.circle(0, 0, starRadius * 0.52, system.starColor, 0.98)
       .setStrokeStyle(2, 0xf6fbff, 0.44);
     const highlight = this.add.circle(-starRadius * 0.16, -starRadius * 0.18, starRadius * 0.18, 0xffffff, 0.24);
     const starLabel = this.add.text(0, -(starRadius + 16), system.name, {
       fontFamily: "Arial",
-      fontSize: "13px",
-      color: "#f6fbff",
-      backgroundColor: "#08111bc0",
+      fontSize: systemIsHomeworld ? "14px" : "13px",
+      color: systemIsHomeworld ? "#fff5d7" : "#f6fbff",
+      fontStyle: systemIsHomeworld ? "bold" : "normal",
+      backgroundColor: systemIsHomeworld ? "#10203acc" : "#08111bc0",
       padding: { x: 5, y: 3 },
-    }).setOrigin(0.5, 1).setAlpha(0.72);
-    children.push(starHalo);
+    }).setOrigin(0.5, 1).setAlpha(systemIsHomeworld ? 0.92 : 0.72);
+    children.push(starHalo, starGlow, starBurst);
 
     systemPlanets.forEach((planet) => {
       const localX = planet.x - system.x;
@@ -857,21 +921,31 @@ export class SpaceScene extends Phaser.Scene {
       const planetRadius = this.getPlanetRenderRadius(planet);
       const landingRing = this.add.circle(0, 0, planetRadius * 1.48, 0xffffff, 0)
         .setStrokeStyle(2, 0xfff1cb, 0.12);
-      const halo = this.add.circle(0, 0, planetRadius * 1.16, planet.color, planet.isHomeworld ? 0.24 : 0.16);
+      const halo = this.add.circle(0, 0, planetRadius * (planet.isHomeworld ? 1.42 : 1.16), planet.color, planet.isHomeworld ? 0.28 : 0.16);
+      const aura = planet.isHomeworld
+        ? this.add.circle(0, 0, planetRadius * 1.94, system.starColor, 0.12).setStrokeStyle(2, 0xfff1cf, 0.26)
+        : null;
+      const auraBurst = planet.isHomeworld
+        ? this.add.polygon(0, 0, createStarPoints(planetRadius * 1.72, planetRadius * 0.82, 8), 0xffe6aa, 0.16)
+          .setStrokeStyle(1, 0xfff8e2, 0.34)
+        : null;
       const body = this.add.circle(0, 0, planetRadius, planet.color, 0.96)
         .setStrokeStyle(2, planet.isHomeworld ? 0xfff4d9 : 0xf2fbff, planet.isHomeworld ? 0.82 : 0.44);
       const glow = this.add.circle(-(planetRadius * 0.18), -(planetRadius * 0.2), planetRadius * 0.18, 0xffffff, 0.24);
       const label = this.add.text(0, planetRadius + 12, planet.name, {
         fontFamily: "Arial",
-        fontSize: "12px",
+        fontSize: planet.isHomeworld ? "13px" : "12px",
         color: planet.isHomeworld ? "#fff1cf" : "#dce9ff",
         fontStyle: planet.isHomeworld ? "bold" : "normal",
-        backgroundColor: "#08111bcc",
+        backgroundColor: planet.isHomeworld ? "#10203ac8" : "#08111bcc",
         padding: { x: 5, y: 3 },
       }).setOrigin(0.5, 0);
       label.setVisible(planet.isHomeworld || planet.missionIds.includes(trackedMissionId ?? ""));
 
-      const planetRoot = this.add.container(localX, localY, [landingRing, halo, body, glow, label]);
+      const planetChildren = aura && auraBurst
+        ? [landingRing, aura, auraBurst, halo, body, glow, label]
+        : [landingRing, halo, body, glow, label];
+      const planetRoot = this.add.container(localX, localY, planetChildren);
       planetRoot.setSize(planetRadius * 3, planetRadius * 3);
       children.push(planetRoot);
       this.activePlanetViews.set(planet.id, {
@@ -898,10 +972,10 @@ export class SpaceScene extends Phaser.Scene {
       });
     });
 
-    children.push(starGlow, starCore, highlight, starLabel);
+    children.push(starCoreBurst, starCore, highlight, starLabel);
 
     const root = this.add.container(system.x, system.y, children).setDepth(5);
-    root.setSize(starRadius * 6, starRadius * 6);
+    root.setSize(starRadius * (systemIsHomeworld ? 7.2 : 6), starRadius * (systemIsHomeworld ? 7.2 : 6));
     return {
       systemId: system.id,
       root,
@@ -915,8 +989,11 @@ export class SpaceScene extends Phaser.Scene {
       id: seed.id,
       cellKey: seed.cellKey,
       kind: seed.kind,
+      placementType: seed.placementType,
+      isLarge: seed.isLarge,
       x: seed.x,
       y: seed.y,
+      baseRadius: seed.baseRadius,
       radius: seed.radius,
       hp: seed.hp,
       maxHp: seed.hp,
@@ -947,6 +1024,12 @@ export class SpaceScene extends Phaser.Scene {
         rotation: seed.rotation,
         patrolX: seed.patrolX,
         patrolY: seed.patrolY,
+        customColor: seed.customColor ?? null,
+        customTrimColor: seed.customTrimColor ?? null,
+        customGlowColor: seed.customGlowColor ?? null,
+        guardAnchorX: seed.guardAnchorX ?? null,
+        guardAnchorY: seed.guardAnchorY ?? null,
+        guardRadius: seed.guardRadius ?? null,
         aimX: aimDirection.x,
         aimY: aimDirection.y,
         radius: faction.radius,
@@ -1094,8 +1177,11 @@ export class SpaceScene extends Phaser.Scene {
       id: fieldObject.id,
       cellKey: getSpaceCellKeyAtPosition(fieldObject.root.x, fieldObject.root.y, SPACE_WORLD_CONFIG),
       kind: fieldObject.kind,
+      placementType: fieldObject.placementType,
+      isLarge: fieldObject.isLarge,
       x: fieldObject.root.x,
       y: fieldObject.root.y,
+      baseRadius: fieldObject.baseRadius,
       radius: fieldObject.radius,
       hp: Math.max(0, fieldObject.hp),
       maxHp: fieldObject.maxHp,
@@ -1125,6 +1211,12 @@ export class SpaceScene extends Phaser.Scene {
       rotation: ship.root.rotation,
       patrolX: ship.patrolTarget.x,
       patrolY: ship.patrolTarget.y,
+      customColor: ship.customColor,
+      customTrimColor: ship.customTrimColor,
+      customGlowColor: ship.customGlowColor,
+      guardAnchorX: ship.guardAnchor?.x ?? null,
+      guardAnchorY: ship.guardAnchor?.y ?? null,
+      guardRadius: ship.guardRadius > 0 ? ship.guardRadius : null,
       aimX: ship.aimDirection.x,
       aimY: ship.aimDirection.y,
       radius: ship.radius,
@@ -1172,25 +1264,67 @@ export class SpaceScene extends Phaser.Scene {
     }
   }
 
+  private getShipPalette(state: Pick<SpaceFactionShipState, "factionId" | "customColor" | "customTrimColor" | "customGlowColor">): {
+    color: number;
+    trimColor: number;
+    glowColor: number;
+  } {
+    const faction = SPACE_FACTIONS[state.factionId];
+    return {
+      color: state.customColor ?? faction.color,
+      trimColor: state.customTrimColor ?? faction.trimColor,
+      glowColor: state.customGlowColor ?? faction.glowColor,
+    };
+  }
+
   private createFieldObject(state: SpaceFieldObjectState): SpaceFieldObject {
-    const hullColor = state.kind === "asteroid" ? 0x6e7e93 : 0x877864;
-    const strokeColor = state.kind === "asteroid" ? 0xc2d4eb : 0xcbb185;
-    const rockPoints = createRockPoints(state.radius, state.id);
-    const shadow = this.add.ellipse(5, 7, state.radius * 1.7, state.radius * 1.24, 0x000000, 0.16);
-    const hull = this.add.polygon(0, 0, rockPoints, hullColor, 0.98).setStrokeStyle(2, strokeColor, 0.66);
-    const craterA = this.add.circle(-state.radius * 0.18, state.radius * 0.14, Math.max(4, state.radius * 0.16), 0x34404d, 0.24);
-    const craterB = this.add.circle(state.radius * 0.2, -state.radius * 0.1, Math.max(3, state.radius * 0.12), 0x2f3945, 0.18);
-    const damageRing = this.add.circle(0, 0, state.radius * 0.76, 0xff8f57, 0).setStrokeStyle(2, 0xffcc92, 0);
-    const root = this.add.container(state.x, state.y, [shadow, hull, craterA, craterB, damageRing]).setDepth(8);
+    const baseRadius = state.baseRadius > 0 ? state.baseRadius : state.radius;
+    const visualScale = Phaser.Math.Clamp(state.radius / Math.max(1, baseRadius), 0.22, 1);
+    const isBelt = state.placementType === "belt";
+    const hullColor = state.kind === "asteroid"
+      ? state.isLarge
+        ? 0x71849f
+        : isBelt
+          ? 0x7b8698
+          : 0x6e7e93
+      : 0x877864;
+    const strokeColor = state.kind === "asteroid"
+      ? state.isLarge
+        ? 0xe0eeff
+        : isBelt
+          ? 0xd4e4fa
+          : 0xc2d4eb
+      : 0xcbb185;
+    const rockPoints = createRockPoints(baseRadius, state.id);
+    const shadow = this.add.ellipse(6, 8, baseRadius * 1.84, baseRadius * 1.28, 0x000000, state.isLarge ? 0.22 : 0.16);
+    const hull = this.add.polygon(0, 0, rockPoints, hullColor, 0.98).setStrokeStyle(state.isLarge ? 3 : 2, strokeColor, 0.66);
+    const craterA = this.add.circle(-baseRadius * 0.18, baseRadius * 0.14, Math.max(4, baseRadius * 0.16), 0x34404d, 0.24);
+    const craterB = this.add.circle(baseRadius * 0.2, -baseRadius * 0.1, Math.max(3, baseRadius * 0.12), 0x2f3945, 0.18);
+    const craterC = state.isLarge
+      ? this.add.circle(baseRadius * 0.06, baseRadius * 0.28, Math.max(5, baseRadius * 0.14), 0x26313d, 0.16)
+      : null;
+    const shardGlow = state.isLarge
+      ? this.add.circle(0, 0, baseRadius * 1.08, 0xcde3ff, 0.08)
+      : this.add.circle(0, 0, baseRadius * 0.92, strokeColor, 0.05);
+    const damageRing = this.add.circle(0, 0, baseRadius * 0.76, 0xff8f57, 0).setStrokeStyle(2, 0xffcc92, 0);
+    const visualChildren = craterC
+      ? [shadow, shardGlow, hull, craterA, craterB, craterC, damageRing]
+      : [shadow, shardGlow, hull, craterA, craterB, damageRing];
+    const visualRoot = this.add.container(0, 0, visualChildren).setScale(visualScale);
+    const root = this.add.container(state.x, state.y, [visualRoot]).setDepth(state.isLarge ? 9 : 8);
     root.rotation = state.rotation;
     root.setSize(state.radius * 2.2, state.radius * 2.2);
 
     return {
       id: state.id,
       kind: state.kind,
+      placementType: state.placementType,
+      isLarge: state.isLarge,
       root,
+      visualRoot,
       damageRing,
       velocity: new Phaser.Math.Vector2(state.velocityX, state.velocityY),
+      baseRadius,
       radius: state.radius,
       hp: state.hp,
       maxHp: state.maxHp,
@@ -1201,47 +1335,56 @@ export class SpaceScene extends Phaser.Scene {
 
   private createFactionShip(state: SpaceFactionShipState): SpaceFactionShip {
     const faction = SPACE_FACTIONS[state.factionId];
+    const palette = this.getShipPalette(state);
     const children: Phaser.GameObjects.GameObject[] = [];
     const shadow = this.add.ellipse(3, 7, faction.radius * 1.9, faction.radius, 0x000000, 0.2);
-    const damageRing = this.add.circle(0, 0, faction.radius * 0.92, faction.glowColor, 0).setStrokeStyle(2, 0xf8fbff, 0);
-    const thruster = this.add.ellipse(0, faction.radius - 1, 12, 20, faction.glowColor, 0.2).setStrokeStyle(1, faction.trimColor, 0.28);
+    const damageRing = this.add.circle(0, 0, faction.radius * 0.92, palette.glowColor, 0).setStrokeStyle(2, 0xf8fbff, 0);
+    const thruster = this.add.ellipse(0, faction.radius - 1, 12, 20, palette.glowColor, 0.2).setStrokeStyle(1, palette.trimColor, 0.28);
     children.push(shadow, damageRing, thruster);
 
     if (state.factionId === "empire") {
       children.push(
-        this.add.rectangle(-14, 4, 10, 24, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.36),
-        this.add.rectangle(14, 4, 10, 24, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.36),
-        this.add.rectangle(0, 3, 24, 32, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.74),
-        this.add.triangle(0, -18, 0, -24, -10, -2, 10, -2, faction.trimColor, 0.96).setStrokeStyle(1, 0xf7fbff, 0.48),
-        this.add.rectangle(0, 20, 12, 10, 0x2b3648, 0.96).setStrokeStyle(1, faction.trimColor, 0.28),
+        this.add.rectangle(-14, 4, 10, 24, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
+        this.add.rectangle(14, 4, 10, 24, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
+        this.add.rectangle(0, 3, 24, 32, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.74),
+        this.add.triangle(0, -18, 0, -24, -10, -2, 10, -2, palette.trimColor, 0.96).setStrokeStyle(1, 0xf7fbff, 0.48),
+        this.add.rectangle(0, 20, 12, 10, 0x2b3648, 0.96).setStrokeStyle(1, palette.trimColor, 0.28),
       );
     } else if (state.factionId === "republic") {
       children.push(
-        this.add.rectangle(-18, 5, 14, 22, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.3),
-        this.add.rectangle(18, 5, 14, 22, faction.color, 0.98).setStrokeStyle(1, faction.trimColor, 0.3),
-        this.add.rectangle(0, 3, 30, 30, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.78),
-        this.add.triangle(0, -17, 0, -23, -11, -2, 11, -2, faction.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.42),
-        this.add.rectangle(0, 19, 18, 9, 0x203652, 0.96).setStrokeStyle(1, faction.trimColor, 0.28),
+        this.add.rectangle(-18, 5, 14, 22, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.3),
+        this.add.rectangle(18, 5, 14, 22, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.3),
+        this.add.rectangle(0, 3, 30, 30, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.78),
+        this.add.triangle(0, -17, 0, -23, -11, -2, 11, -2, palette.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.42),
+        this.add.rectangle(0, 19, 18, 9, 0x203652, 0.96).setStrokeStyle(1, palette.trimColor, 0.28),
+      );
+    } else if (state.factionId === "homeguard") {
+      children.push(
+        this.add.rectangle(-17, 6, 10, 22, palette.color, 0.96).setStrokeStyle(1, palette.trimColor, 0.34),
+        this.add.rectangle(17, 6, 10, 22, palette.color, 0.96).setStrokeStyle(1, palette.trimColor, 0.34),
+        this.add.rectangle(0, 6, 24, 30, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.8),
+        this.add.polygon(0, -14, createStarPoints(10, 4.6, 4), palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.42),
+        this.add.rectangle(0, 21, 14, 10, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
       );
     } else if (state.factionId === "pirate") {
-      const leftWing = this.add.rectangle(-16, 7, 8, 24, faction.color, 0.96).setStrokeStyle(1, faction.trimColor, 0.3);
+      const leftWing = this.add.rectangle(-16, 7, 8, 24, palette.color, 0.96).setStrokeStyle(1, palette.trimColor, 0.3);
       leftWing.rotation = -0.26;
-      const rightWing = this.add.rectangle(16, 7, 8, 24, faction.color, 0.96).setStrokeStyle(1, faction.trimColor, 0.3);
+      const rightWing = this.add.rectangle(16, 7, 8, 24, palette.color, 0.96).setStrokeStyle(1, palette.trimColor, 0.3);
       rightWing.rotation = 0.26;
       children.push(
         leftWing,
         rightWing,
-        this.add.rectangle(0, 4, 20, 28, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.72),
-        this.add.triangle(0, -18, 0, -25, -10, 0, 10, 0, faction.trimColor, 0.95).setStrokeStyle(1, 0xfff3c5, 0.4),
-        this.add.rectangle(0, 20, 14, 8, 0x473c1d, 0.96).setStrokeStyle(1, faction.trimColor, 0.3),
+        this.add.rectangle(0, 4, 20, 28, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.72),
+        this.add.triangle(0, -18, 0, -25, -10, 0, 10, 0, palette.trimColor, 0.95).setStrokeStyle(1, 0xfff3c5, 0.4),
+        this.add.rectangle(0, 20, 14, 8, 0x473c1d, 0.96).setStrokeStyle(1, palette.trimColor, 0.3),
       );
     } else {
       children.push(
-        this.add.rectangle(-16, 6, 10, 20, 0x555d68, 0.98).setStrokeStyle(1, faction.trimColor, 0.24),
-        this.add.rectangle(16, 6, 10, 20, 0x555d68, 0.98).setStrokeStyle(1, faction.trimColor, 0.24),
-        this.add.rectangle(0, 5, 26, 30, faction.color, 0.98).setStrokeStyle(2, faction.trimColor, 0.7),
-        this.add.triangle(0, -16, 0, -22, -9, -2, 9, -2, faction.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.42),
-        this.add.rectangle(0, 21, 20, 10, 0x4a515c, 0.96).setStrokeStyle(1, faction.trimColor, 0.24),
+        this.add.rectangle(-16, 6, 10, 20, 0x555d68, 0.98).setStrokeStyle(1, palette.trimColor, 0.24),
+        this.add.rectangle(16, 6, 10, 20, 0x555d68, 0.98).setStrokeStyle(1, palette.trimColor, 0.24),
+        this.add.rectangle(0, 5, 26, 30, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.7),
+        this.add.triangle(0, -16, 0, -22, -9, -2, 9, -2, palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.42),
+        this.add.rectangle(0, 21, 20, 10, 0x4a515c, 0.96).setStrokeStyle(1, palette.trimColor, 0.24),
       );
     }
 
@@ -1269,6 +1412,13 @@ export class SpaceScene extends Phaser.Scene {
       velocity: new Phaser.Math.Vector2(state.velocityX, state.velocityY),
       aimDirection,
       patrolTarget: new Phaser.Math.Vector2(state.patrolX, state.patrolY),
+      customColor: state.customColor ?? null,
+      customTrimColor: state.customTrimColor ?? null,
+      customGlowColor: state.customGlowColor ?? null,
+      guardAnchor: state.guardAnchorX !== null && state.guardAnchorY !== null
+        ? new Phaser.Math.Vector2(state.guardAnchorX, state.guardAnchorY)
+        : null,
+      guardRadius: state.guardRadius ?? 0,
       radius: faction.radius,
       hp: state.hp,
       maxHp: state.maxHp,
@@ -1389,7 +1539,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.radar = new SpaceRadarDisplay(this, {
       x: GAME_WIDTH * 0.5,
-      y: 64,
+      y: 72,
       width: SHIP_RADAR_CONFIG.width,
       height: SHIP_RADAR_CONFIG.height,
       range: SHIP_RADAR_CONFIG.range,
@@ -2192,6 +2342,51 @@ export class SpaceScene extends Phaser.Scene {
     return ship.factionId !== "republic";
   }
 
+  private getWorldAudioMix(
+    x: number,
+    y: number,
+    maxDistance = SHIP_RADAR_CONFIG.range,
+  ): { pan: number; volume: number } | null {
+    const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, x, y);
+    if (distance > maxDistance) {
+      return null;
+    }
+
+    const viewDistance = getDistanceToCameraView(this.cameras.main.worldView, x, y);
+    const distanceFactor = Phaser.Math.Clamp(1 - (distance / maxDistance), 0, 1);
+    const viewFactor = viewDistance <= 0
+      ? 1
+      : Phaser.Math.Clamp(1 - (viewDistance / Math.max(this.cameras.main.width, this.cameras.main.height)), 0.18, 1);
+    const volume = Math.pow(distanceFactor, 1.25) * viewFactor;
+    if (volume <= 0.02) {
+      return null;
+    }
+
+    return {
+      pan: Phaser.Math.Clamp((x - this.shipRoot.x) / 560, -0.82, 0.82),
+      volume,
+    };
+  }
+
+  private playWorldCue(
+    cue: Parameters<typeof retroSfx.play>[0],
+    x: number,
+    y: number,
+    baseVolume: number,
+    pitch = 1,
+  ): void {
+    const mix = this.getWorldAudioMix(x, y);
+    if (!mix) {
+      return;
+    }
+
+    retroSfx.play(cue, {
+      pan: mix.pan,
+      volume: baseVolume * mix.volume,
+      pitch,
+    });
+  }
+
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
     return Boolean(
       this.pauseButton?.container.getBounds().contains(pointer.x, pointer.y)
@@ -2371,6 +2566,7 @@ export class SpaceScene extends Phaser.Scene {
   private updateFactionShips(dt: number): void {
     for (const ship of this.factionShips) {
       const faction = SPACE_FACTIONS[ship.factionId];
+      const palette = this.getShipPalette(ship);
       ship.fireCooldown = Math.max(0, ship.fireCooldown - dt);
       ship.flash = Math.max(0, ship.flash - (dt * 4));
       ship.aggressionTimer = Math.max(0, ship.aggressionTimer - dt);
@@ -2424,11 +2620,11 @@ export class SpaceScene extends Phaser.Scene {
         this.fireFactionShot(ship);
       }
 
-      ship.damageRing.setStrokeStyle(2, faction.trimColor, ship.flash * 0.88);
-      ship.damageRing.setFillStyle(faction.glowColor, ship.flash * 0.18);
+      ship.damageRing.setStrokeStyle(2, palette.trimColor, ship.flash * 0.88);
+      ship.damageRing.setFillStyle(palette.glowColor, ship.flash * 0.18);
       const velocityPulse = Phaser.Math.Clamp(ship.velocity.length() / faction.maxSpeed, 0, 1);
       const thrustAlpha = movement.lengthSq() > 0 ? 0.42 + (velocityPulse * 0.16) : 0.14 + (velocityPulse * 0.12);
-      ship.thruster.setFillStyle(faction.glowColor, thrustAlpha);
+      ship.thruster.setFillStyle(palette.glowColor, thrustAlpha);
       ship.thruster.setScale(1, movement.lengthSq() > 0 ? 1.05 + (velocityPulse * 0.35) : 0.82 + (velocityPulse * 0.12));
     }
   }
@@ -2557,8 +2753,11 @@ export class SpaceScene extends Phaser.Scene {
     const patrolDx = ship.patrolTarget.x - ship.root.x;
     const patrolDy = ship.patrolTarget.y - ship.root.y;
     const patrolDistance = Math.sqrt((patrolDx * patrolDx) + (patrolDy * patrolDy));
-    if (patrolDistance < 90) {
-      ship.patrolTarget = this.pickNewPatrolTarget(ship.sectorId);
+    const exceedsGuardRadius = ship.guardAnchor
+      ? Phaser.Math.Distance.Between(ship.patrolTarget.x, ship.patrolTarget.y, ship.guardAnchor.x, ship.guardAnchor.y) > ship.guardRadius
+      : false;
+    if (patrolDistance < 90 || exceedsGuardRadius) {
+      ship.patrolTarget = this.pickNewPatrolTarget(ship);
     }
 
     const nextDx = ship.patrolTarget.x - ship.root.x;
@@ -2630,8 +2829,17 @@ export class SpaceScene extends Phaser.Scene {
     ship.root.y += ship.velocity.y * dt;
   }
 
-  private pickNewPatrolTarget(sectorId: string): Phaser.Math.Vector2 {
-    const point = createSpacePatrolTarget(sectorId, SPACE_WORLD_CONFIG);
+  private pickNewPatrolTarget(ship: SpaceFactionShip): Phaser.Math.Vector2 {
+    if (ship.guardAnchor && ship.guardRadius > 0) {
+      const angle = randomBetween(0, Math.PI * 2);
+      const radius = ship.guardRadius * randomBetween(0.48, 0.82);
+      return new Phaser.Math.Vector2(
+        ship.guardAnchor.x + (Math.cos(angle) * radius),
+        ship.guardAnchor.y + (Math.sin(angle) * radius),
+      );
+    }
+
+    const point = createSpacePatrolTarget(ship.sectorId, SPACE_WORLD_CONFIG);
     return new Phaser.Math.Vector2(
       point.x,
       point.y,
@@ -2640,12 +2848,13 @@ export class SpaceScene extends Phaser.Scene {
 
   private fireFactionShot(ship: SpaceFactionShip): void {
     const faction = SPACE_FACTIONS[ship.factionId];
+    const palette = this.getShipPalette(ship);
     const direction = ship.aimDirection.clone().normalize();
     const spawnDistance = ship.radius + 8;
     const x = ship.root.x + (direction.x * spawnDistance);
     const y = ship.root.y + (direction.y * spawnDistance);
-    const sprite = this.add.circle(x, y, 4, faction.trimColor, 0.98).setDepth(15);
-    const glow = this.add.circle(x, y, 8, faction.glowColor, 0.24).setDepth(14);
+    const sprite = this.add.circle(x, y, 4, palette.trimColor, 0.98).setDepth(15);
+    const glow = this.add.circle(x, y, 8, palette.glowColor, 0.24).setDepth(14);
     const velocity = direction.scale(faction.bulletSpeed).add(ship.velocity.clone().scale(0.34));
 
     this.shots.push({
@@ -2662,11 +2871,19 @@ export class SpaceScene extends Phaser.Scene {
       canHitPlayer: SPACE_FACTIONS[ship.factionId].attackPlayerByDefault || ship.provokedByPlayer,
     });
 
-    retroSfx.play("enemy-shot", {
-      pan: Phaser.Math.Clamp((x - this.shipRoot.x) / 420, -0.75, 0.75),
-      volume: 0.66,
-      pitch: ship.factionId === "pirate" ? 1.06 : ship.factionId === "smuggler" ? 0.94 : 1,
-    });
+    this.playWorldCue(
+      "enemy-shot",
+      x,
+      y,
+      0.66,
+      ship.factionId === "pirate"
+        ? 1.06
+        : ship.factionId === "smuggler"
+          ? 0.94
+          : ship.factionId === "homeguard"
+            ? 1.02
+            : 1,
+    );
   }
 
   private resolveFactionShipCollisions(): void {
@@ -2804,7 +3021,7 @@ export class SpaceScene extends Phaser.Scene {
             continue;
           }
 
-          this.damageFactionShip(ship, shot.damage, { kind: "player" }, shot.sprite.x);
+          this.damageFactionShip(ship, shot.damage, { kind: "player" });
           this.destroyProjectile(shotIndex);
           consumed = true;
           break;
@@ -2823,7 +3040,7 @@ export class SpaceScene extends Phaser.Scene {
             continue;
           }
 
-          this.damageFieldObject(fieldObject, shot.sprite.x);
+          this.damageFieldObject(fieldObject);
           this.destroyProjectile(shotIndex);
           consumed = true;
           break;
@@ -2861,7 +3078,7 @@ export class SpaceScene extends Phaser.Scene {
             kind: "ship",
             shipId: shot.ownerShipId,
             factionId: shot.ownerFactionId,
-          }, shot.sprite.x);
+          });
           this.destroyProjectile(shotIndex);
           consumed = true;
           break;
@@ -2874,20 +3091,32 @@ export class SpaceScene extends Phaser.Scene {
     }
   }
 
-  private damageFieldObject(fieldObject: SpaceFieldObject, hitX: number): void {
+  private damageFieldObject(fieldObject: SpaceFieldObject): void {
     fieldObject.hp -= 1;
     fieldObject.flash = 1;
-    retroSfx.play("shield-hit", {
-      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.8, 0.8),
-      volume: 0.8,
-    });
+    this.playWorldCue("shield-hit", fieldObject.root.x, fieldObject.root.y, fieldObject.isLarge ? 0.74 : 0.8);
 
-    if (fieldObject.hp <= 0) {
-      this.breakFieldObject(fieldObject, hitX);
+    const collapseThreshold = fieldObject.isLarge ? Math.max(1, Math.ceil(fieldObject.maxHp * 0.1)) : 0;
+    if (fieldObject.isLarge && fieldObject.hp > collapseThreshold) {
+      this.chipLargeFieldObject(fieldObject);
+      return;
+    }
+
+    if (fieldObject.hp <= collapseThreshold) {
+      this.breakFieldObject(fieldObject);
     }
   }
 
-  private breakFieldObject(fieldObject: SpaceFieldObject, hitX: number): void {
+  private chipLargeFieldObject(fieldObject: SpaceFieldObject): void {
+    const hpRatio = Phaser.Math.Clamp(fieldObject.hp / Math.max(1, fieldObject.maxHp), 0, 1);
+    fieldObject.radius = Math.max(fieldObject.baseRadius * 0.44, fieldObject.baseRadius * (0.52 + (hpRatio * 0.48)));
+    fieldObject.visualRoot.setScale(fieldObject.radius / Math.max(1, fieldObject.baseRadius));
+    fieldObject.root.setSize(fieldObject.radius * 2.2, fieldObject.radius * 2.2);
+    fieldObject.damageRing.setRadius(fieldObject.baseRadius * 0.76);
+    this.spawnBurst(fieldObject.root.x, fieldObject.root.y, 0xb9cee6, 4, 54, 120);
+  }
+
+  private breakFieldObject(fieldObject: SpaceFieldObject): void {
     const x = fieldObject.root.x;
     const y = fieldObject.root.y;
     const radius = fieldObject.radius;
@@ -2899,19 +3128,30 @@ export class SpaceScene extends Phaser.Scene {
     this.destroyedObjects += 1;
 
     this.spawnExplosionRing(x, y, Math.max(14, radius * 0.45), 0xffd3a1, 0xffb171);
-    this.spawnBurst(x, y, fragmentColor, fieldObject.kind === "asteroid" ? 8 : 5, 80, fieldObject.kind === "asteroid" ? 210 : 160);
+    this.spawnBurst(
+      x,
+      y,
+      fragmentColor,
+      fieldObject.kind === "asteroid"
+        ? fieldObject.isLarge
+          ? 14
+          : 8
+        : 5,
+      fieldObject.isLarge ? 120 : 80,
+      fieldObject.kind === "asteroid"
+        ? fieldObject.isLarge
+          ? 280
+          : 210
+        : 160,
+    );
 
-    retroSfx.play("loot-burst", {
-      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.8, 0.8),
-      volume: fieldObject.kind === "asteroid" ? 0.86 : 0.64,
-    });
+    this.playWorldCue("loot-burst", x, y, fieldObject.kind === "asteroid" ? (fieldObject.isLarge ? 0.92 : 0.86) : 0.64);
   }
 
   private damageFactionShip(
     ship: SpaceFactionShip,
     damage: number,
     source: SpaceDamageSource,
-    hitX: number,
   ): void {
     if (!this.factionShips.includes(ship)) {
       return;
@@ -2930,23 +3170,20 @@ export class SpaceScene extends Phaser.Scene {
       ship.provokedByShips.add(source.shipId);
     }
 
-    retroSfx.play(ship.hp <= 0 ? "shield-break" : "shield-hit", {
-      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.8, 0.8),
-      volume: ship.hp <= 0 ? 0.7 : 0.64,
-    });
+    this.playWorldCue(ship.hp <= 0 ? "shield-break" : "shield-hit", ship.root.x, ship.root.y, ship.hp <= 0 ? 0.7 : 0.64);
 
     if (ship.hp <= 0) {
-      this.destroyFactionShip(ship, hitX);
+      this.destroyFactionShip(ship);
     }
   }
 
-  private destroyFactionShip(ship: SpaceFactionShip, hitX: number): void {
+  private destroyFactionShip(ship: SpaceFactionShip): void {
     const shipIndex = this.factionShips.indexOf(ship);
     if (shipIndex < 0) {
       return;
     }
 
-    const faction = SPACE_FACTIONS[ship.factionId];
+    const palette = this.getShipPalette(ship);
     const x = ship.root.x;
     const y = ship.root.y;
     this.shipStates.set(ship.id, this.captureFactionShipState(ship, true));
@@ -2963,14 +3200,10 @@ export class SpaceScene extends Phaser.Scene {
       }
     });
 
-    this.spawnExplosionRing(x, y, ship.radius * 0.7, faction.trimColor, faction.glowColor);
-    this.spawnBurst(x, y, faction.color, ship.factionId === "pirate" ? 7 : 6, 100, 220);
+    this.spawnExplosionRing(x, y, ship.radius * 0.7, palette.trimColor, palette.glowColor);
+    this.spawnBurst(x, y, palette.color, ship.factionId === "pirate" ? 7 : 6, 100, 220);
 
-    retroSfx.play("loot-burst", {
-      pan: Phaser.Math.Clamp((hitX - this.shipRoot.x) / 420, -0.75, 0.75),
-      volume: 0.76,
-      pitch: ship.factionId === "pirate" ? 1.06 : 0.96,
-    });
+    this.playWorldCue("loot-burst", x, y, 0.76, ship.factionId === "pirate" ? 1.06 : 0.96);
   }
 
   private damagePlayerShip(amount: number, sourceFactionId: SpaceFactionId | null): void {
@@ -3122,7 +3355,7 @@ export class SpaceScene extends Phaser.Scene {
       ? this.autoAimTarget.kind === "ship"
         ? `${SPACE_FACTIONS[this.autoAimTarget.ship.factionId].label} ship`
         : this.autoAimTarget.fieldObject.kind === "asteroid"
-          ? "Asteroid"
+          ? this.autoAimTarget.fieldObject.isLarge ? "Large asteroid" : "Asteroid"
           : "Debris"
       : "None";
     const autoAim = gameSession.settings.controls.autoAim;
@@ -3132,9 +3365,10 @@ export class SpaceScene extends Phaser.Scene {
       ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
       : `Free roam launch  |  Region: ${regionLabel}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
+    const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guards ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
     this.contactText?.setText(missionPlanet
-      ? `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
-      : `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`);
+      ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
+      : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`);
     this.coordinateText?.setText(missionPlanet
       ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\nHYPER ${hyperdriveStatus}`
       : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\nHYPER ${hyperdriveStatus}`);
@@ -3178,6 +3412,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.factionShips.forEach((ship) => {
       const faction = SPACE_FACTIONS[ship.factionId];
+      const palette = this.getShipPalette(ship);
       const hostile = this.canShipAttackPlayer(ship);
       sources.push({
         id: `ship:${ship.id}`,
@@ -3190,40 +3425,43 @@ export class SpaceScene extends Phaser.Scene {
         x: ship.root.x,
         y: ship.root.y,
         radius: ship.radius,
-        color: faction.color,
+        color: palette.color,
       });
     });
 
     this.asteroids.forEach((fieldObject) => {
-      sources.push({
-        id: `field:${fieldObject.id}`,
-        kind: fieldObject.kind === "asteroid" ? "asteroid" : "poi",
-        label: fieldObject.kind === "asteroid" ? "Asteroid" : "Debris",
-        x: fieldObject.root.x,
-        y: fieldObject.root.y,
-        radius: fieldObject.radius,
-        color: fieldObject.kind === "asteroid" ? 0xe0b36a : 0x9ba5b2,
-      });
-    });
-
-    this.activePlanetViews.forEach((_planetView, planetId) => {
-      const planet = this.galaxyPlanetsById.get(planetId);
-      if (!planet) {
+      if (fieldObject.kind !== "asteroid") {
         return;
       }
       sources.push({
-        id: `planet:${planet.id}`,
-        kind: planet.missionIds.length > 0 ? "mission-planet" : "planet",
-        label: planet.name,
-        x: planet.x,
-        y: planet.y,
-        radius: this.getPlanetRenderRadius(planet),
-        color: planet.color,
+        id: `field:${fieldObject.id}`,
+        kind: "asteroid",
+        label: fieldObject.isLarge ? "Large asteroid" : "Asteroid",
+        x: fieldObject.root.x,
+        y: fieldObject.root.y,
+        radius: fieldObject.radius,
+        color: fieldObject.isLarge ? 0xf0d49c : 0xe0b36a,
+      });
+    });
+
+    this.activeCelestialSystems.forEach((_systemView, systemId) => {
+      const system = this.galaxySystemsById.get(systemId);
+      if (!system) {
+        return;
+      }
+      sources.push({
+        id: `star:${system.id}`,
+        kind: "star",
+        label: `${system.name} star`,
+        x: system.x,
+        y: system.y,
+        radius: this.getSystemStarRenderRadius(system),
+        color: system.starColor,
       });
     });
 
     const missionPlanet = this.getTrackedMissionPlanet();
-    if (missionPlanet && !this.activePlanetViews.has(missionPlanet.id)) {
+    if (missionPlanet) {
       sources.push({
         id: `mission:${missionPlanet.missionId}`,
         kind: "mission-planet",
@@ -3279,6 +3517,7 @@ export class SpaceScene extends Phaser.Scene {
       pirate: 0,
       republic: 0,
       smuggler: 0,
+      homeguard: 0,
     });
   }
 
@@ -3293,6 +3532,7 @@ export class SpaceScene extends Phaser.Scene {
       pirate: 0,
       republic: 0,
       smuggler: 0,
+      homeguard: 0,
     });
   }
 
@@ -3647,6 +3887,8 @@ export class SpaceScene extends Phaser.Scene {
       .map((fieldObject) => ({
         id: fieldObject.id,
         kind: fieldObject.kind,
+        placementType: fieldObject.placementType,
+        isLarge: fieldObject.isLarge,
         x: Math.round(fieldObject.root.x),
         y: Math.round(fieldObject.root.y),
         hp: fieldObject.hp,
@@ -3663,6 +3905,7 @@ export class SpaceScene extends Phaser.Scene {
         id: ship.id,
         factionId: ship.factionId,
         sectorId: ship.sectorId,
+        guardRadius: ship.guardRadius,
         x: Math.round(ship.root.x),
         y: Math.round(ship.root.y),
         hp: ship.hp,

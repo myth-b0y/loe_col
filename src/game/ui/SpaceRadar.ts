@@ -7,6 +7,7 @@ export type SpaceRadarContactKind =
   | "friendly-ship"
   | "neutral-ship"
   | "asteroid"
+  | "star"
   | "planet"
   | "mission-planet"
   | "station"
@@ -63,11 +64,11 @@ type RadarMemory = {
   lastSeenAt: number;
 };
 
-const DEFAULT_WIDTH = 246;
-const DEFAULT_HEIGHT = 66;
+const DEFAULT_WIDTH = 278;
+const DEFAULT_HEIGHT = 78;
 const DEFAULT_DEPTH = 52;
-const DEFAULT_RANGE = 2600;
-const DEFAULT_SWEEP_SPEED_DEG_PER_SEC = 165;
+const DEFAULT_RANGE = 2200;
+const DEFAULT_SWEEP_SPEED_DEG_PER_SEC = 112;
 const DEFAULT_SWEEP_WIDTH_DEG = 14;
 const DEFAULT_MEMORY_FADE_MS = 1400;
 const DEFAULT_MEMORY_CLEAR_MS = 2400;
@@ -301,6 +302,8 @@ export class SpaceRadarDisplay {
 
   private getContactSize(kind: SpaceRadarContactKind, radius: number): number {
     switch (kind) {
+      case "star":
+        return Math.max(5.8, radius / 16);
       case "planet":
       case "mission-planet":
       case "station":
@@ -332,6 +335,12 @@ export class SpaceRadarDisplay {
     switch (kind) {
       case "asteroid": {
         const points = this.getHexagonPoints(x, y, size);
+        this.contactsGraphics.fillPoints(points, true);
+        this.contactsGraphics.strokePoints(points, true);
+        return;
+      }
+      case "star": {
+        const points = this.getStarPoints(x, y, size + 0.8);
         this.contactsGraphics.fillPoints(points, true);
         this.contactsGraphics.strokePoints(points, true);
         return;
@@ -386,6 +395,20 @@ export class SpaceRadarDisplay {
       ));
     }
 
+    return points;
+  }
+
+  private getStarPoints(x: number, y: number, size: number): Phaser.Geom.Point[] {
+    const points: Phaser.Geom.Point[] = [];
+    const inner = size * 0.46;
+    for (let index = 0; index < 8; index += 1) {
+      const angle = -Math.PI * 0.5 + (index * (Math.PI / 4));
+      const radius = index % 2 === 0 ? size : inner;
+      points.push(new Phaser.Geom.Point(
+        x + (Math.cos(angle) * radius),
+        y + (Math.sin(angle) * radius),
+      ));
+    }
     return points;
   }
 

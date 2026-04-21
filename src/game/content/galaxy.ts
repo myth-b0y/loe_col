@@ -162,7 +162,7 @@ type GalaxySystemCluster = {
 const STAR_COLORS = [0xffffff, 0xe4f1ff, 0xa4d2ff, 0xffe9ae] as const;
 const DEFAULT_PLAYER_RACE_ID: RaceId = "olydran";
 const ACTIVE_SYSTEM_RING_IDS = ["inner", "second", "third", "outer"] as const;
-const GALAXY_SYSTEM_MIN_DISTANCE = 1080;
+const GALAXY_SYSTEM_MIN_DISTANCE = 1260;
 const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
@@ -730,6 +730,23 @@ function canPlaceSystem(point: GalaxyPoint, systems: GalaxySystemRecord[]): bool
   });
 }
 
+function getNearestSystemDistanceSq(point: GalaxyPoint, systems: GalaxySystemRecord[]): number {
+  if (systems.length === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  let nearestDistanceSq = Number.POSITIVE_INFINITY;
+  systems.forEach((system) => {
+    const dx = system.x - point.x;
+    const dy = system.y - point.y;
+    const distanceSq = (dx * dx) + (dy * dy);
+    if (distanceSq < nearestDistanceSq) {
+      nearestDistanceSq = distanceSq;
+    }
+  });
+  return nearestDistanceSq;
+}
+
 function createCandidateSystemPoint(
   sector: GalaxySectorConfig,
   ringId: Exclude<GalaxyRingId, "deep-space">,
@@ -738,6 +755,8 @@ function createCandidateSystemPoint(
   rng: SeededRandom,
 ): GalaxyPoint {
   const ring = getGalaxyRingByIdLocal(ringId);
+  let bestCandidate: GalaxyPoint | null = null;
+  let bestCandidateDistanceSq = Number.NEGATIVE_INFINITY;
 
   for (let attempt = 0; attempt < 36; attempt += 1) {
     const angleDeg = clampAngleToSector(
@@ -752,17 +771,36 @@ function createCandidateSystemPoint(
     if (
       getGalaxySectorAtPosition(point.x, point.y).id === sector.id
       && getGalaxyRingAtPosition(point.x, point.y).id === ringId
-      && canPlaceSystem(point, systems)
     ) {
-      return point;
+      const nearestDistanceSq = getNearestSystemDistanceSq(point, systems);
+      if (nearestDistanceSq > bestCandidateDistanceSq) {
+        bestCandidate = point;
+        bestCandidateDistanceSq = nearestDistanceSq;
+      }
+      if (canPlaceSystem(point, systems)) {
+        return point;
+      }
     }
   }
 
   for (let attempt = 0; attempt < 48; attempt += 1) {
     const point = pointFromDegrees(pickAngleInSector(sector, rng), pickRadiusInRing(ring, rng));
+    if (getGalaxySectorAtPosition(point.x, point.y).id !== sector.id || getGalaxyRingAtPosition(point.x, point.y).id !== ringId) {
+      continue;
+    }
+
+    const nearestDistanceSq = getNearestSystemDistanceSq(point, systems);
+    if (nearestDistanceSq > bestCandidateDistanceSq) {
+      bestCandidate = point;
+      bestCandidateDistanceSq = nearestDistanceSq;
+    }
     if (canPlaceSystem(point, systems)) {
       return point;
     }
+  }
+
+  if (bestCandidate) {
+    return bestCandidate;
   }
 
   return pointFromDegrees(getGalaxySectorMidAngleDeg(sector), pickRadiusInRing(ring, rng));

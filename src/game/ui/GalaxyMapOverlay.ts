@@ -63,6 +63,7 @@ export class GalaxyMapOverlay {
   private readonly playerLabel: Phaser.GameObjects.Text;
   private readonly missionLabel: Phaser.GameObjects.Text;
   private readonly hoverLabel: Phaser.GameObjects.Text;
+  private readonly homeworldLabel: Phaser.GameObjects.Text;
   private readonly sectorLabels: Phaser.GameObjects.Text[] = [];
   private readonly closeButton: MenuButton;
   private readonly sectorBackButton: MenuButton;
@@ -196,7 +197,7 @@ export class GalaxyMapOverlay {
       wordWrap: { width: INFO_RECT.width - 28 },
     }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
 
-    this.hoverText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 274, "", {
+    this.hoverText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 316, "", {
       fontFamily: "Arial",
       fontSize: "13px",
       color: "#d7e8ff",
@@ -261,6 +262,15 @@ export class GalaxyMapOverlay {
       padding: { x: 4, y: 2 },
     }).setDepth(PANEL_DEPTH + 4).setScrollFactor(0).setVisible(false);
 
+    this.homeworldLabel = scene.add.text(0, 0, "HOME", {
+      fontFamily: "Arial",
+      fontSize: "12px",
+      color: "#fff4d2",
+      fontStyle: "bold",
+      backgroundColor: "#10203ad6",
+      padding: { x: 5, y: 2 },
+    }).setDepth(PANEL_DEPTH + 5).setScrollFactor(0).setVisible(false);
+
     GALAXY_SECTORS.forEach((sector) => {
       const labelPoint = this.worldToMap(getGalaxySectorLabelPoint(sector));
       const label = scene.add.text(labelPoint.x, labelPoint.y, sector.label.replace(" ", "\n"), {
@@ -312,6 +322,7 @@ export class GalaxyMapOverlay {
       this.playerLabel,
       this.missionLabel,
       this.hoverLabel,
+      this.homeworldLabel,
       this.mapInputZone,
       this.settingsButton.container,
       this.closeButton.container,
@@ -322,6 +333,7 @@ export class GalaxyMapOverlay {
     this.root.bringToTop(this.missionLabel);
     this.root.bringToTop(this.playerLabel);
     this.root.bringToTop(this.hoverLabel);
+    this.root.bringToTop(this.homeworldLabel);
     this.root.bringToTop(this.mapInputZone);
 
     this.root.setVisible(false);
@@ -507,6 +519,16 @@ export class GalaxyMapOverlay {
 
       const systemPoint = this.worldToMap(system);
       const planets = planetsBySystemId.get(system.id) ?? [];
+      const systemHasHomeworld = planets.some((planet) => homeworldIds.has(planet.id));
+      this.drawSystemStarGlyph(
+        systemPoint.x,
+        systemPoint.y,
+        selectedSectorId
+          ? systemHasHomeworld ? 10 : 7
+          : systemHasHomeworld ? 7.2 : 5.2,
+        system.starColor,
+        systemHasHomeworld,
+      );
       planets.forEach((planet) => {
         if (!this.isWorldPointVisible(planet, viewBounds, planet.radius)) {
           return;
@@ -518,8 +540,13 @@ export class GalaxyMapOverlay {
         this.staticMap.fillStyle(planet.color, planet.isHomeworld ? 1 : 0.88);
         this.staticMap.fillCircle(planetPoint.x, planetPoint.y, this.getMapBodyRadius(planet.radius, viewBounds, planet.isHomeworld));
         if (homeworldIds.has(planet.id)) {
+          this.staticMap.fillStyle(system.starColor, selectedSectorId ? 0.18 : 0.12);
+          this.staticMap.fillCircle(planetPoint.x, planetPoint.y, this.getMapBodyRadius(planet.radius, viewBounds, true) + 6.4);
           this.staticMap.lineStyle(2, 0xfff3cf, 0.94);
           this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, this.getMapBodyRadius(planet.radius, viewBounds, true) + 3.8);
+          this.staticMap.lineStyle(1.6, 0xfff7de, 0.82);
+          this.staticMap.lineBetween(planetPoint.x - 8, planetPoint.y, planetPoint.x + 8, planetPoint.y);
+          this.staticMap.lineBetween(planetPoint.x, planetPoint.y - 8, planetPoint.x, planetPoint.y + 8);
         }
 
         const moons = moonsByPlanetId.get(planet.id) ?? [];
@@ -536,6 +563,26 @@ export class GalaxyMapOverlay {
         });
       });
     });
+  }
+
+  private drawSystemStarGlyph(
+    x: number,
+    y: number,
+    size: number,
+    color: number,
+    isHomeworldSystem: boolean,
+  ): void {
+    this.staticMap.lineStyle(isHomeworldSystem ? 2.2 : 1.8, color, isHomeworldSystem ? 0.96 : 0.82);
+    this.staticMap.lineBetween(x - size, y, x + size, y);
+    this.staticMap.lineBetween(x, y - size, x, y + size);
+    this.staticMap.lineBetween(x - (size * 0.7), y - (size * 0.7), x + (size * 0.7), y + (size * 0.7));
+    this.staticMap.lineBetween(x - (size * 0.7), y + (size * 0.7), x + (size * 0.7), y - (size * 0.7));
+    this.staticMap.fillStyle(isHomeworldSystem ? 0xfff4d8 : 0xf3fbff, isHomeworldSystem ? 0.96 : 0.84);
+    this.staticMap.fillCircle(x, y, isHomeworldSystem ? 2.6 : 1.8);
+    if (isHomeworldSystem) {
+      this.staticMap.lineStyle(1.6, 0xfff0c2, 0.72);
+      this.staticMap.strokeCircle(x, y, size + 3.6);
+    }
   }
 
   private getMapBodyRadius(
@@ -637,6 +684,7 @@ export class GalaxyMapOverlay {
       : "This is the same coordinate space used by the playable space map. Normal flight stays local; the datapad shows the full structure.");
 
     this.markerMap.clear();
+    this.homeworldLabel.setVisible(false);
     if (this.isWorldPointVisible(playerPosition, viewBounds)) {
       const playerMarker = this.worldToMap(playerPosition);
       this.markerMap.fillStyle(0x8fe3ff, 1);
@@ -668,6 +716,14 @@ export class GalaxyMapOverlay {
       this.missionLabel.setVisible(false);
     }
 
+    if (sectorHomeworld && this.isWorldPointVisible(sectorHomeworld, viewBounds, sectorHomeworld.radius)) {
+      const homeworldMarker = this.worldToMap(sectorHomeworld);
+      this.homeworldLabel
+        .setPosition(homeworldMarker.x + 28, homeworldMarker.y - 28)
+        .setText(`HOME  ${sectorHomeworld.name}`)
+        .setVisible(Boolean(selectedSector));
+    }
+
     if (this.hoverWorldPoint && this.isWorldPointVisible(this.hoverWorldPoint, viewBounds)) {
       const hoverMarker = this.worldToMap(this.hoverWorldPoint);
       this.markerMap.lineStyle(2, 0xdde9ff, 0.96);
@@ -695,6 +751,7 @@ export class GalaxyMapOverlay {
     this.root.bringToTop(this.missionLabel);
     this.root.bringToTop(this.playerLabel);
     this.root.bringToTop(this.hoverLabel);
+    this.root.bringToTop(this.homeworldLabel);
     this.root.bringToTop(this.sectorBackButton.container);
     this.root.bringToTop(this.mapInputZone);
   }
