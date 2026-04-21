@@ -537,16 +537,18 @@ export class GalaxyMapOverlay {
         const planetPoint = this.worldToMap(planet);
         this.staticMap.lineStyle(1, system.starColor, selectedSectorId ? 0.2 : 0.08);
         this.staticMap.lineBetween(systemPoint.x, systemPoint.y, planetPoint.x, planetPoint.y);
+        const planetRadius = this.getMapBodyRadius(planet.radius, viewBounds, planet.isHomeworld);
         this.staticMap.fillStyle(planet.color, planet.isHomeworld ? 1 : 0.88);
-        this.staticMap.fillCircle(planetPoint.x, planetPoint.y, this.getMapBodyRadius(planet.radius, viewBounds, planet.isHomeworld));
+        this.staticMap.fillCircle(planetPoint.x, planetPoint.y, planetRadius);
         if (homeworldIds.has(planet.id)) {
-          this.staticMap.fillStyle(system.starColor, selectedSectorId ? 0.18 : 0.12);
-          this.staticMap.fillCircle(planetPoint.x, planetPoint.y, this.getMapBodyRadius(planet.radius, viewBounds, true) + 6.4);
-          this.staticMap.lineStyle(2, 0xfff3cf, 0.94);
-          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, this.getMapBodyRadius(planet.radius, viewBounds, true) + 3.8);
-          this.staticMap.lineStyle(1.6, 0xfff7de, 0.82);
-          this.staticMap.lineBetween(planetPoint.x - 8, planetPoint.y, planetPoint.x + 8, planetPoint.y);
-          this.staticMap.lineBetween(planetPoint.x, planetPoint.y - 8, planetPoint.x, planetPoint.y + 8);
+          this.staticMap.lineStyle(selectedSectorId ? 2 : 1.6, 0xfff3cf, 0.94);
+          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, planetRadius + 2.2);
+          this.staticMap.fillStyle(0xfff6dd, 0.86);
+          this.staticMap.fillCircle(
+            planetPoint.x - Math.max(0.6, planetRadius * 0.22),
+            planetPoint.y - Math.max(0.6, planetRadius * 0.22),
+            Math.max(0.7, planetRadius * 0.24),
+          );
         }
 
         const moons = moonsByPlanetId.get(planet.id) ?? [];
@@ -575,13 +577,13 @@ export class GalaxyMapOverlay {
     this.staticMap.lineStyle(isHomeworldSystem ? 2.2 : 1.8, color, isHomeworldSystem ? 0.96 : 0.82);
     this.staticMap.lineBetween(x - size, y, x + size, y);
     this.staticMap.lineBetween(x, y - size, x, y + size);
-    this.staticMap.lineBetween(x - (size * 0.7), y - (size * 0.7), x + (size * 0.7), y + (size * 0.7));
-    this.staticMap.lineBetween(x - (size * 0.7), y + (size * 0.7), x + (size * 0.7), y - (size * 0.7));
+    this.staticMap.lineBetween(x - (size * 0.62), y - (size * 0.62), x + (size * 0.62), y + (size * 0.62));
+    this.staticMap.lineBetween(x - (size * 0.62), y + (size * 0.62), x + (size * 0.62), y - (size * 0.62));
     this.staticMap.fillStyle(isHomeworldSystem ? 0xfff4d8 : 0xf3fbff, isHomeworldSystem ? 0.96 : 0.84);
     this.staticMap.fillCircle(x, y, isHomeworldSystem ? 2.6 : 1.8);
     if (isHomeworldSystem) {
-      this.staticMap.lineStyle(1.6, 0xfff0c2, 0.72);
-      this.staticMap.strokeCircle(x, y, size + 3.6);
+      this.staticMap.lineStyle(1.2, 0xfff0c2, 0.64);
+      this.staticMap.strokeCircle(x, y, size + 2.2);
     }
   }
 

@@ -886,20 +886,18 @@ export class SpaceScene extends Phaser.Scene {
     const systemIsHomeworld = Boolean(homeworldPlanet);
     const planetIds: string[] = [];
     const moonIds: string[] = [];
-    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 2.2 : 1.85), system.starColor, systemIsHomeworld ? 0.18 : 0.09);
-    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.52 : 1.26), system.starColor, systemIsHomeworld ? 0.32 : 0.2);
+    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.42 : 1.26), system.starColor, systemIsHomeworld ? 0.16 : 0.1);
+    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.02 : 0.9), system.starColor, systemIsHomeworld ? 0.24 : 0.16);
     const starBurst = this.add.polygon(
       0,
       0,
-      createStarPoints(starRadius * (systemIsHomeworld ? 1.3 : 1.12), starRadius * 0.42, systemIsHomeworld ? 8 : 4),
-      system.starColor,
-      systemIsHomeworld ? 0.34 : 0.2,
-    ).setStrokeStyle(2, 0xf6fbff, systemIsHomeworld ? 0.4 : 0.18);
-    const starCoreBurst = this.add.polygon(0, 0, createStarPoints(starRadius * 0.84, starRadius * 0.36, 4), 0xfff3d6, 0.92)
-      .setStrokeStyle(1, 0xffffff, 0.54);
-    const starCore = this.add.circle(0, 0, starRadius * 0.52, system.starColor, 0.98)
-      .setStrokeStyle(2, 0xf6fbff, 0.44);
-    const highlight = this.add.circle(-starRadius * 0.16, -starRadius * 0.18, starRadius * 0.18, 0xffffff, 0.24);
+      createStarPoints(starRadius * (systemIsHomeworld ? 0.98 : 0.84), starRadius * (systemIsHomeworld ? 0.42 : 0.34), systemIsHomeworld ? 8 : 4),
+      0xfff4d7,
+      systemIsHomeworld ? 0.9 : 0.82,
+    ).setStrokeStyle(1.6, 0xffffff, systemIsHomeworld ? 0.34 : 0.22);
+    const starCore = this.add.circle(0, 0, starRadius * 0.36, system.starColor, 0.98)
+      .setStrokeStyle(1.6, 0xf6fbff, 0.4);
+    const highlight = this.add.circle(-(starRadius * 0.1), -(starRadius * 0.12), starRadius * 0.1, 0xffffff, 0.2);
     const starLabel = this.add.text(0, -(starRadius + 16), system.name, {
       fontFamily: "Arial",
       fontSize: systemIsHomeworld ? "14px" : "13px",
@@ -908,7 +906,7 @@ export class SpaceScene extends Phaser.Scene {
       backgroundColor: systemIsHomeworld ? "#10203acc" : "#08111bc0",
       padding: { x: 5, y: 3 },
     }).setOrigin(0.5, 1).setAlpha(systemIsHomeworld ? 0.92 : 0.72);
-    children.push(starHalo, starGlow, starBurst);
+    children.push(starHalo, starGlow, starBurst, starCore, highlight, starLabel);
 
     systemPlanets.forEach((planet) => {
       const localX = planet.x - system.x;
@@ -921,17 +919,16 @@ export class SpaceScene extends Phaser.Scene {
       const planetRadius = this.getPlanetRenderRadius(planet);
       const landingRing = this.add.circle(0, 0, planetRadius * 1.48, 0xffffff, 0)
         .setStrokeStyle(2, 0xfff1cb, 0.12);
-      const halo = this.add.circle(0, 0, planetRadius * (planet.isHomeworld ? 1.42 : 1.16), planet.color, planet.isHomeworld ? 0.28 : 0.16);
-      const aura = planet.isHomeworld
-        ? this.add.circle(0, 0, planetRadius * 1.94, system.starColor, 0.12).setStrokeStyle(2, 0xfff1cf, 0.26)
-        : null;
-      const auraBurst = planet.isHomeworld
-        ? this.add.polygon(0, 0, createStarPoints(planetRadius * 1.72, planetRadius * 0.82, 8), 0xffe6aa, 0.16)
-          .setStrokeStyle(1, 0xfff8e2, 0.34)
+      const halo = this.add.circle(0, 0, planetRadius * (planet.isHomeworld ? 1.18 : 1.12), planet.color, planet.isHomeworld ? 0.24 : 0.16);
+      const homeworldRing = planet.isHomeworld
+        ? this.add.circle(0, 0, planetRadius + 4, 0xffffff, 0).setStrokeStyle(2, 0xfff1cf, 0.72)
         : null;
       const body = this.add.circle(0, 0, planetRadius, planet.color, 0.96)
         .setStrokeStyle(2, planet.isHomeworld ? 0xfff4d9 : 0xf2fbff, planet.isHomeworld ? 0.82 : 0.44);
-      const glow = this.add.circle(-(planetRadius * 0.18), -(planetRadius * 0.2), planetRadius * 0.18, 0xffffff, 0.24);
+      const homeworldCap = planet.isHomeworld
+        ? this.add.circle(-(planetRadius * 0.24), -(planetRadius * 0.22), planetRadius * 0.24, 0xfff7e5, 0.3)
+        : null;
+      const glow = this.add.circle(-(planetRadius * 0.18), -(planetRadius * 0.2), planetRadius * 0.18, 0xffffff, planet.isHomeworld ? 0.3 : 0.24);
       const label = this.add.text(0, planetRadius + 12, planet.name, {
         fontFamily: "Arial",
         fontSize: planet.isHomeworld ? "13px" : "12px",
@@ -942,8 +939,8 @@ export class SpaceScene extends Phaser.Scene {
       }).setOrigin(0.5, 0);
       label.setVisible(planet.isHomeworld || planet.missionIds.includes(trackedMissionId ?? ""));
 
-      const planetChildren = aura && auraBurst
-        ? [landingRing, aura, auraBurst, halo, body, glow, label]
+      const planetChildren = homeworldRing && homeworldCap
+        ? [landingRing, halo, homeworldRing, body, homeworldCap, glow, label]
         : [landingRing, halo, body, glow, label];
       const planetRoot = this.add.container(localX, localY, planetChildren);
       planetRoot.setSize(planetRadius * 3, planetRadius * 3);
@@ -972,10 +969,8 @@ export class SpaceScene extends Phaser.Scene {
       });
     });
 
-    children.push(starCoreBurst, starCore, highlight, starLabel);
-
     const root = this.add.container(system.x, system.y, children).setDepth(5);
-    root.setSize(starRadius * (systemIsHomeworld ? 7.2 : 6), starRadius * (systemIsHomeworld ? 7.2 : 6));
+    root.setSize(starRadius * (systemIsHomeworld ? 5.6 : 4.8), starRadius * (systemIsHomeworld ? 5.6 : 4.8));
     return {
       systemId: system.id,
       root,
