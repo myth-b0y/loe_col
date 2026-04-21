@@ -116,6 +116,16 @@ export type ShipHyperdriveConfig = {
   waypointAutoDropPadding: number;
 };
 
+export type ShipRadarConfig = {
+  range: number;
+  width: number;
+  height: number;
+  sweepSpeedDegPerSec: number;
+  sweepWidthDeg: number;
+  memoryFadeMs: number;
+  memoryClearMs: number;
+};
+
 export type ShipHyperdriveSystemState = {
   state: SpaceHyperdriveState;
   chargeElapsedMs: number;
@@ -251,6 +261,16 @@ export const SHIP_HYPERDRIVE_CONFIG: ShipHyperdriveConfig = {
   postDropSpeedMultiplier: 0.44,
   proximitySafetyPadding: 620,
   waypointAutoDropPadding: 980,
+};
+
+export const SHIP_RADAR_CONFIG: ShipRadarConfig = {
+  range: 2600,
+  width: 246,
+  height: 66,
+  sweepSpeedDegPerSec: 200,
+  sweepWidthDeg: 14,
+  memoryFadeMs: 1400,
+  memoryClearMs: 2400,
 };
 
 export const SPACE_SECTORS: SpaceSectorConfig[] = GALAXY_SECTORS.map((sector) => ({

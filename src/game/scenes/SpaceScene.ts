@@ -17,6 +17,7 @@ import { getMissionContract } from "../content/missions";
 import {
   SPACE_FACTIONS,
   SHIP_HYPERDRIVE_CONFIG,
+  SHIP_RADAR_CONFIG,
   SPACE_WORLD_CONFIG,
   createShipHyperdriveSystemState,
   createSpaceWorldDefinition,
@@ -39,6 +40,7 @@ import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { InventoryOverlay } from "../ui/InventoryOverlay";
 import { GalaxyMapOverlay } from "../ui/GalaxyMapOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
+import { SpaceRadarDisplay, type SpaceRadarContactSource } from "../ui/SpaceRadar";
 
 type SpaceSceneData = {
   missionId?: string | null;
@@ -316,6 +318,7 @@ export class SpaceScene extends Phaser.Scene {
   private activeShipCellKeys: SpaceWorldCellKey[] = [];
   private routeMissionId: string | null = null;
   private routeTitle = "Free roam launch";
+  private radar?: SpaceRadarDisplay;
   private missionPlanetView?: {
     planet: GalaxyMissionPlanet;
     root: Phaser.GameObjects.Container;
@@ -398,6 +401,7 @@ export class SpaceScene extends Phaser.Scene {
     this.activeBackdropStarCells.clear();
     this.activeBackdropHazeNodes.clear();
     this.backdropSectorOverlay = undefined;
+    this.radar = undefined;
     this.asteroids = [];
     this.factionShips = [];
     this.shots = [];
@@ -508,6 +512,7 @@ export class SpaceScene extends Phaser.Scene {
     this.resolveFactionShipCollisions();
     this.updateProjectiles(dt);
     this.updateBurstParticles(dt);
+    this.updateRadar(dt);
     if (this.hudRefreshTimerMs <= 0) {
       this.refreshHud();
       this.hudRefreshTimerMs = HUD_REFRESH_INTERVAL_MS;
@@ -1184,6 +1189,19 @@ export class SpaceScene extends Phaser.Scene {
       accentColor: 0x234566,
     });
     this.returnButton.container.setScrollFactor(0);
+
+    this.radar = new SpaceRadarDisplay(this, {
+      x: GAME_WIDTH * 0.5,
+      y: 46,
+      width: SHIP_RADAR_CONFIG.width,
+      height: SHIP_RADAR_CONFIG.height,
+      range: SHIP_RADAR_CONFIG.range,
+      sweepSpeedDegPerSec: SHIP_RADAR_CONFIG.sweepSpeedDegPerSec,
+      sweepWidthDeg: SHIP_RADAR_CONFIG.sweepWidthDeg,
+      memoryFadeMs: SHIP_RADAR_CONFIG.memoryFadeMs,
+      memoryClearMs: SHIP_RADAR_CONFIG.memoryClearMs,
+      depth: 52,
+    });
   }
 
   private createTouchUi(): void {
@@ -2938,6 +2956,85 @@ export class SpaceScene extends Phaser.Scene {
     this.hudRefreshTimerMs = HUD_REFRESH_INTERVAL_MS;
   }
 
+  private updateRadar(dt: number): void {
+    if (!this.radar) {
+      return;
+    }
+
+    const radarSources = this.collectRadarSources();
+    this.radar.update(
+      this.shipRoot.x,
+      this.shipRoot.y,
+      radarSources,
+      this.time.now,
+      dt,
+      (sourceId) => this.isRadarSourceDestroyed(sourceId),
+    );
+  }
+
+  private collectRadarSources(): SpaceRadarContactSource[] {
+    const sources: SpaceRadarContactSource[] = [];
+
+    this.factionShips.forEach((ship) => {
+      const faction = SPACE_FACTIONS[ship.factionId];
+      const hostile = this.canShipAttackPlayer(ship);
+      sources.push({
+        id: `ship:${ship.id}`,
+        kind: hostile
+          ? "enemy-ship"
+          : ship.factionId === "smuggler"
+            ? "neutral-ship"
+            : "friendly-ship",
+        label: `${faction.label} ship`,
+        x: ship.root.x,
+        y: ship.root.y,
+        radius: ship.radius,
+        color: faction.color,
+      });
+    });
+
+    this.asteroids.forEach((fieldObject) => {
+      sources.push({
+        id: `field:${fieldObject.id}`,
+        kind: fieldObject.kind === "asteroid" ? "asteroid" : "poi",
+        label: fieldObject.kind === "asteroid" ? "Asteroid" : "Debris",
+        x: fieldObject.root.x,
+        y: fieldObject.root.y,
+        radius: fieldObject.radius,
+        color: fieldObject.kind === "asteroid" ? 0xe0b36a : 0x9ba5b2,
+      });
+    });
+
+    const missionPlanet = this.getTrackedMissionPlanet();
+    if (missionPlanet) {
+      sources.push({
+        id: `mission:${missionPlanet.missionId}`,
+        kind: "mission-planet",
+        label: missionPlanet.name,
+        x: missionPlanet.x,
+        y: missionPlanet.y,
+        radius: missionPlanet.radius,
+        color: missionPlanet.color,
+      });
+    }
+
+    return sources;
+  }
+
+  private isRadarSourceDestroyed(sourceId: string): boolean {
+    if (sourceId.startsWith("ship:")) {
+      const shipId = sourceId.slice(5);
+      return this.shipStates.get(shipId)?.destroyed ?? false;
+    }
+
+    if (sourceId.startsWith("field:")) {
+      const fieldId = sourceId.slice(6);
+      return this.fieldStates.get(fieldId)?.destroyed ?? false;
+    }
+
+    return false;
+  }
+
   private getCurrentGalaxySector(): GalaxySectorConfig {
     return this.currentSector;
   }
@@ -3255,6 +3352,7 @@ export class SpaceScene extends Phaser.Scene {
     this.statusText?.setAlpha(alpha);
     this.contactText?.setAlpha(alpha);
     this.coordinateText?.setAlpha(alpha);
+    this.radar?.setAlpha(alpha);
     this.waypointArrow?.setAlpha(blocking ? 0.16 : 1);
     this.waypointLabel?.setAlpha(blocking ? 0.16 : 1);
     this.logbookButton?.container.setAlpha(blocking ? 0.28 : 1);
@@ -3403,6 +3501,7 @@ export class SpaceScene extends Phaser.Scene {
       activeShipCellKeys: [...this.activeShipCellKeys],
       activeBackdropStarCells: this.activeBackdropStarCells.size,
       activeBackdropHazeNodes: this.activeBackdropHazeNodes.size,
+      radar: this.radar?.getDebugSnapshot() ?? null,
       activeShots: this.shots.length,
       activeBurstParticles: this.burstParticles.length,
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
