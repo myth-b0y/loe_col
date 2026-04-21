@@ -297,6 +297,31 @@ function createStarPoints(
   return points;
 }
 
+function createStarburstGraphic(
+  scene: Phaser.Scene,
+  outerRadius: number,
+  innerRadius: number,
+  pointCount: number,
+  fillColor: number,
+  fillAlpha: number,
+  strokeColor: number,
+  strokeAlpha: number,
+  lineWidth: number,
+): Phaser.GameObjects.Graphics {
+  const star = scene.add.graphics({ x: 0, y: 0 });
+  const rawPoints = createStarPoints(outerRadius, innerRadius, pointCount);
+  const points: Phaser.Types.Math.Vector2Like[] = [];
+  for (let index = 0; index < rawPoints.length; index += 2) {
+    points.push({ x: rawPoints[index], y: rawPoints[index + 1] });
+  }
+
+  star.fillStyle(fillColor, fillAlpha);
+  star.fillPoints(points, true);
+  star.lineStyle(lineWidth, strokeColor, strokeAlpha);
+  star.strokePoints(points, true);
+  return star;
+}
+
 function getDistanceToCameraView(view: Phaser.Geom.Rectangle, x: number, y: number): number {
   const dx = x < view.left
     ? view.left - x
@@ -932,18 +957,20 @@ export class SpaceScene extends Phaser.Scene {
     const systemIsHomeworld = Boolean(homeworldPlanet);
     const planetIds: string[] = [];
     const moonIds: string[] = [];
-    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.42 : 1.26), system.starColor, systemIsHomeworld ? 0.16 : 0.1);
-    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.02 : 0.9), system.starColor, systemIsHomeworld ? 0.24 : 0.16);
-    const starBurst = this.add.polygon(
-      0,
-      0,
-      createStarPoints(starRadius * (systemIsHomeworld ? 0.98 : 0.84), starRadius * (systemIsHomeworld ? 0.42 : 0.34), systemIsHomeworld ? 8 : 4),
+    const starHalo = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 1.34 : 1.18), system.starColor, systemIsHomeworld ? 0.14 : 0.09);
+    const starGlow = this.add.circle(0, 0, starRadius * (systemIsHomeworld ? 0.82 : 0.72), system.starColor, systemIsHomeworld ? 0.18 : 0.12);
+    const starBurst = createStarburstGraphic(
+      this,
+      starRadius * (systemIsHomeworld ? 0.98 : 0.84),
+      starRadius * (systemIsHomeworld ? 0.42 : 0.34),
+      systemIsHomeworld ? 8 : 4,
       0xfff4d7,
-      systemIsHomeworld ? 0.9 : 0.82,
-    ).setStrokeStyle(1.6, 0xffffff, systemIsHomeworld ? 0.34 : 0.22);
-    const starCore = this.add.circle(0, 0, starRadius * 0.36, system.starColor, 0.98)
-      .setStrokeStyle(1.6, 0xf6fbff, 0.4);
-    const highlight = this.add.circle(-(starRadius * 0.1), -(starRadius * 0.12), starRadius * 0.1, 0xffffff, 0.2);
+      systemIsHomeworld ? 0.94 : 0.86,
+      0xffffff,
+      systemIsHomeworld ? 0.34 : 0.22,
+      1.6,
+    );
+    const starCoreGlow = this.add.circle(0, 0, starRadius * 0.14, 0xffffff, systemIsHomeworld ? 0.24 : 0.16);
     const starLabel = this.add.text(0, -(starRadius + 16), system.name, {
       fontFamily: "Arial",
       fontSize: systemIsHomeworld ? "14px" : "13px",
@@ -952,7 +979,7 @@ export class SpaceScene extends Phaser.Scene {
       backgroundColor: systemIsHomeworld ? "#10203acc" : "#08111bc0",
       padding: { x: 5, y: 3 },
     }).setOrigin(0.5, 1).setAlpha(systemIsHomeworld ? 0.92 : 0.72);
-    children.push(starHalo, starGlow, starBurst, starCore, highlight, starLabel);
+    children.push(starHalo, starGlow, starBurst, starCoreGlow, starLabel);
 
     systemPlanets.forEach((planet) => {
       const localX = planet.x - system.x;
