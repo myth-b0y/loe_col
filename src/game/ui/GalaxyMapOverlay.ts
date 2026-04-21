@@ -262,26 +262,26 @@ export class GalaxyMapOverlay {
       padding: { x: 4, y: 2 },
     }).setDepth(PANEL_DEPTH + 4).setScrollFactor(0).setVisible(false);
 
-    this.homeworldLabel = scene.add.text(0, 0, "HOME", {
+    this.homeworldLabel = scene.add.text(0, 0, "", {
       fontFamily: "Arial",
-      fontSize: "12px",
+      fontSize: "13px",
       color: "#fff4d2",
       fontStyle: "bold",
       backgroundColor: "#10203ad6",
-      padding: { x: 5, y: 2 },
+      padding: { x: 6, y: 3 },
     }).setDepth(PANEL_DEPTH + 5).setScrollFactor(0).setVisible(false);
 
     GALAXY_SECTORS.forEach((sector) => {
-      const labelPoint = this.worldToMap(getGalaxySectorLabelPoint(sector));
-      const label = scene.add.text(labelPoint.x, labelPoint.y, sector.label.replace(" ", "\n"), {
+      const labelPlacement = this.getSectorLabelPlacement(sector);
+      const label = scene.add.text(labelPlacement.point.x, labelPlacement.point.y, sector.label.replace(" ", "\n"), {
         fontFamily: "Arial",
-        fontSize: "14px",
+        fontSize: labelPlacement.fontSize,
         color: colorToCss(sector.borderColor),
         fontStyle: "bold",
-        align: "center",
-        backgroundColor: "#08111bc4",
-        padding: { x: 4, y: 2 },
-      }).setOrigin(0.5).setDepth(PANEL_DEPTH + 3).setScrollFactor(0);
+        align: labelPlacement.originX === 0 ? "left" : labelPlacement.originX === 1 ? "right" : "center",
+        backgroundColor: "#08111b8f",
+        padding: { x: 4, y: 3 },
+      }).setOrigin(labelPlacement.originX, labelPlacement.originY).setAlpha(0.82).setDepth(PANEL_DEPTH + 3).setScrollFactor(0);
       this.sectorLabels.push(label);
     });
 
@@ -465,21 +465,6 @@ export class GalaxyMapOverlay {
       this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
     });
 
-    galaxy.systems.forEach((system) => {
-      if (selectedSector && system.sectorId !== selectedSector.id) {
-        return;
-      }
-      if (!this.isWorldPointVisible(system, viewBounds, 120)) {
-        return;
-      }
-
-      const point = this.worldToMap(system);
-      this.staticMap.fillStyle(system.starColor, selectedSector ? 0.2 : 0.12);
-      this.staticMap.fillCircle(point.x, point.y, Math.max(2.2, system.starSize * (selectedSector ? 2.8 : 2)));
-      this.staticMap.fillStyle(system.starColor, selectedSector ? 0.96 : 0.82);
-      this.staticMap.fillCircle(point.x, point.y, Math.max(1.3, system.starSize * (selectedSector ? 0.86 : 0.7)));
-    });
-
     this.drawGeneratedBodies(galaxy, viewBounds, selectedSector?.id ?? null, homeworlds);
   }
 
@@ -520,14 +505,16 @@ export class GalaxyMapOverlay {
       const systemPoint = this.worldToMap(system);
       const planets = planetsBySystemId.get(system.id) ?? [];
       const systemHasHomeworld = planets.some((planet) => homeworldIds.has(planet.id));
+      const showOrbitLinks = selectedSectorId !== null;
       this.drawSystemStarGlyph(
         systemPoint.x,
         systemPoint.y,
         selectedSectorId
-          ? systemHasHomeworld ? 10 : 7
-          : systemHasHomeworld ? 7.2 : 5.2,
+          ? systemHasHomeworld ? 9.2 : 6.2
+          : systemHasHomeworld ? 6.2 : 3.9,
         system.starColor,
         systemHasHomeworld,
+        showOrbitLinks,
       );
       planets.forEach((planet) => {
         if (!this.isWorldPointVisible(planet, viewBounds, planet.radius)) {
@@ -535,14 +522,23 @@ export class GalaxyMapOverlay {
         }
 
         const planetPoint = this.worldToMap(planet);
-        this.staticMap.lineStyle(1, system.starColor, selectedSectorId ? 0.2 : 0.08);
-        this.staticMap.lineBetween(systemPoint.x, systemPoint.y, planetPoint.x, planetPoint.y);
+        const isHomeworld = homeworldIds.has(planet.id);
+        if (showOrbitLinks || isHomeworld) {
+          this.staticMap.lineStyle(1, system.starColor, showOrbitLinks ? 0.16 : 0.08);
+          this.staticMap.lineBetween(systemPoint.x, systemPoint.y, planetPoint.x, planetPoint.y);
+        }
         const planetRadius = this.getMapBodyRadius(planet.radius, viewBounds, planet.isHomeworld);
-        this.staticMap.fillStyle(planet.color, planet.isHomeworld ? 1 : 0.88);
+        if (isHomeworld) {
+          this.staticMap.fillStyle(0x07131f, 0.92);
+          this.staticMap.fillCircle(planetPoint.x, planetPoint.y, planetRadius + (selectedSectorId ? 2.2 : 1.4));
+        }
+        this.staticMap.fillStyle(planet.color, planet.isHomeworld ? 0.98 : selectedSectorId ? 0.84 : 0.72);
         this.staticMap.fillCircle(planetPoint.x, planetPoint.y, planetRadius);
-        if (homeworldIds.has(planet.id)) {
-          this.staticMap.lineStyle(selectedSectorId ? 2 : 1.6, 0xfff3cf, 0.94);
-          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, planetRadius + 2.2);
+        if (isHomeworld) {
+          this.staticMap.lineStyle(selectedSectorId ? 2.4 : 1.8, 0xfff3cf, 0.94);
+          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, planetRadius + (selectedSectorId ? 2.2 : 1.4));
+          this.staticMap.lineStyle(1, 0xfff9ea, selectedSectorId ? 0.84 : 0.62);
+          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, Math.max(1.4, planetRadius * 0.66));
           this.staticMap.fillStyle(0xfff6dd, 0.86);
           this.staticMap.fillCircle(
             planetPoint.x - Math.max(0.6, planetRadius * 0.22),
@@ -558,9 +554,11 @@ export class GalaxyMapOverlay {
           }
 
           const moonPoint = this.worldToMap(moon);
-          this.staticMap.lineStyle(1, planet.color, selectedSectorId ? 0.18 : 0.08);
-          this.staticMap.lineBetween(planetPoint.x, planetPoint.y, moonPoint.x, moonPoint.y);
-          this.staticMap.fillStyle(moon.color, 0.82);
+          if (showOrbitLinks) {
+            this.staticMap.lineStyle(1, planet.color, 0.12);
+            this.staticMap.lineBetween(planetPoint.x, planetPoint.y, moonPoint.x, moonPoint.y);
+          }
+          this.staticMap.fillStyle(moon.color, selectedSectorId ? 0.78 : 0.58);
           this.staticMap.fillCircle(moonPoint.x, moonPoint.y, this.getMapBodyRadius(moon.radius, viewBounds, false, true));
         });
       });
@@ -573,17 +571,28 @@ export class GalaxyMapOverlay {
     size: number,
     color: number,
     isHomeworldSystem: boolean,
+    detailView: boolean,
   ): void {
-    this.staticMap.lineStyle(isHomeworldSystem ? 2.2 : 1.8, color, isHomeworldSystem ? 0.96 : 0.82);
+    const lineAlpha = detailView
+      ? isHomeworldSystem ? 0.92 : 0.72
+      : isHomeworldSystem ? 0.84 : 0.5;
+    const lineWidth = detailView
+      ? isHomeworldSystem ? 2.2 : 1.6
+      : isHomeworldSystem ? 1.8 : 1.1;
+    const diagonalSize = size * 0.68;
+
+    this.staticMap.fillStyle(color, detailView ? 0.16 : isHomeworldSystem ? 0.16 : 0.08);
+    this.staticMap.fillCircle(x, y, isHomeworldSystem ? size * 0.44 : size * 0.3);
+    this.staticMap.lineStyle(lineWidth, color, lineAlpha);
     this.staticMap.lineBetween(x - size, y, x + size, y);
     this.staticMap.lineBetween(x, y - size, x, y + size);
-    this.staticMap.lineBetween(x - (size * 0.62), y - (size * 0.62), x + (size * 0.62), y + (size * 0.62));
-    this.staticMap.lineBetween(x - (size * 0.62), y + (size * 0.62), x + (size * 0.62), y - (size * 0.62));
-    this.staticMap.fillStyle(isHomeworldSystem ? 0xfff4d8 : 0xf3fbff, isHomeworldSystem ? 0.96 : 0.84);
-    this.staticMap.fillCircle(x, y, isHomeworldSystem ? 2.6 : 1.8);
+    this.staticMap.lineBetween(x - diagonalSize, y - diagonalSize, x + diagonalSize, y + diagonalSize);
+    this.staticMap.lineBetween(x - diagonalSize, y + diagonalSize, x + diagonalSize, y - diagonalSize);
+    this.staticMap.fillStyle(isHomeworldSystem ? 0xfff4d8 : 0xf3fbff, isHomeworldSystem ? 0.96 : detailView ? 0.9 : 0.76);
+    this.staticMap.fillCircle(x, y, isHomeworldSystem ? 2.2 : detailView ? 1.7 : 1.3);
     if (isHomeworldSystem) {
-      this.staticMap.lineStyle(1.2, 0xfff0c2, 0.64);
-      this.staticMap.strokeCircle(x, y, size + 2.2);
+      this.staticMap.lineStyle(detailView ? 1.2 : 1, 0xfff0c2, detailView ? 0.54 : 0.4);
+      this.staticMap.strokeCircle(x, y, size + (detailView ? 1.6 : 1));
     }
   }
 
@@ -598,7 +607,7 @@ export class GalaxyMapOverlay {
       return Phaser.Math.Clamp(scaled, 1, 2.6);
     }
     return emphasize
-      ? Phaser.Math.Clamp(scaled + 0.9, 2.6, 5.6)
+      ? Phaser.Math.Clamp(scaled + 1.1, 2.8, 5.8)
       : Phaser.Math.Clamp(scaled, 1.4, 4.4);
   }
 
@@ -720,9 +729,11 @@ export class GalaxyMapOverlay {
 
     if (sectorHomeworld && this.isWorldPointVisible(sectorHomeworld, viewBounds, sectorHomeworld.radius)) {
       const homeworldMarker = this.worldToMap(sectorHomeworld);
+      const labelOnRight = homeworldMarker.x <= MAP_RECT.centerX;
       this.homeworldLabel
-        .setPosition(homeworldMarker.x + 28, homeworldMarker.y - 28)
-        .setText(`HOME  ${sectorHomeworld.name}`)
+        .setPosition(homeworldMarker.x + (labelOnRight ? 18 : -18), homeworldMarker.y - 18)
+        .setOrigin(labelOnRight ? 0 : 1, 0.5)
+        .setText(sectorHomeworld.name)
         .setVisible(Boolean(selectedSector));
     }
 
@@ -740,12 +751,14 @@ export class GalaxyMapOverlay {
 
     GALAXY_SECTORS.forEach((sector, index) => {
       const label = this.sectorLabels[index];
-      const labelPoint = this.worldToMap(getGalaxySectorLabelPoint(sector));
+      const labelPlacement = this.getSectorLabelPlacement(sector);
       const isVisible = (!selectedSector || selectedSector.id === sector.id)
-        && this.isWorldPointVisible(getGalaxySectorLabelPoint(sector), viewBounds);
+        && (selectedSector?.id === sector.id || this.isWorldPointVisible(labelPlacement.worldPoint, viewBounds));
       label
         .setText(selectedSector && selectedSector.id === sector.id ? sector.label : sector.label.replace(" ", "\n"))
-        .setPosition(labelPoint.x, labelPoint.y)
+        .setPosition(labelPlacement.point.x, labelPlacement.point.y)
+        .setOrigin(labelPlacement.originX, labelPlacement.originY)
+        .setAlpha(selectedSector && selectedSector.id === sector.id ? 0.96 : 0.76)
         .setVisible(isVisible);
     });
 
@@ -905,6 +918,44 @@ export class GalaxyMapOverlay {
     return {
       x: Math.round(viewBounds.x + (((clampedX - MAP_RECT.x) / MAP_RECT.width) * viewBounds.width)),
       y: Math.round(viewBounds.y + (((clampedY - MAP_RECT.y) / MAP_RECT.height) * viewBounds.height)),
+    };
+  }
+
+  private getSectorLabelPlacement(sector: GalaxySectorConfig): {
+    point: { x: number; y: number };
+    worldPoint: { x: number; y: number };
+    originX: number;
+    originY: number;
+    fontSize: string;
+  } {
+    if (this.selectedSectorId === sector.id) {
+      const worldPoint = getGalaxySectorLabelPoint(sector);
+      return {
+        point: { x: MAP_RECT.x + 18, y: MAP_RECT.y + 16 },
+        worldPoint,
+        originX: 0,
+        originY: 0,
+        fontSize: "15px",
+      };
+    }
+
+    const basePoint = getGalaxySectorLabelPoint(sector);
+    const offsetX = basePoint.x - GALAXY_WORLD_CONFIG.center.x;
+    const offsetY = basePoint.y - GALAXY_WORLD_CONFIG.center.y;
+    const radiusScale = (sector.innerRadius + ((sector.outerRadius - sector.innerRadius) * 0.82))
+      / Math.max(1, sector.labelRadius);
+    const worldPoint = {
+      x: GALAXY_WORLD_CONFIG.center.x + (offsetX * radiusScale),
+      y: GALAXY_WORLD_CONFIG.center.y + (offsetY * radiusScale),
+    };
+    const point = this.worldToMap(worldPoint);
+
+    return {
+      point,
+      worldPoint,
+      originX: 0.5,
+      originY: 0.5,
+      fontSize: "13px",
     };
   }
 }

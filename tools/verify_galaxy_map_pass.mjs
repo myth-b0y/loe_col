@@ -254,8 +254,9 @@ try {
     "Sector detail view did not report any visible generated moons");
   assert(sectorDetailState.homeworldLabel.visible === true,
     `Sector detail view did not show the homeworld map label: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
-  assert(sectorDetailState.homeworldLabel.text.includes("HOME"),
-    `Sector detail homeworld label did not read as a home marker: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
+  assert(sectorDetailState.homeworldLabel.text.length > 0
+    && !sectorDetailState.homeworldLabel.text.includes("HOME"),
+  `Sector detail homeworld label should only show the prime world name: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
 
   const backButtonTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
