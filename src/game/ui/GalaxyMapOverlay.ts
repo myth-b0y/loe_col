@@ -563,6 +563,25 @@ export class GalaxyMapOverlay {
         });
       });
     });
+
+    galaxy.stations.forEach((station) => {
+      if (selectedSectorId && station.sectorId !== selectedSectorId) {
+        return;
+      }
+      if (!this.isWorldPointVisible(station, viewBounds, station.radius)) {
+        return;
+      }
+
+      const stationPoint = this.worldToMap(station);
+      this.drawStationGlyph(
+        stationPoint.x,
+        stationPoint.y,
+        selectedSectorId ? 4.8 : 3.9,
+        station.color,
+        station.borderColor,
+        selectedSectorId !== null,
+      );
+    });
   }
 
   private drawSystemStarGlyph(
@@ -594,6 +613,25 @@ export class GalaxyMapOverlay {
       this.staticMap.lineStyle(detailView ? 1.2 : 1, 0xfff0c2, detailView ? 0.54 : 0.4);
       this.staticMap.strokeCircle(x, y, size + (detailView ? 1.6 : 1));
     }
+  }
+
+  private drawStationGlyph(
+    x: number,
+    y: number,
+    size: number,
+    color: number,
+    borderColor: number,
+    detailView: boolean,
+  ): void {
+    this.staticMap.fillStyle(0x08111d, detailView ? 0.92 : 0.76);
+    this.staticMap.fillCircle(x, y, size + (detailView ? 2.2 : 1.4));
+    this.staticMap.fillStyle(color, detailView ? 0.96 : 0.82);
+    this.staticMap.fillCircle(x, y, size);
+    this.staticMap.lineStyle(detailView ? 2.2 : 1.6, borderColor, detailView ? 0.92 : 0.68);
+    this.staticMap.strokeCircle(x, y, size + (detailView ? 1.4 : 0.8));
+    this.staticMap.lineStyle(1, 0xf5fbff, detailView ? 0.8 : 0.52);
+    this.staticMap.lineBetween(x - size * 0.6, y, x + size * 0.6, y);
+    this.staticMap.lineBetween(x, y - size * 0.6, x, y + size * 0.6);
   }
 
   private getMapBodyRadius(
@@ -646,6 +684,7 @@ export class GalaxyMapOverlay {
     const sectorSystems = selectedSector ? galaxy.systems.filter((system) => system.sectorId === selectedSector.id) : [];
     const sectorPlanets = selectedSector ? galaxy.planets.filter((planet) => planet.sectorId === selectedSector.id) : [];
     const sectorMoons = selectedSector ? galaxy.moons.filter((moon) => moon.sectorId === selectedSector.id) : [];
+    const sectorStations = selectedSector ? galaxy.stations.filter((station) => station.sectorId === selectedSector.id) : [];
 
     this.subtitle.setText(selectedSector ? `${selectedSector.label} Sector Detail` : "Galaxy Map");
     this.infoTitle.setText(selectedSector ? `${selectedSector.label} Readout` : "Current Readout");
@@ -661,15 +700,18 @@ export class GalaxyMapOverlay {
     this.detailText.setText(selectedSector
       ? [
           `${selectedSector.label} uses the same galaxy coordinates as live space.`,
-          `Systems ${sectorSystems.length}  |  Planets ${sectorPlanets.length}  |  Moons ${sectorMoons.length}`,
+          `Systems ${sectorSystems.length}  |  Planets ${sectorPlanets.length}  |  Moons ${sectorMoons.length}  |  Stations ${sectorStations.length}`,
           `Sector span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
           sectorHomeworld
             ? `Homeworld: ${sectorHomeworld.name}`
             : "Homeworld: pending sector generation readout.",
+          sectorStations.length > 0
+            ? `Major station: ${sectorStations[0]?.name ?? "Station"}`
+            : "Major station: pending sector generation readout.",
           missionPlanet && getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).id === selectedSector.id
             ? `Mission planet in sector: ${missionPlanet.name}`
             : "Mission planet is outside this sector detail view.",
-          "Generated stars, planets, and moons shown here are the same coordinates used in live space.",
+          "Generated stars, planets, moons, and stations shown here are the same coordinates used in live space.",
         ].join("\n")
       : missionPlanet
         ? [
@@ -677,8 +719,9 @@ export class GalaxyMapOverlay {
             `Mission planet: ${missionPlanet.name}`,
             `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
             `Planet region: ${getGalaxyRegionLabelAtPosition(missionPlanet.x, missionPlanet.y)}`,
+            `Major stations online: ${galaxy.stations.length}`,
           ].join("\n")
-        : "No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.");
+        : `No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.\nMajor stations online: ${galaxy.stations.length}`);
 
     this.hoverText.setText(this.hoverWorldPoint
       ? (() => {
@@ -787,12 +830,17 @@ export class GalaxyMapOverlay {
       (!selectedSectorId || moon.sectorId === selectedSectorId)
       && this.isWorldPointVisible(moon, viewBounds, moon.radius)
     )).length;
+    const visibleStations = galaxy.stations.filter((station) => (
+      (!selectedSectorId || station.sectorId === selectedSectorId)
+      && this.isWorldPointVisible(station, viewBounds, station.radius)
+    )).length;
 
     return {
       selectedSectorId,
       visibleSystems,
       visiblePlanets,
       visibleMoons,
+      visibleStations,
       shipRegion: getGalaxyRegionLabelAtPosition(
         gameSession.getShipSpacePosition().x,
         gameSession.getShipSpacePosition().y,

@@ -8,6 +8,7 @@ import {
   getGalaxyHomeworldByRace,
   getGalaxyHomeworldPlanets,
   getGalaxyPlanetById,
+  getGalaxyStationById as getGalaxyStationByIdFromGalaxy,
   getGalaxySpawnPointForRace,
   getMissionPlanetForMission as getMissionPlanetForMissionFromGalaxy,
   normalizeGalaxyDefinition,
@@ -15,6 +16,7 @@ import {
   type GalaxyMissionPlanet,
   type GalaxyPoint,
   type GalaxyPlanetRecord,
+  type GalaxyStationRecord,
 } from "../content/galaxy";
 import {
   DEFAULT_SQUAD_ASSIGNMENTS,
@@ -108,6 +110,9 @@ export type ShipState = {
 
 const SHIP_SYSTEM_IDS: ShipSystemId[] = ["hull", "reactor", "engines", "lifeSupport", "navigation"];
 const DEFAULT_SHIP_STORAGE_SLOT_COUNT = 40;
+const SHIP_REPAIR_INTEGRITY_COST = 0.35;
+const SHIP_REPAIR_OFFLINE_SURCHARGE = 12;
+const SHIP_REPAIR_MINIMUM_COST = 8;
 
 function clampShipIntegrity(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -783,6 +788,15 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return clone(this.saveData.galaxy);
   }
 
+  getGalaxyStations(): GalaxyStationRecord[] {
+    return this.saveData.galaxy.stations.map((station) => ({ ...station }));
+  }
+
+  getGalaxyStationById(stationId: string): GalaxyStationRecord | null {
+    const station = getGalaxyStationByIdFromGalaxy(this.saveData.galaxy, stationId);
+    return station ? { ...station } : null;
+  }
+
   getMissionPlanetForMission(missionId = this.getTrackedMissionId()): GalaxyMissionPlanet | null {
     const missionPlanet = getMissionPlanetForMissionFromGalaxy(missionId, this.saveData.galaxy);
     return missionPlanet ? clone(missionPlanet) : null;
@@ -885,6 +899,47 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return this.getDamagedShipSystemIds().length > 0;
   }
 
+  getCredits(): number {
+    return this.saveData.profile.credits;
+  }
+
+  canAffordCredits(amount: number): boolean {
+    return this.saveData.profile.credits >= Math.max(0, Math.round(amount));
+  }
+
+  spendCredits(amount: number): boolean {
+    const safeAmount = Math.max(0, Math.round(amount));
+    if (safeAmount <= 0) {
+      return true;
+    }
+    if (!this.canAffordCredits(safeAmount)) {
+      return false;
+    }
+
+    this.saveData.profile.credits -= safeAmount;
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
+  getShipRepairCost(): number {
+    if (!this.hasShipSystemDamage()) {
+      return 0;
+    }
+
+    let missingIntegrity = 0;
+    let offlineSystems = 0;
+    SHIP_SYSTEM_IDS.forEach((systemId) => {
+      const system = this.saveData.ship.systems[systemId];
+      missingIntegrity += Math.max(0, 100 - system.integrity);
+      if (!system.online) {
+        offlineSystems += 1;
+      }
+    });
+
+    const calculatedCost = Math.ceil(missingIntegrity * SHIP_REPAIR_INTEGRITY_COST) + (offlineSystems * SHIP_REPAIR_OFFLINE_SURCHARGE);
+    return Math.max(SHIP_REPAIR_MINIMUM_COST, calculatedCost);
+  }
+
   inspectShipSystems(): void {
     this.saveData.ship.repair.lastInspectionAt = new Date().toISOString();
     this.emitShipChanged();
@@ -925,6 +980,27 @@ export class GameSession extends Phaser.Events.EventEmitter {
     });
     this.saveData.ship.repair.lastRepairAt = new Date().toISOString();
     this.emitShipChanged();
+  }
+
+  repairAllShipSystemsForCredits(): { success: boolean; cost: number } {
+    const cost = this.getShipRepairCost();
+    if (cost <= 0) {
+      return { success: true, cost: 0 };
+    }
+    if (!this.canAffordCredits(cost)) {
+      return { success: false, cost };
+    }
+
+    this.saveData.profile.credits -= cost;
+    SHIP_SYSTEM_IDS.forEach((systemId) => {
+      this.saveData.ship.systems[systemId] = {
+        integrity: 100,
+        online: true,
+      };
+    });
+    this.saveData.ship.repair.lastRepairAt = new Date().toISOString();
+    this.emitShipChanged();
+    return { success: true, cost };
   }
 
   getShipStorageSlots(): Array<InventoryItem | null> {

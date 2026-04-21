@@ -124,6 +124,18 @@ export type GalaxyHomeworldRecord = {
   moonCount: number;
 };
 
+export type GalaxyStationRecord = {
+  id: string;
+  sectorId: string;
+  ringId: "second";
+  name: string;
+  x: number;
+  y: number;
+  radius: number;
+  color: number;
+  borderColor: number;
+};
+
 export type GalaxyMissionPlanet = GalaxyPlanetRecord & {
   missionId: string;
 };
@@ -135,12 +147,17 @@ export type GalaxyDefinition = {
   planets: GalaxyPlanetRecord[];
   moons: GalaxyMoonRecord[];
   homeworlds: GalaxyHomeworldRecord[];
+  stations: GalaxyStationRecord[];
   missionAssignments: Record<string, string>;
 };
 
 type GalaxyHomeworldSpec = {
   name: string;
   moonCount: number;
+};
+
+type GalaxyStationSpec = {
+  name: string;
 };
 
 type GalaxyMissionAssignmentRule = {
@@ -167,6 +184,11 @@ const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
 const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
+const GALAXY_STATION_RADIUS = 180;
+const GALAXY_STATION_RING_EDGE_MARGIN = 460;
+const GALAXY_STATION_SYSTEM_BUFFER = 1180;
+const GALAXY_STATION_SECTOR_EDGE_MARGIN_DEG = 6;
+const GALAXY_STATION_SEED_SALT = 0x5f37_29df;
 const GALAXY_SYSTEM_NAME_PARTS = [
   "al", "an", "ar", "bel", "cal", "cer", "dor", "el", "eris", "fen",
   "gal", "hal", "ion", "jor", "ka", "lor", "mer", "nyx", "or", "pra",
@@ -186,6 +208,16 @@ const GALAXY_HOMEWORLD_SPECS: Record<RaceId, GalaxyHomeworldSpec> = {
   svarin: { name: "Svaria", moonCount: 1 },
   ashari: { name: "Averna", moonCount: 1 },
   elsari: { name: "Elysiem", moonCount: 0 },
+};
+
+const GALAXY_STATION_SPECS: Record<RaceId, GalaxyStationSpec> = {
+  nevari: { name: "Nevari Station" },
+  olydran: { name: "Olydran Station" },
+  aaruian: { name: "Aaruian Station" },
+  rakkan: { name: "Rakkan Station" },
+  svarin: { name: "Svarin Station" },
+  ashari: { name: "Ashari Station" },
+  elsari: { name: "Elsari Station" },
 };
 
 const GALAXY_MISSION_ASSIGNMENT_RULES: GalaxyMissionAssignmentRule[] = [
@@ -615,6 +647,117 @@ function getHomeworldCandidateScore(planet: GalaxyPlanetRecord, sector: GalaxySe
   return radialScore + angularScore + orbitScore;
 }
 
+function isStationPointValid(
+  point: GalaxyPoint,
+  sector: GalaxySectorConfig,
+  stations: GalaxyStationRecord[],
+  systems: GalaxySystemRecord[],
+): boolean {
+  const radialDistance = getGalaxyRadialDistance(point.x, point.y);
+  const secondRing = getGalaxyRingByIdLocal("second");
+  if (getGalaxySectorAtPosition(point.x, point.y).id !== sector.id) {
+    return false;
+  }
+  if (getGalaxyRingAtPosition(point.x, point.y).id !== "second") {
+    return false;
+  }
+  if (radialDistance < secondRing.minRadius + GALAXY_STATION_RING_EDGE_MARGIN) {
+    return false;
+  }
+  if (radialDistance > secondRing.maxRadius - GALAXY_STATION_RING_EDGE_MARGIN) {
+    return false;
+  }
+  if (getPlanetAngularMarginFromSectorEdge({
+    id: "station-probe",
+    systemId: "",
+    starId: "",
+    sectorId: sector.id,
+    ringId: "second",
+    orbitIndex: 0,
+    name: "",
+    x: point.x,
+    y: point.y,
+    radius: GALAXY_STATION_RADIUS,
+    color: 0,
+    moonIds: [],
+    isHomeworld: false,
+    homeworldRaceId: null,
+    missionIds: [],
+  }, sector) < GALAXY_STATION_SECTOR_EDGE_MARGIN_DEG) {
+    return false;
+  }
+
+  const stationRadiusSq = (GALAXY_STATION_RADIUS * 4) * (GALAXY_STATION_RADIUS * 4);
+  if (stations.some((station) => {
+    const dx = station.x - point.x;
+    const dy = station.y - point.y;
+    return (dx * dx) + (dy * dy) < stationRadiusSq;
+  })) {
+    return false;
+  }
+
+  const systemBufferSq = GALAXY_STATION_SYSTEM_BUFFER * GALAXY_STATION_SYSTEM_BUFFER;
+  return systems.every((system) => {
+    const dx = system.x - point.x;
+    const dy = system.y - point.y;
+    return (dx * dx) + (dy * dy) >= systemBufferSq;
+  });
+}
+
+function getStationCandidateScore(point: GalaxyPoint, systems: GalaxySystemRecord[]): number {
+  return systems.reduce((nearestDistanceSq, system) => {
+    const dx = system.x - point.x;
+    const dy = system.y - point.y;
+    const distanceSq = (dx * dx) + (dy * dy);
+    return Math.min(nearestDistanceSq, distanceSq);
+  }, Number.POSITIVE_INFINITY);
+}
+
+function createStationsForSectors(
+  systems: GalaxySystemRecord[],
+  rng: SeededRandom,
+): GalaxyStationRecord[] {
+  const stations: GalaxyStationRecord[] = [];
+  const secondRing = getGalaxyRingByIdLocal("second");
+
+  GALAXY_SECTORS.forEach((sector) => {
+    const spec = GALAXY_STATION_SPECS[sector.raceId];
+    let bestCandidate = pointFromDegrees(getGalaxySectorMidAngleDeg(sector), (secondRing.minRadius + secondRing.maxRadius) * 0.5);
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (let attempt = 0; attempt < 72; attempt += 1) {
+      const point = pointFromDegrees(
+        pickAngleInSector(sector, rng),
+        rng.range(secondRing.minRadius + 260, secondRing.maxRadius - 220),
+      );
+      const candidateScore = getStationCandidateScore(point, systems);
+      if (candidateScore > bestScore) {
+        bestCandidate = point;
+        bestScore = candidateScore;
+      }
+      if (!isStationPointValid(point, sector, stations, systems)) {
+        continue;
+      }
+      bestCandidate = point;
+      break;
+    }
+
+    stations.push({
+      id: `${sector.id}-station`,
+      sectorId: sector.id,
+      ringId: "second",
+      name: spec.name,
+      x: Math.round(bestCandidate.x),
+      y: Math.round(bestCandidate.y),
+      radius: GALAXY_STATION_RADIUS,
+      color: interpolateColor(sector.color, 0xffffff, 0.2),
+      borderColor: sector.borderColor,
+    });
+  });
+
+  return stations;
+}
+
 function createProceduralName(
   rng: SeededRandom,
   usedNames: Set<string>,
@@ -1042,6 +1185,7 @@ export function createGalaxyDefinition(seed = createGalaxySeed()): GalaxyDefinit
   const homeworlds = assignHomeworlds(planets);
   const moons: GalaxyMoonRecord[] = [];
   createMoonsForPlanets(planets, homeworlds, moons, rng);
+  const stations = createStationsForSectors(systems, new SeededRandom((seed ^ GALAXY_STATION_SEED_SALT) >>> 0));
   const missionAssignments = assignMissionTargets(planets, rng);
 
   return {
@@ -1051,6 +1195,7 @@ export function createGalaxyDefinition(seed = createGalaxySeed()): GalaxyDefinit
     planets,
     moons,
     homeworlds,
+    stations,
     missionAssignments,
   };
 }
@@ -1074,10 +1219,11 @@ export function normalizeGalaxyDefinition(
   fallbackSeed?: number,
 ): GalaxyDefinition {
   if (isGalaxyDefinitionLike(galaxy)) {
+    const systems = galaxy.systems.map((system) => ({ ...system, planetIds: [...system.planetIds] }));
     return {
       seed: galaxy.seed,
       rings: galaxy.rings.map((ring) => ({ ...ring })),
-      systems: galaxy.systems.map((system) => ({ ...system, planetIds: [...system.planetIds] })),
+      systems,
       planets: galaxy.planets.map((planet) => ({
         ...planet,
         moonIds: [...planet.moonIds],
@@ -1085,6 +1231,9 @@ export function normalizeGalaxyDefinition(
       })),
       moons: galaxy.moons.map((moon) => ({ ...moon })),
       homeworlds: galaxy.homeworlds.map((homeworld) => ({ ...homeworld })),
+      stations: Array.isArray(galaxy.stations) && galaxy.stations.length > 0
+        ? galaxy.stations.map((station) => ({ ...station }))
+        : createStationsForSectors(systems, new SeededRandom((galaxy.seed ^ GALAXY_STATION_SEED_SALT) >>> 0)),
       missionAssignments: { ...galaxy.missionAssignments },
     };
   }
@@ -1233,6 +1382,13 @@ export function getGalaxyMoonById(galaxy: GalaxyDefinition | null | undefined, m
     return null;
   }
   return galaxy.moons.find((moon) => moon.id === moonId) ?? null;
+}
+
+export function getGalaxyStationById(galaxy: GalaxyDefinition | null | undefined, stationId: string): GalaxyStationRecord | null {
+  if (!galaxy) {
+    return null;
+  }
+  return galaxy.stations.find((station) => station.id === stationId) ?? null;
 }
 
 export function getGalaxyHomeworldByRace(

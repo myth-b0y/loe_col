@@ -16,6 +16,7 @@ import {
   type GalaxyPlanetRecord,
   type GalaxySectorConfig,
   type GalaxyStarSeed,
+  type GalaxyStationRecord,
   type GalaxySystemRecord,
 } from "../content/galaxy";
 import { getMissionContract } from "../content/missions";
@@ -47,10 +48,13 @@ import { InventoryOverlay } from "../ui/InventoryOverlay";
 import { GalaxyMapOverlay } from "../ui/GalaxyMapOverlay";
 import { LogbookOverlay } from "../ui/LogbookOverlay";
 import { SpaceRadarDisplay, type SpaceRadarContactSource } from "../ui/SpaceRadar";
+import { SpaceStationOverlay, type SpaceStationOverlayState } from "../ui/SpaceStationOverlay";
 
 type SpaceSceneData = {
   missionId?: string | null;
 };
+
+type SmugglerRouteTargetKind = "planet" | "moon" | "station";
 
 type SpaceFieldObject = {
   id: string;
@@ -117,6 +121,9 @@ type SpaceFactionShip = {
   provokedByShips: Set<string>;
   aggressionTimer: number;
   strafeSign: number;
+  routeTargetKind: SmugglerRouteTargetKind | null;
+  routeTargetId: string | null;
+  routeWaitRemainingMs: number;
 };
 
 type SpaceFactionShipState = {
@@ -152,6 +159,9 @@ type SpaceFactionShipState = {
   provokedByShips: string[];
   aggressionTimer: number;
   strafeSign: number;
+  routeTargetKind: SmugglerRouteTargetKind | null;
+  routeTargetId: string | null;
+  routeWaitRemainingMs: number;
   destroyed: boolean;
 };
 
@@ -208,6 +218,13 @@ type SpaceCelestialSystemView = {
   moonIds: string[];
 };
 
+type SpaceStationView = {
+  stationId: string;
+  root: Phaser.GameObjects.Container;
+  interactionRing: Phaser.GameObjects.Arc;
+  label: Phaser.GameObjects.Text;
+};
+
 const PLAYER_RADIUS = 22;
 const PLAYER_MAX_HULL = 8;
 const PLAYER_ACCELERATION = 720;
@@ -234,6 +251,9 @@ const BACKDROP_CELL_RADIUS = 1;
 const BACKDROP_HAZE_PADDING = 1800;
 const CELESTIAL_CELL_RADIUS = 1;
 const DEEP_SPACE_OVERLAY_COLOR = 0x132033;
+const STATION_INTERACTION_BUFFER = 180;
+const SMUGGLER_ROUTE_WAIT_MIN_MS = 2200;
+const SMUGGLER_ROUTE_WAIT_MAX_MS = 4200;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -379,7 +399,10 @@ export class SpaceScene extends Phaser.Scene {
   private galaxySystemsById = new Map<string, GalaxySystemRecord>();
   private galaxyPlanetsById = new Map<string, GalaxyPlanetRecord>();
   private galaxyPlanetsBySystemId = new Map<string, GalaxyPlanetRecord[]>();
+  private galaxyMoonsById = new Map<string, GalaxyMoonRecord>();
   private galaxyMoonsByPlanetId = new Map<string, GalaxyMoonRecord[]>();
+  private galaxyStationsByCell = new Map<SpaceWorldCellKey, GalaxyStationRecord[]>();
+  private galaxyStationsById = new Map<string, GalaxyStationRecord>();
   private fieldStates = new Map<string, SpaceFieldObjectState>();
   private shipStates = new Map<string, SpaceFactionShipState>();
   private backdropSectorOverlay?: Phaser.GameObjects.Rectangle;
@@ -392,6 +415,7 @@ export class SpaceScene extends Phaser.Scene {
   private activeCelestialCellKeys: SpaceWorldCellKey[] = [];
   private activeCelestialSystems = new Map<string, SpaceCelestialSystemView>();
   private activePlanetViews = new Map<string, SpaceCelestialPlanetView>();
+  private activeStationViews = new Map<string, SpaceStationView>();
   private shots: SpaceProjectile[] = [];
   private burstParticles: SpaceBurstParticle[] = [];
   private activeFieldCellKeys: SpaceWorldCellKey[] = [];
@@ -442,11 +466,15 @@ export class SpaceScene extends Phaser.Scene {
   private logbookOverlay?: LogbookOverlay;
   private inventoryOverlay?: InventoryOverlay;
   private galaxyMapOverlay?: GalaxyMapOverlay;
+  private stationOverlay?: SpaceStationOverlay;
+  private stationOverlayStationId: string | null = null;
+  private stationOverlayStatusText = "";
   private inputKeys?: {
     up: Phaser.Input.Keyboard.Key;
     down: Phaser.Input.Keyboard.Key;
     left: Phaser.Input.Keyboard.Key;
     right: Phaser.Input.Keyboard.Key;
+    interact: Phaser.Input.Keyboard.Key;
     hyperdrive: Phaser.Input.Keyboard.Key;
     returnToShip: Phaser.Input.Keyboard.Key;
   };
@@ -478,7 +506,10 @@ export class SpaceScene extends Phaser.Scene {
     this.galaxySystemsById.clear();
     this.galaxyPlanetsById.clear();
     this.galaxyPlanetsBySystemId.clear();
+    this.galaxyMoonsById.clear();
     this.galaxyMoonsByPlanetId.clear();
+    this.galaxyStationsByCell.clear();
+    this.galaxyStationsById.clear();
     this.fieldStates.clear();
     this.shipStates.clear();
     this.backdropStarSeedsByCell.clear();
@@ -492,6 +523,7 @@ export class SpaceScene extends Phaser.Scene {
     this.activeCelestialCellKeys = [];
     this.activeCelestialSystems.clear();
     this.activePlanetViews.clear();
+    this.activeStationViews.clear();
     this.shots = [];
     this.burstParticles = [];
     this.activeFieldCellKeys = [];
@@ -524,6 +556,8 @@ export class SpaceScene extends Phaser.Scene {
     this.thrusting = false;
     this.returningToShip = false;
     this.playerDestroyed = false;
+    this.stationOverlayStationId = null;
+    this.stationOverlayStatusText = "";
 
     this.cameras.main.setBackgroundColor("#040810");
     this.input.mouse?.disableContextMenu();
@@ -856,11 +890,23 @@ export class SpaceScene extends Phaser.Scene {
     });
 
     this.galaxyDefinition.moons.forEach((moon) => {
+      this.galaxyMoonsById.set(moon.id, moon);
       const planetBucket = this.galaxyMoonsByPlanetId.get(moon.planetId);
       if (planetBucket) {
         planetBucket.push(moon);
       } else {
         this.galaxyMoonsByPlanetId.set(moon.planetId, [moon]);
+      }
+    });
+
+    this.galaxyDefinition.stations.forEach((station) => {
+      this.galaxyStationsById.set(station.id, station);
+      const cellKey = getSpaceCellKeyAtPosition(station.x, station.y, SPACE_WORLD_CONFIG);
+      const stationBucket = this.galaxyStationsByCell.get(cellKey);
+      if (stationBucket) {
+        stationBucket.push(station);
+      } else {
+        this.galaxyStationsByCell.set(cellKey, [station]);
       }
     });
   }
@@ -979,6 +1025,48 @@ export class SpaceScene extends Phaser.Scene {
     };
   }
 
+  private createStationView(station: GalaxyStationRecord): SpaceStationView {
+    const halo = this.add.circle(0, 0, station.radius * 1.7, station.color, 0.1);
+    const outerRing = this.add.circle(0, 0, station.radius, 0xffffff, 0)
+      .setStrokeStyle(3, station.borderColor, 0.82);
+    const innerRing = this.add.circle(0, 0, station.radius * 0.68, 0xffffff, 0)
+      .setStrokeStyle(1.5, 0xf4fbff, 0.46);
+    const horizontalSpine = this.add.rectangle(0, 0, station.radius * 1.58, 18, station.color, 0.94)
+      .setStrokeStyle(2, station.borderColor, 0.48);
+    const verticalSpine = this.add.rectangle(0, 0, 18, station.radius * 1.58, station.color, 0.94)
+      .setStrokeStyle(2, station.borderColor, 0.48);
+    const core = this.add.circle(0, 0, station.radius * 0.32, 0xeaf4ff, 0.96)
+      .setStrokeStyle(2, station.borderColor, 0.58);
+    const interactionRing = this.add.circle(0, 0, station.radius + STATION_INTERACTION_BUFFER, 0xffffff, 0)
+      .setStrokeStyle(2, station.borderColor, 0.12);
+    const label = this.add.text(0, station.radius + 18, station.name, {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#e6f3ff",
+      backgroundColor: "#08111bcc",
+      padding: { x: 5, y: 3 },
+    }).setOrigin(0.5, 0).setAlpha(0.8);
+
+    const root = this.add.container(station.x, station.y, [
+      interactionRing,
+      halo,
+      outerRing,
+      innerRing,
+      horizontalSpine,
+      verticalSpine,
+      core,
+      label,
+    ]).setDepth(11);
+    root.setSize((station.radius + STATION_INTERACTION_BUFFER) * 2.2, (station.radius + STATION_INTERACTION_BUFFER) * 2.2);
+
+    return {
+      stationId: station.id,
+      root,
+      interactionRing,
+      label,
+    };
+  }
+
   private initializeWorldStates(): void {
     this.fieldStates = new Map<string, SpaceFieldObjectState>(this.worldDefinition.fieldSeeds.map((seed) => ([seed.id, {
       id: seed.id,
@@ -1036,6 +1124,9 @@ export class SpaceScene extends Phaser.Scene {
         provokedByShips: [],
         aggressionTimer: 0,
         strafeSign: createInitialStrafeSign(seed.id),
+        routeTargetKind: null,
+        routeTargetId: null,
+        routeWaitRemainingMs: 0,
         destroyed: false,
       } satisfies SpaceFactionShipState] as const;
     }));
@@ -1067,6 +1158,7 @@ export class SpaceScene extends Phaser.Scene {
     this.syncActiveFieldObjects(desiredFieldCellKeys, shouldRefreshFields);
     this.syncActiveFactionShips(desiredShipCellKeys, shouldRefreshShips);
     this.syncActiveCelestialSystems(desiredCelestialCellKeys, shouldRefreshCelestials);
+    this.syncActiveStations(desiredCelestialCellKeys, shouldRefreshCelestials);
   }
 
   private syncActiveCelestialSystems(cellKeys: SpaceWorldCellKey[], shouldActivate: boolean): void {
@@ -1111,6 +1203,47 @@ export class SpaceScene extends Phaser.Scene {
     });
     systemView.root.destroy(true);
     this.activeCelestialSystems.delete(systemView.systemId);
+  }
+
+  private syncActiveStations(cellKeys: SpaceWorldCellKey[], shouldActivate: boolean): void {
+    const activeCellKeySet = new Set(cellKeys);
+
+    this.activeStationViews.forEach((stationView, stationId) => {
+      const station = this.galaxyStationsById.get(stationId);
+      if (!station) {
+        this.deactivateStationView(stationView);
+        return;
+      }
+
+      const currentCellKey = getSpaceCellKeyAtPosition(station.x, station.y, SPACE_WORLD_CONFIG);
+      if (activeCellKeySet.has(currentCellKey)) {
+        return;
+      }
+
+      this.deactivateStationView(stationView);
+    });
+
+    if (!shouldActivate) {
+      return;
+    }
+
+    const activeStationIds = new Set(this.activeStationViews.keys());
+    cellKeys.forEach((cellKey) => {
+      const stations = this.galaxyStationsByCell.get(cellKey) ?? [];
+      stations.forEach((station) => {
+        if (activeStationIds.has(station.id)) {
+          return;
+        }
+
+        const view = this.createStationView(station);
+        this.activeStationViews.set(station.id, view);
+      });
+    });
+  }
+
+  private deactivateStationView(stationView: SpaceStationView): void {
+    stationView.root.destroy(true);
+    this.activeStationViews.delete(stationView.stationId);
   }
 
   private syncActiveFieldObjects(cellKeys: SpaceWorldCellKey[], shouldActivate: boolean): void {
@@ -1223,6 +1356,9 @@ export class SpaceScene extends Phaser.Scene {
       provokedByShips: [...ship.provokedByShips],
       aggressionTimer: ship.aggressionTimer,
       strafeSign: ship.strafeSign,
+      routeTargetKind: ship.routeTargetKind,
+      routeTargetId: ship.routeTargetId,
+      routeWaitRemainingMs: ship.routeWaitRemainingMs,
       destroyed,
     };
   }
@@ -1423,6 +1559,9 @@ export class SpaceScene extends Phaser.Scene {
       provokedByShips: new Set<string>(state.provokedByShips),
       aggressionTimer: state.aggressionTimer,
       strafeSign: state.strafeSign,
+      routeTargetKind: state.routeTargetKind ?? null,
+      routeTargetId: state.routeTargetId ?? null,
+      routeWaitRemainingMs: state.routeWaitRemainingMs ?? 0,
     };
   }
 
@@ -1484,7 +1623,7 @@ export class SpaceScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  Space hyperdrive  |  T target  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
+    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  E station comms  |  Space hyperdrive  |  T target  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
       fontFamily: "Arial",
       fontSize: "15px",
       color: "#dcecff",
@@ -1619,8 +1758,8 @@ export class SpaceScene extends Phaser.Scene {
       y: 494,
       width: 126,
       height: 54,
-      label: "Aux 2",
-      onClick: () => undefined,
+      label: "Comms",
+      onClick: () => this.tryOpenNearestStationComms(),
       depth: 55,
       accentColor: 0x2a394c,
       disabled: true,
@@ -1660,6 +1799,15 @@ export class SpaceScene extends Phaser.Scene {
       onOpenSettings: () => this.openPauseMenu(),
       onRequestTab: (tab) => this.openDataPadTab(tab),
     });
+
+    this.stationOverlay = new SpaceStationOverlay({
+      scene: this,
+      onClose: () => {
+        this.stationOverlayStationId = null;
+        this.handleCommandOverlayClosed();
+      },
+      onRepair: () => this.handleStationRepairRequested(),
+    });
   }
 
   private bindKeyboard(): void {
@@ -1673,6 +1821,7 @@ export class SpaceScene extends Phaser.Scene {
       down: Phaser.Input.Keyboard.KeyCodes.S,
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
+      interact: Phaser.Input.Keyboard.KeyCodes.E,
       hyperdrive: Phaser.Input.Keyboard.KeyCodes.SPACE,
       returnToShip: Phaser.Input.Keyboard.KeyCodes.X,
     }) as SpaceScene["inputKeys"];
@@ -1701,12 +1850,20 @@ export class SpaceScene extends Phaser.Scene {
       }
       this.cycleTargetLock();
     });
+    keyboard.on("keydown-E", () => {
+      this.reportDesktopInput();
+      if (this.isMenuOverlayVisible()) {
+        return;
+      }
+      this.tryOpenNearestStationComms();
+    });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
       keyboard.removeAllListeners("keydown-L");
       keyboard.removeAllListeners("keydown-TAB");
       keyboard.removeAllListeners("keydown-T");
+      keyboard.removeAllListeners("keydown-E");
     });
   }
 
@@ -2595,6 +2752,11 @@ export class SpaceScene extends Phaser.Scene {
         if (movement.lengthSq() > 0) {
           aimDirection = movement.clone().normalize();
         }
+      } else if (ship.factionId === "smuggler") {
+        movement.copy(this.getSmugglerRouteMovement(ship, dt));
+        if (movement.lengthSq() > 0) {
+          aimDirection = movement.clone().normalize();
+        }
       } else {
         movement.copy(this.getPatrolMovement(ship));
         if (movement.lengthSq() > 0) {
@@ -2699,6 +2861,136 @@ export class SpaceScene extends Phaser.Scene {
     });
 
     return nearestPosition;
+  }
+
+  private getSmugglerRouteMovement(ship: SpaceFactionShip, dt: number): Phaser.Math.Vector2 {
+    if (ship.routeWaitRemainingMs > 0) {
+      ship.routeWaitRemainingMs = Math.max(0, ship.routeWaitRemainingMs - (dt * 1000));
+      if (ship.routeWaitRemainingMs <= 0) {
+        this.assignSmugglerRouteTarget(ship, this.getNextSmugglerLegKind(ship));
+      }
+      return new Phaser.Math.Vector2();
+    }
+
+    let routeTarget = this.resolveSmugglerRouteTarget(ship.routeTargetKind, ship.routeTargetId);
+    if (!routeTarget) {
+      this.assignSmugglerRouteTarget(ship, this.getNextSmugglerLegKind(ship));
+      routeTarget = this.resolveSmugglerRouteTarget(ship.routeTargetKind, ship.routeTargetId);
+      if (!routeTarget) {
+        return this.getPatrolMovement(ship);
+      }
+    }
+
+    ship.patrolTarget.set(routeTarget.x, routeTarget.y);
+    const dx = routeTarget.x - ship.root.x;
+    const dy = routeTarget.y - ship.root.y;
+    const distance = Math.sqrt((dx * dx) + (dy * dy));
+    const arrivalRadius = routeTarget.radius + (
+      routeTarget.kind === "station"
+        ? 150
+        : routeTarget.kind === "moon"
+          ? 90
+          : 120
+    );
+
+    if (distance <= arrivalRadius) {
+      ship.routeWaitRemainingMs = randomBetween(SMUGGLER_ROUTE_WAIT_MIN_MS, SMUGGLER_ROUTE_WAIT_MAX_MS);
+      return new Phaser.Math.Vector2();
+    }
+
+    return distance <= 0.001
+      ? new Phaser.Math.Vector2()
+      : new Phaser.Math.Vector2(dx / distance, dy / distance);
+  }
+
+  private getNextSmugglerLegKind(ship: SpaceFactionShip): "world" | "station" {
+    return ship.routeTargetKind === "planet" || ship.routeTargetKind === "moon"
+      ? "station"
+      : "world";
+  }
+
+  private assignSmugglerRouteTarget(ship: SpaceFactionShip, desiredLeg: "world" | "station"): void {
+    const nextTarget = desiredLeg === "station"
+      ? this.pickSmugglerStationTarget(ship)
+      : this.pickSmugglerWorldTarget(ship);
+
+    if (!nextTarget) {
+      ship.routeTargetKind = null;
+      ship.routeTargetId = null;
+      return;
+    }
+
+    ship.routeTargetKind = nextTarget.kind;
+    ship.routeTargetId = nextTarget.id;
+    const resolvedTarget = this.resolveSmugglerRouteTarget(nextTarget.kind, nextTarget.id);
+    if (resolvedTarget) {
+      ship.patrolTarget.set(resolvedTarget.x, resolvedTarget.y);
+    }
+  }
+
+  private pickSmugglerWorldTarget(ship: SpaceFactionShip): { kind: "planet" | "moon"; id: string } | null {
+    const localCandidates = [
+      ...this.galaxyDefinition.planets
+        .filter((planet) => planet.sectorId === ship.sectorId && !planet.isHomeworld)
+        .map((planet) => ({ kind: "planet" as const, id: planet.id })),
+      ...this.galaxyDefinition.moons
+        .filter((moon) => moon.sectorId === ship.sectorId)
+        .map((moon) => ({ kind: "moon" as const, id: moon.id })),
+    ];
+    const fallbackCandidates = [
+      ...this.galaxyDefinition.planets
+        .filter((planet) => !planet.isHomeworld)
+        .map((planet) => ({ kind: "planet" as const, id: planet.id })),
+      ...this.galaxyDefinition.moons.map((moon) => ({ kind: "moon" as const, id: moon.id })),
+    ];
+    const candidates = localCandidates.length > 0 ? localCandidates : fallbackCandidates;
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    return candidates[Math.floor(Math.random() * candidates.length)] ?? null;
+  }
+
+  private pickSmugglerStationTarget(ship: SpaceFactionShip): { kind: "station"; id: string } | null {
+    const localStations = this.galaxyDefinition.stations
+      .filter((station) => station.sectorId === ship.sectorId)
+      .map((station) => ({ kind: "station" as const, id: station.id }));
+    const stations = localStations.length > 0
+      ? localStations
+      : this.galaxyDefinition.stations.map((station) => ({ kind: "station" as const, id: station.id }));
+    if (stations.length === 0) {
+      return null;
+    }
+
+    return stations[Math.floor(Math.random() * stations.length)] ?? null;
+  }
+
+  private resolveSmugglerRouteTarget(
+    kind: SmugglerRouteTargetKind | null,
+    id: string | null,
+  ): { kind: SmugglerRouteTargetKind; id: string; x: number; y: number; radius: number } | null {
+    if (!kind || !id) {
+      return null;
+    }
+
+    if (kind === "planet") {
+      const planet = this.galaxyPlanetsById.get(id);
+      return planet
+        ? { kind, id, x: planet.x, y: planet.y, radius: this.getPlanetRenderRadius(planet) }
+        : null;
+    }
+
+    if (kind === "moon") {
+      const moon = this.galaxyMoonsById.get(id);
+      return moon
+        ? { kind, id, x: moon.x, y: moon.y, radius: this.getMoonRenderRadius(moon) }
+        : null;
+    }
+
+    const station = this.galaxyStationsById.get(id);
+    return station
+      ? { kind, id, x: station.x, y: station.y, radius: station.radius }
+      : null;
   }
 
   private getCombatMovement(
@@ -3337,6 +3629,7 @@ export class SpaceScene extends Phaser.Scene {
       ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionPlanet.x, missionPlanet.y)
       : null;
     const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, missionDistance);
+    const stationInteraction = this.getNearestStationInteraction();
     const touchLocked = this.returningToShip || this.playerDestroyed || this.isMenuOverlayVisible();
     const hyperdriveCombatLocked = isShipHyperdriveCombatLocked(this.hyperdrive.state);
     const playerHostiles = this.factionShips.filter((ship) => {
@@ -3355,6 +3648,11 @@ export class SpaceScene extends Phaser.Scene {
       : "None";
     const autoAim = gameSession.settings.controls.autoAim;
     const autoFire = gameSession.settings.controls.autoFire;
+    const stationStatus = stationInteraction
+      ? stationInteraction.inRange
+        ? `Station ${stationInteraction.station.name} | Press E to hail`
+        : `Nearest station ${stationInteraction.station.name} | Dist ${Math.round(stationInteraction.distance)}`
+      : "No station comm link nearby";
 
     this.routeText?.setText(trackedMission
       ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
@@ -3362,11 +3660,11 @@ export class SpaceScene extends Phaser.Scene {
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
     const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guards ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
     this.contactText?.setText(missionPlanet
-      ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}`
-      : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`);
+      ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
+      : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}\n${stationStatus}`);
     this.coordinateText?.setText(missionPlanet
-      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\nHYPER ${hyperdriveStatus}`
-      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\nHYPER ${hyperdriveStatus}`);
+      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : `REGION ${regionLabel}`}\nHYPER ${hyperdriveStatus}`
+      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : "STATION none nearby"}\nHYPER ${hyperdriveStatus}`);
     this.returnButton?.setLabel(landingReady ? "Land On Planet" : "Return To Ship");
     this.attackButton?.setLabel("Attack");
     this.attackButton?.setCooldownProgress(0);
@@ -3377,11 +3675,30 @@ export class SpaceScene extends Phaser.Scene {
     this.abilityOneButton?.setLabel(this.getHyperdriveTouchLabel());
     this.abilityOneButton?.setCooldownProgress(this.getHyperdriveTouchProgress());
     this.abilityOneButton?.setInputEnabled(this.touchMode && !touchLocked && this.hyperdrive.state !== "cooldown");
-    this.abilityTwoButton?.setLabel("Aux 2");
+    this.abilityTwoButton?.setLabel("Comms");
     this.abilityTwoButton?.setCooldownProgress(0);
-    this.abilityTwoButton?.setInputEnabled(false);
+    this.abilityTwoButton?.setEnabled(Boolean(stationInteraction?.inRange));
+    this.abilityTwoButton?.setInputEnabled(this.touchMode && !touchLocked && Boolean(stationInteraction?.inRange));
+    this.activeStationViews.forEach((stationView, stationId) => {
+      const station = this.galaxyStationsById.get(stationId);
+      const isNearestStation = stationInteraction?.station.id === stationId;
+      const stationInRange = Boolean(isNearestStation && stationInteraction?.inRange);
+      stationView.interactionRing.setStrokeStyle(
+        isNearestStation ? 2.4 : 1.6,
+        stationInRange ? 0x9df7c7 : station?.borderColor ?? 0xaed0ff,
+        isNearestStation ? (stationInRange ? 0.92 : 0.34) : 0.12,
+      );
+      stationView.interactionRing.setFillStyle(stationInRange ? 0x9df7c7 : station?.color ?? 0xffffff, stationInRange ? 0.04 : 0);
+      stationView.label.setAlpha(isNearestStation ? 0.98 : 0.8);
+    });
     this.updateMissionPlanetVisuals(missionPlanet, landingReady);
     this.updateWaypointIndicator(missionPlanet, missionDistance, landingReady);
+    if (this.stationOverlay?.isVisible() && this.stationOverlayStationId) {
+      const station = this.galaxyStationsById.get(this.stationOverlayStationId);
+      if (station) {
+        this.stationOverlay.update(this.buildStationOverlayState(station));
+      }
+    }
     this.syncSceneOverlayChrome();
     this.hudRefreshTimerMs = HUD_REFRESH_INTERVAL_MS;
   }
@@ -3455,6 +3772,22 @@ export class SpaceScene extends Phaser.Scene {
       });
     });
 
+    this.activeStationViews.forEach((_stationView, stationId) => {
+      const station = this.galaxyStationsById.get(stationId);
+      if (!station) {
+        return;
+      }
+      sources.push({
+        id: `station:${station.id}`,
+        kind: "station",
+        label: station.name,
+        x: station.x,
+        y: station.y,
+        radius: station.radius,
+        color: station.borderColor,
+      });
+    });
+
     const missionPlanet = this.getTrackedMissionPlanet();
     if (missionPlanet) {
       sources.push({
@@ -3495,6 +3828,105 @@ export class SpaceScene extends Phaser.Scene {
 
   private getTrackedMissionPlanet(): GalaxyMissionPlanet | null {
     return this.trackedMissionPlanet;
+  }
+
+  private getStationInteractionRange(station: GalaxyStationRecord): number {
+    return station.radius + STATION_INTERACTION_BUFFER;
+  }
+
+  private getNearestStationInteraction(): { station: GalaxyStationRecord; distance: number; inRange: boolean } | null {
+    let nearestStation: GalaxyStationRecord | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    this.galaxyDefinition.stations.forEach((station) => {
+      const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, station.x, station.y);
+      if (distance >= nearestDistance) {
+        return;
+      }
+
+      nearestStation = station;
+      nearestDistance = distance;
+    });
+
+    if (!nearestStation) {
+      return null;
+    }
+
+    return {
+      station: nearestStation,
+      distance: nearestDistance,
+      inRange: nearestDistance <= this.getStationInteractionRange(nearestStation),
+    };
+  }
+
+  private formatShipSystemName(systemId: string): string {
+    switch (systemId) {
+      case "lifeSupport":
+        return "Life Support";
+      default:
+        return `${systemId.charAt(0).toUpperCase()}${systemId.slice(1)}`;
+    }
+  }
+
+  private buildStationOverlayState(station: GalaxyStationRecord): SpaceStationOverlayState {
+    const credits = gameSession.getCredits();
+    const repairCost = gameSession.getShipRepairCost();
+    const damagedSystems = gameSession.getDamagedShipSystemIds();
+    const repairSummary = damagedSystems.length > 0
+      ? `Repair bay quote: ${repairCost} credits for ${damagedSystems.map((systemId) => this.formatShipSystemName(systemId)).join(", ")}.`
+      : "Repair bay scan: all ship systems are currently nominal.";
+
+    return {
+      stationName: station.name,
+      sectorLabel: getGalaxyRegionLabelAtPosition(station.x, station.y),
+      credits,
+      repairCost,
+      hasDamage: repairCost > 0,
+      canAffordRepair: repairCost <= credits,
+      repairSummary,
+      statusText: this.stationOverlayStatusText || "Station traffic is open. Buy and Sell will come online in a later pass.",
+    };
+  }
+
+  private tryOpenNearestStationComms(): void {
+    if (this.playerDestroyed || this.returningToShip) {
+      return;
+    }
+
+    const stationInteraction = this.getNearestStationInteraction();
+    if (!stationInteraction || !stationInteraction.inRange) {
+      return;
+    }
+
+    this.releaseTouchControls();
+    this.stationOverlayStationId = stationInteraction.station.id;
+    this.stationOverlayStatusText = "Station traffic is open. Buy and Sell will come online in a later pass.";
+    this.stationOverlay?.show(this.buildStationOverlayState(stationInteraction.station));
+    this.syncSceneOverlayChrome();
+  }
+
+  private handleStationRepairRequested(): void {
+    if (!this.stationOverlayStationId) {
+      return;
+    }
+
+    const station = this.galaxyStationsById.get(this.stationOverlayStationId);
+    if (!station) {
+      return;
+    }
+
+    const result = gameSession.repairAllShipSystemsForCredits();
+    if (!result.success) {
+      this.stationOverlayStatusText = `Repair denied. ${result.cost} credits required.`;
+    } else if (result.cost <= 0) {
+      this.stationOverlayStatusText = "Repair bay confirms all systems are already nominal.";
+    } else {
+      this.stationOverlayStatusText = `Repair complete. ${result.cost} credits transferred.`;
+      retroSfx.play("shield-recharge", { volume: 0.42, pan: 0 });
+    }
+
+    this.stationOverlay?.update(this.buildStationOverlayState(station));
+    this.refreshHud();
   }
 
   private getFactionCounts(radius?: number): Record<SpaceFactionId, number> {
@@ -3736,6 +4168,9 @@ export class SpaceScene extends Phaser.Scene {
     if (this.galaxyMapOverlay?.isVisible()) {
       this.galaxyMapOverlay.hide();
     }
+    if (this.stationOverlay?.isVisible()) {
+      this.stationOverlay.hide();
+    }
     this.syncSceneOverlayChrome();
   }
 
@@ -3743,7 +4178,8 @@ export class SpaceScene extends Phaser.Scene {
     return Boolean(
       this.logbookOverlay?.isVisible()
       || this.inventoryOverlay?.isVisible()
-      || this.galaxyMapOverlay?.isVisible(),
+      || this.galaxyMapOverlay?.isVisible()
+      || this.stationOverlay?.isVisible(),
     );
   }
 
@@ -3872,6 +4308,7 @@ export class SpaceScene extends Phaser.Scene {
   getDebugSnapshot(): Record<string, unknown> {
     const activeFactionCounts = this.getFactionCounts();
     const worldFactionCounts = this.getRemainingWorldFactionCounts();
+    const nearestStation = this.getNearestStationInteraction();
     const nearestFieldObjects = [...this.asteroids]
       .sort((left, right) => {
         const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
@@ -3905,6 +4342,28 @@ export class SpaceScene extends Phaser.Scene {
         y: Math.round(ship.root.y),
         hp: ship.hp,
         hostileToPlayer: SPACE_FACTIONS[ship.factionId].attackPlayerByDefault || ship.provokedByPlayer,
+      }));
+    const smugglerRouteStates = [
+      ...this.factionShips.map((ship) => ({
+        id: ship.id,
+        factionId: ship.factionId,
+        sectorId: ship.sectorId,
+        routeTargetKind: ship.routeTargetKind,
+        routeTargetId: ship.routeTargetId,
+        routeWaitRemainingMs: ship.routeWaitRemainingMs,
+        destroyed: false,
+      })),
+      ...[...this.shipStates.values()].filter((state) => !this.factionShips.some((ship) => ship.id === state.id)),
+    ];
+    const smugglerRoutes = smugglerRouteStates
+      .filter((state) => state.factionId === "smuggler" && !state.destroyed)
+      .slice(0, 6)
+      .map((state) => ({
+        id: state.id,
+        sectorId: state.sectorId,
+        routeTargetKind: state.routeTargetKind,
+        routeTargetId: state.routeTargetId,
+        routeWaitRemainingMs: Math.round(state.routeWaitRemainingMs ?? 0),
       }));
 
     return {
@@ -3956,11 +4415,21 @@ export class SpaceScene extends Phaser.Scene {
         y: Math.round(this.getTrackedMissionPlanet()?.y ?? 0),
       } : null,
       landingReady: this.canLandOnTrackedMissionPlanet(),
+      nearestStation: nearestStation
+        ? {
+            id: nearestStation.station.id,
+            name: nearestStation.station.name,
+            distance: Math.round(nearestStation.distance),
+            inRange: nearestStation.inRange,
+          }
+        : null,
       asteroidsRemaining: this.getRemainingFieldObjectCount(),
       activeAsteroids: this.asteroids.length,
       activeCelestialSystems: this.activeCelestialSystems.size,
       activeCelestialPlanets: this.activePlanetViews.size,
       activeCelestialMoons: [...this.activeCelestialSystems.values()].reduce((sum, entry) => sum + entry.moonIds.length, 0),
+      activeStations: this.activeStationViews.size,
+      stationCount: this.galaxyDefinition.stations.length,
       destroyedObjects: this.destroyedObjects,
       factionShipsRemaining: [...this.shipStates.values()].filter((state) => !state.destroyed).length,
       activeFactionShips: this.factionShips.length,
@@ -3977,6 +4446,7 @@ export class SpaceScene extends Phaser.Scene {
       logbookVisible: this.logbookOverlay?.isVisible() ?? false,
       inventoryVisible: this.inventoryOverlay?.isVisible() ?? false,
       mapVisible: this.galaxyMapOverlay?.isVisible() ?? false,
+      stationOverlayVisible: this.stationOverlay?.isVisible() ?? false,
       selectedTarget: this.selectedTarget
         ? this.selectedTarget.kind === "ship"
           ? { kind: "ship", id: this.selectedTarget.ship.id, factionId: this.selectedTarget.ship.factionId }
@@ -3992,6 +4462,7 @@ export class SpaceScene extends Phaser.Scene {
       returnReady: !this.returningToShip && !this.playerDestroyed,
       nearestFieldObjects,
       nearestShips,
+      smugglerRoutes,
     };
   }
 }

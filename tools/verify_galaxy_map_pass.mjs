@@ -14,6 +14,7 @@ const TEST_SHIP_POSITION = { x: 8120, y: 7880 };
 const DEEP_SPACE_POSITION = { x: 77000, y: 6200 };
 const HOMEWORLD_RING_MARGIN = 520;
 const HOMEWORLD_EDGE_MARGIN_DEG = 7;
+const SECOND_RING_ID = "second";
 const THIRD_RING_ID = "third";
 const SECTOR_ARCS = {
   "olydran-expanse": { startAngleDeg: 338, endAngleDeg: 28 },
@@ -173,6 +174,8 @@ try {
     `Galaxy ring framework is missing or out of order: ${JSON.stringify(hubMapState.galaxySummary?.ringIds)}`);
   assert(hubMapState.galaxySummary?.homeworldCount === 7,
     `Expected exactly 7 homeworlds, got ${hubMapState.galaxySummary?.homeworldCount}`);
+  const secondRing = hubMapState.galaxy?.rings?.find?.((ring) => ring.id === SECOND_RING_ID) ?? null;
+  assert(secondRing, "Galaxy is missing the second-ring definition needed for station placement");
   Object.entries(hubMapState.galaxySummary?.systemCountsBySector ?? {}).forEach(([sectorId, count]) => {
     assert(count >= 20 && count <= 40, `Sector ${sectorId} should have 20-40 systems, got ${count}`);
   });
@@ -199,8 +202,24 @@ try {
       assert(!placeholderNamePattern.test(planet.name),
         `Generated non-home planet still uses a placeholder/race-style name: ${planet.name}`);
     });
+  assert((hubMapState.galaxy?.stations ?? []).length === 7,
+    `Expected exactly 7 generated stations, got ${(hubMapState.galaxy?.stations ?? []).length}`);
+  const stationCountsBySector = (hubMapState.galaxy?.stations ?? []).reduce((counts, station) => {
+    counts[station.sectorId] = (counts[station.sectorId] ?? 0) + 1;
+    return counts;
+  }, {});
+  Object.entries(stationCountsBySector).forEach(([sectorId, count]) => {
+    assert(count === 1, `Sector ${sectorId} should have exactly 1 major station, got ${count}`);
+  });
+  (hubMapState.galaxy?.stations ?? []).forEach((station) => {
+    assert(station.ringId === SECOND_RING_ID, `Station ${station.name} is not placed in the second ring`);
+    const radialDistance = getGalaxyRadialDistance(station);
+    assert(radialDistance >= secondRing.minRadius, `Station ${station.name} is inside the second-ring inner edge`);
+    assert(radialDistance <= secondRing.maxRadius, `Station ${station.name} is outside the second-ring outer edge`);
+  });
   assert((hubMapState.mapDebug?.visibleSystems ?? 0) > 0, "Galaxy map did not report any visible generated systems");
   assert((hubMapState.mapDebug?.visiblePlanets ?? 0) > 0, "Galaxy map did not report any visible generated planets");
+  assert((hubMapState.mapDebug?.visibleStations ?? 0) > 0, "Galaxy map did not report any visible generated stations");
 
   const sectorClickTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
@@ -252,6 +271,8 @@ try {
     "Sector detail view did not report any visible generated planets");
   assert((sectorDetailState.mapDebug?.visibleMoons ?? 0) > 0,
     "Sector detail view did not report any visible generated moons");
+  assert((sectorDetailState.mapDebug?.visibleStations ?? 0) === 1,
+    `Sector detail view should show the sector's single major station: ${JSON.stringify(sectorDetailState.mapDebug)}`);
   assert(sectorDetailState.homeworldLabel.visible === true,
     `Sector detail view did not show the homeworld map label: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
   assert(sectorDetailState.homeworldLabel.text.length > 0

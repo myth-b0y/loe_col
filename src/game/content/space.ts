@@ -504,10 +504,20 @@ function isPointNearGeneratedSystems(
 }
 
 function isPointNearReservedStationArea(
-  _point: GalaxyPoint,
-  _safeRadius: number,
+  point: GalaxyPoint,
+  safeRadius: number,
+  galaxyDefinition: GalaxyDefinition | null | undefined,
 ): boolean {
-  return false;
+  if (!galaxyDefinition || safeRadius <= 0) {
+    return false;
+  }
+
+  const safeRadiusSq = safeRadius * safeRadius;
+  return galaxyDefinition.stations.some((station) => {
+    const dx = point.x - station.x;
+    const dy = point.y - station.y;
+    return (dx * dx) + (dy * dy) < safeRadiusSq;
+  });
 }
 
 function isPointBlockedForFieldSeed(
@@ -524,6 +534,7 @@ function isPointBlockedForFieldSeed(
   ) || isPointNearReservedStationArea(
     point,
     config.asteroidStationBuffer + radius + extraBuffer,
+    galaxyDefinition,
   );
 }
 
