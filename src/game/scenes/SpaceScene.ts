@@ -78,6 +78,10 @@ type SpaceFactionShip = {
   id: string;
   factionId: SpaceFactionId;
   sectorId: string;
+  groupId: string;
+  leaderId: string | null;
+  formationOffsetX: number;
+  formationOffsetY: number;
   root: Phaser.GameObjects.Container;
   thruster: Phaser.GameObjects.Ellipse;
   damageRing: Phaser.GameObjects.Arc;
@@ -100,6 +104,10 @@ type SpaceFactionShipState = {
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
   sectorId: string;
+  groupId: string;
+  leaderId: string | null;
+  formationOffsetX: number;
+  formationOffsetY: number;
   x: number;
   y: number;
   velocityX: number;
@@ -778,6 +786,10 @@ export class SpaceScene extends Phaser.Scene {
         cellKey: seed.cellKey,
         factionId: seed.factionId,
         sectorId: seed.sectorId,
+        groupId: seed.groupId,
+        leaderId: seed.leaderId,
+        formationOffsetX: seed.formationOffsetX,
+        formationOffsetY: seed.formationOffsetY,
         x: seed.x,
         y: seed.y,
         velocityX: seed.velocityX,
@@ -900,6 +912,10 @@ export class SpaceScene extends Phaser.Scene {
       cellKey: getSpaceCellKeyAtPosition(ship.root.x, ship.root.y, SPACE_WORLD_CONFIG),
       factionId: ship.factionId,
       sectorId: ship.sectorId,
+      groupId: ship.groupId,
+      leaderId: ship.leaderId,
+      formationOffsetX: ship.formationOffsetX,
+      formationOffsetY: ship.formationOffsetY,
       x: ship.root.x,
       y: ship.root.y,
       velocityX: ship.velocity.x,
@@ -1041,6 +1057,10 @@ export class SpaceScene extends Phaser.Scene {
       id: state.id,
       factionId: state.factionId,
       sectorId: state.sectorId,
+      groupId: state.groupId,
+      leaderId: state.leaderId,
+      formationOffsetX: state.formationOffsetX,
+      formationOffsetY: state.formationOffsetY,
       root,
       thruster,
       damageRing,
@@ -2170,17 +2190,9 @@ export class SpaceScene extends Phaser.Scene {
           aimDirection = movement.clone().normalize();
         }
       } else {
-        const patrolDx = ship.patrolTarget.x - ship.root.x;
-        const patrolDy = ship.patrolTarget.y - ship.root.y;
-        const patrolDistance = Math.sqrt((patrolDx * patrolDx) + (patrolDy * patrolDy));
-        if (patrolDistance < 90) {
-          ship.patrolTarget = this.pickNewPatrolTarget(ship.sectorId);
-        }
-        const nextDx = ship.patrolTarget.x - ship.root.x;
-        const nextDy = ship.patrolTarget.y - ship.root.y;
-        if ((nextDx * nextDx) + (nextDy * nextDy) > 1) {
-          movement.set(nextDx, nextDy).normalize();
-          aimDirection = movement.clone();
+        movement.copy(this.getPatrolMovement(ship));
+        if (movement.lengthSq() > 0) {
+          aimDirection = movement.clone().normalize();
         }
       }
 
@@ -2307,6 +2319,73 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     return movement.normalize();
+  }
+
+  private getPatrolMovement(ship: SpaceFactionShip): Phaser.Math.Vector2 {
+    const leader = this.getPatrolLeader(ship);
+    if (leader && leader.id !== ship.id) {
+      const slotTarget = this.getFormationSlotTarget(ship, leader);
+      const slotDx = slotTarget.x - ship.root.x;
+      const slotDy = slotTarget.y - ship.root.y;
+      if ((slotDx * slotDx) + (slotDy * slotDy) > 36) {
+        return new Phaser.Math.Vector2(slotDx, slotDy).normalize();
+      }
+
+      const leaderForward = this.getShipTravelDirection(leader);
+      return leaderForward.lengthSq() > 0 ? leaderForward : new Phaser.Math.Vector2();
+    }
+
+    const patrolDx = ship.patrolTarget.x - ship.root.x;
+    const patrolDy = ship.patrolTarget.y - ship.root.y;
+    const patrolDistance = Math.sqrt((patrolDx * patrolDx) + (patrolDy * patrolDy));
+    if (patrolDistance < 90) {
+      ship.patrolTarget = this.pickNewPatrolTarget(ship.sectorId);
+    }
+
+    const nextDx = ship.patrolTarget.x - ship.root.x;
+    const nextDy = ship.patrolTarget.y - ship.root.y;
+    if ((nextDx * nextDx) + (nextDy * nextDy) <= 1) {
+      return new Phaser.Math.Vector2();
+    }
+
+    return new Phaser.Math.Vector2(nextDx, nextDy).normalize();
+  }
+
+  private getPatrolLeader(ship: SpaceFactionShip): SpaceFactionShip | null {
+    if (!ship.leaderId) {
+      return ship;
+    }
+
+    return this.factionShips.find((candidate) => candidate.id === ship.leaderId) ?? null;
+  }
+
+  private getFormationSlotTarget(ship: SpaceFactionShip, leader: SpaceFactionShip): Phaser.Math.Vector2 {
+    const forward = this.getShipTravelDirection(leader);
+    const right = new Phaser.Math.Vector2(-forward.y, forward.x);
+    return new Phaser.Math.Vector2(
+      leader.root.x + (right.x * ship.formationOffsetX) - (forward.x * ship.formationOffsetY),
+      leader.root.y + (right.y * ship.formationOffsetX) - (forward.y * ship.formationOffsetY),
+    );
+  }
+
+  private getShipTravelDirection(ship: SpaceFactionShip): Phaser.Math.Vector2 {
+    if (ship.velocity.lengthSq() > 16) {
+      return ship.velocity.clone().normalize();
+    }
+
+    const patrolDirection = new Phaser.Math.Vector2(
+      ship.patrolTarget.x - ship.root.x,
+      ship.patrolTarget.y - ship.root.y,
+    );
+    if (patrolDirection.lengthSq() > 1) {
+      return patrolDirection.normalize();
+    }
+
+    if (ship.aimDirection.lengthSq() > 0.01) {
+      return ship.aimDirection.clone().normalize();
+    }
+
+    return new Phaser.Math.Vector2(0, -1);
   }
 
   private applyFactionMovement(

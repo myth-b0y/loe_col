@@ -102,10 +102,22 @@ try {
       acc[ship.sectorId][ship.factionId] += 1;
       return acc;
     }, {});
+    const groupSizes = ships.reduce((acc, ship) => {
+      const key = `${ship.factionId}:${ship.groupId}`;
+      if (!acc[key]) {
+        acc[key] = { factionId: ship.factionId, size: 0, leaders: 0 };
+      }
+      acc[key].size += 1;
+      if (!ship.leaderId) {
+        acc[key].leaders += 1;
+      }
+      return acc;
+    }, {});
     return {
       factionCounts: space.getDebugSnapshot().factionCounts,
       sectorCounts,
       shipCount: ships.length,
+      groupSizes: Object.values(groupSizes),
     };
   });
 
@@ -113,8 +125,17 @@ try {
   assert(spawnSummary.factionCounts.pirate > 0, "Pirate ships did not spawn");
   assert(spawnSummary.factionCounts.republic > 0, "Republic ships did not spawn");
   assert(spawnSummary.factionCounts.smuggler > 0, "Smuggler ships did not spawn");
-  assert(spawnSummary.shipCount >= 90, `Faction ship population is lower than expected: ${spawnSummary.shipCount}`);
+  assert(spawnSummary.shipCount >= 140, `Faction ship population is lower than expected: ${spawnSummary.shipCount}`);
   assert(Object.keys(spawnSummary.sectorCounts).length >= 4, "Sector-based ship spawning is too sparse");
+  assert(spawnSummary.groupSizes.every((group) => group.leaders === 1), "Every faction patrol group should have exactly one leader");
+  assert(spawnSummary.groupSizes.filter((group) => group.factionId === "empire").every((group) => group.size >= 3),
+    `Empire groups should patrol in army formations: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "empire"))}`);
+  assert(spawnSummary.groupSizes.filter((group) => group.factionId === "republic").every((group) => group.size >= 3),
+    `Republic groups should patrol in army formations: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "republic"))}`);
+  assert(spawnSummary.groupSizes.filter((group) => group.factionId === "pirate").every((group) => group.size >= 2 && group.size <= 3),
+    `Pirate groups should patrol in 2-3 ship packs: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "pirate"))}`);
+  assert(spawnSummary.groupSizes.filter((group) => group.factionId === "smuggler").every((group) => group.size === 1),
+    `Smugglers should patrol alone: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "smuggler"))}`);
 
   const behaviorCheck = await page.evaluate((cellSize) => {
     const space = window.__loeGame?.scene.keys.space;

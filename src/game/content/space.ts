@@ -79,6 +79,10 @@ export type SpaceFactionShipSeed = {
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
   sectorId: string;
+  groupId: string;
+  leaderId: string | null;
+  formationOffsetX: number;
+  formationOffsetY: number;
   x: number;
   y: number;
   velocityX: number;
@@ -123,13 +127,13 @@ export type ShipHyperdriveSystemState = {
 };
 
 const SPACE_SECTOR_SHIPS: Record<string, Partial<Record<SpaceFactionId, number>>> = {
-  "olydran-expanse": { republic: 8, smuggler: 3, pirate: 3 },
-  "aaruian-reach": { republic: 9, empire: 3, smuggler: 2 },
-  "elsari-veil": { pirate: 9, smuggler: 3 },
-  "nevari-bloom": { smuggler: 6, pirate: 4, republic: 2 },
-  "rakkan-drift": { pirate: 8, empire: 4, smuggler: 2 },
-  "svarin-span": { pirate: 7, empire: 4, smuggler: 2 },
-  "ashari-crown": { empire: 9, pirate: 4, smuggler: 2 },
+  "olydran-expanse": { republic: 18, smuggler: 3, pirate: 4 },
+  "aaruian-reach": { republic: 18, empire: 5, smuggler: 3 },
+  "elsari-veil": { pirate: 16, smuggler: 3 },
+  "nevari-bloom": { smuggler: 6, pirate: 6, republic: 4 },
+  "rakkan-drift": { pirate: 13, empire: 6, smuggler: 2 },
+  "svarin-span": { pirate: 12, empire: 6, smuggler: 2 },
+  "ashari-crown": { empire: 18, pirate: 5, smuggler: 2 },
 };
 
 const FIELD_WORLD_SEED = 0x3c71_2a6d;
@@ -407,6 +411,127 @@ function canPlaceShipSeed(
   });
 }
 
+function getFactionGroupSize(
+  factionId: SpaceFactionId,
+  remaining: number,
+  random: () => number,
+): number {
+  if (factionId === "smuggler") {
+    return 1;
+  }
+
+  if (factionId === "pirate") {
+    if (remaining === 4) {
+      return 2;
+    }
+    if (remaining <= 3) {
+      return remaining;
+    }
+    return Math.min(remaining, random() > 0.42 ? 3 : 2);
+  }
+
+  if (remaining >= 10) {
+    return 5;
+  }
+  if (remaining === 9 || remaining === 8 || remaining === 5) {
+    return 5;
+  }
+  if (remaining === 7 || remaining === 4) {
+    return 4;
+  }
+  if (remaining >= 3) {
+    return 3;
+  }
+  return remaining;
+}
+
+function createFormationOffsets(
+  factionId: SpaceFactionId,
+  groupSize: number,
+): Array<{ x: number; y: number }> {
+  if (groupSize <= 1) {
+    return [{ x: 0, y: 0 }];
+  }
+
+  if (factionId === "pirate") {
+    if (groupSize === 2) {
+      return [
+        { x: 0, y: 0 },
+        { x: -72, y: 70 },
+      ];
+    }
+
+    return [
+      { x: 0, y: 0 },
+      { x: -72, y: 68 },
+      { x: 72, y: 84 },
+    ];
+  }
+
+  const offsets: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
+  const wingSpacing = 88;
+  const trailSpacing = 92;
+  let rank = 1;
+
+  while (offsets.length < groupSize) {
+    offsets.push({ x: -wingSpacing * rank, y: trailSpacing * rank });
+    if (offsets.length >= groupSize) {
+      break;
+    }
+    offsets.push({ x: wingSpacing * rank, y: trailSpacing * rank });
+    rank += 1;
+  }
+
+  if (groupSize === 4) {
+    offsets[3] = { x: 0, y: trailSpacing * 2.1 };
+  }
+
+  return offsets;
+}
+
+function rotateFormationOffset(
+  anchor: GalaxyPoint,
+  headingRad: number,
+  offsetX: number,
+  offsetY: number,
+): GalaxyPoint {
+  const forwardX = Math.cos(headingRad);
+  const forwardY = Math.sin(headingRad);
+  const rightX = -forwardY;
+  const rightY = forwardX;
+  return {
+    x: anchor.x + (rightX * offsetX) - (forwardX * offsetY),
+    y: anchor.y + (rightY * offsetX) - (forwardY * offsetY),
+  };
+}
+
+function isPointInSectorBounds(
+  point: GalaxyPoint,
+  sector: GalaxySectorConfig,
+  config: SpaceWorldConfig,
+): boolean {
+  if (point.x < 220 || point.x > config.width - 220 || point.y < 220 || point.y > config.height - 220) {
+    return false;
+  }
+
+  const matchingSector = getGalaxySectorAtPosition(point.x, point.y);
+  return matchingSector.id === sector.id;
+}
+
+function canPlaceFormation(
+  seeds: SpaceFactionShipSeed[],
+  points: GalaxyPoint[],
+  sector: GalaxySectorConfig,
+  config: SpaceWorldConfig,
+  radius: number,
+): boolean {
+  return points.every((point) => (
+    isPointInSectorBounds(point, sector, config)
+    && !isPointNearAnySpawn(point, config.shipSpawnSafeRadius)
+    && canPlaceShipSeed(seeds, point.x, point.y, radius, 150)
+  ));
+}
+
 function pickKind(random: () => number): SpaceFieldObjectKind {
   return random() > 0.32 ? "asteroid" : "debris";
 }
@@ -559,6 +684,7 @@ function createSpaceFactionShipSeedsInternal(
   const rng = new SeededRandom(SHIP_WORLD_SEED);
   const seeds: SpaceFactionShipSeed[] = [];
   let shipIndex = 0;
+  let groupIndex = 0;
 
   sectors.forEach((sectorConfig) => {
     const galaxySector = getGalaxySectorById(sectorConfig.id);
@@ -568,36 +694,63 @@ function createSpaceFactionShipSeedsInternal(
 
     const factionEntries = Object.entries(sectorConfig.ships) as Array<[SpaceFactionId, number | undefined]>;
     factionEntries.forEach(([factionId, count]) => {
-      const shipCount = count ?? 0;
+      let remainingShips = count ?? 0;
       const faction = SPACE_FACTIONS[factionId];
-      for (let index = 0; index < shipCount; index += 1) {
-        for (let attempt = 0; attempt < 56; attempt += 1) {
-          const point = pickPointInGalaxySector(galaxySector, config, () => rng.next());
-          if (isPointNearAnySpawn(point, config.shipSpawnSafeRadius)) {
-            continue;
-          }
-          if (!canPlaceShipSeed(seeds, point.x, point.y, faction.radius, 150)) {
+      while (remainingShips > 0) {
+        const groupSize = getFactionGroupSize(factionId, remainingShips, () => rng.next());
+        const formationOffsets = createFormationOffsets(factionId, groupSize);
+        let placedGroup = false;
+
+        for (let attempt = 0; attempt < 72; attempt += 1) {
+          const anchor = pickPointInGalaxySector(galaxySector, config, () => rng.next());
+          const patrolAnchor = pickPointInGalaxySector(galaxySector, config, () => rng.next());
+          const headingDeltaX = patrolAnchor.x - anchor.x;
+          const headingDeltaY = patrolAnchor.y - anchor.y;
+          const heading = Math.abs(headingDeltaX) + Math.abs(headingDeltaY) <= 0.001
+            ? randomBetween(() => rng.next(), 0, Math.PI * 2)
+            : Math.atan2(headingDeltaY, headingDeltaX);
+          const formationPoints = formationOffsets.map((offset) => rotateFormationOffset(anchor, heading, offset.x, offset.y));
+          if (!canPlaceFormation(seeds, formationPoints, galaxySector, config, faction.radius)) {
             continue;
           }
 
-          const patrolPoint = pickPointInGalaxySector(galaxySector, config, () => rng.next());
-          const heading = randomBetween(() => rng.next(), 0, Math.PI * 2);
-          const speed = randomBetween(() => rng.next(), 18, faction.maxSpeed * 0.24);
-          seeds.push({
-            id: `faction-${shipIndex}`,
-            cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
-            factionId,
-            sectorId: sectorConfig.id,
-            x: point.x,
-            y: point.y,
-            velocityX: Math.cos(heading) * speed,
-            velocityY: Math.sin(heading) * speed,
-            rotation: heading + Math.PI * 0.5,
-            patrolX: patrolPoint.x,
-            patrolY: patrolPoint.y,
+          const groupId = `group-${groupIndex}`;
+          const leaderShipId = `faction-${shipIndex}`;
+          const baseSpeed = randomBetween(() => rng.next(), 18, faction.maxSpeed * 0.18);
+
+          formationOffsets.forEach((offset, memberIndex) => {
+            const point = formationPoints[memberIndex] ?? anchor;
+            const patrolPoint = rotateFormationOffset(patrolAnchor, heading, offset.x, offset.y);
+            const shipId = `faction-${shipIndex}`;
+            const speed = baseSpeed * randomBetween(() => rng.next(), 0.92, 1.06);
+            seeds.push({
+              id: shipId,
+              cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
+              factionId,
+              sectorId: sectorConfig.id,
+              groupId,
+              leaderId: memberIndex === 0 ? null : leaderShipId,
+              formationOffsetX: offset.x,
+              formationOffsetY: offset.y,
+              x: point.x,
+              y: point.y,
+              velocityX: Math.cos(heading) * speed,
+              velocityY: Math.sin(heading) * speed,
+              rotation: heading + Math.PI * 0.5,
+              patrolX: patrolPoint.x,
+              patrolY: patrolPoint.y,
+            });
+            shipIndex += 1;
           });
-          shipIndex += 1;
+
+          remainingShips -= groupSize;
+          groupIndex += 1;
+          placedGroup = true;
           break;
+        }
+
+        if (!placedGroup) {
+          remainingShips -= 1;
         }
       }
     });
