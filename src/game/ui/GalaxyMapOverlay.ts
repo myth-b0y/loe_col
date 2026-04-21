@@ -7,6 +7,8 @@ import {
   GALAXY_STARS,
   GALAXY_WORLD_CONFIG,
   type GalaxyDefinition,
+  getGalaxyMoonPositionAtTime,
+  getGalaxyPlanetPositionAtTime,
   getGalaxyRadialDistance,
   getGalaxyRegionLabelAtPosition,
   getGalaxySectorAtPosition,
@@ -45,6 +47,7 @@ function colorToCss(value: number): string {
 }
 
 export class GalaxyMapOverlay {
+  private readonly scene: Phaser.Scene;
   private readonly onClose: () => void;
   private readonly onOpenSettings: () => void;
   private readonly onRequestTab?: (tab: Exclude<MapTab, "map">) => void;
@@ -73,6 +76,7 @@ export class GalaxyMapOverlay {
   private selectedSectorId: string | null = null;
 
   constructor({ scene, onClose, onOpenSettings, onRequestTab }: GalaxyMapOverlayOptions) {
+    this.scene = scene;
     this.onClose = onClose;
     this.onOpenSettings = onOpenSettings ?? onClose;
     this.onRequestTab = onRequestTab;
@@ -474,6 +478,7 @@ export class GalaxyMapOverlay {
     selectedSectorId: string | null,
     homeworlds: ReturnType<typeof gameSession.getHomeworldPlanets>,
   ): void {
+    const orbitTimeMs = this.scene.time.now;
     const planetsBySystemId = galaxy.planets.reduce<Map<string, typeof galaxy.planets>>((lookup, planet) => {
       const bucket = lookup.get(planet.systemId);
       if (bucket) {
@@ -517,11 +522,12 @@ export class GalaxyMapOverlay {
         showOrbitLinks,
       );
       planets.forEach((planet) => {
-        if (!this.isWorldPointVisible(planet, viewBounds, planet.radius)) {
+        const planetPosition = getGalaxyPlanetPositionAtTime(galaxy, planet, orbitTimeMs);
+        if (!this.isWorldPointVisible(planetPosition, viewBounds, planet.radius)) {
           return;
         }
 
-        const planetPoint = this.worldToMap(planet);
+        const planetPoint = this.worldToMap(planetPosition);
         const isHomeworld = homeworldIds.has(planet.id);
         if (showOrbitLinks || isHomeworld) {
           this.staticMap.lineStyle(1, system.starColor, showOrbitLinks ? 0.16 : 0.08);
@@ -530,15 +536,15 @@ export class GalaxyMapOverlay {
         const planetRadius = this.getMapBodyRadius(planet.radius, viewBounds, planet.isHomeworld);
         if (isHomeworld) {
           this.staticMap.fillStyle(0x07131f, 0.92);
-          this.staticMap.fillCircle(planetPoint.x, planetPoint.y, planetRadius + (selectedSectorId ? 2.2 : 1.4));
+          this.staticMap.fillCircle(planetPoint.x, planetPoint.y, planetRadius + (selectedSectorId ? 2.8 : 1.8));
         }
         this.staticMap.fillStyle(planet.color, planet.isHomeworld ? 0.98 : selectedSectorId ? 0.84 : 0.72);
-        this.staticMap.fillCircle(planetPoint.x, planetPoint.y, planetRadius);
+        this.staticMap.fillCircle(planetPoint.x, planetPoint.y, isHomeworld ? planetRadius + 0.7 : planetRadius);
         if (isHomeworld) {
           this.staticMap.lineStyle(selectedSectorId ? 2.4 : 1.8, 0xfff3cf, 0.94);
-          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, planetRadius + (selectedSectorId ? 2.2 : 1.4));
-          this.staticMap.lineStyle(1, 0xfff9ea, selectedSectorId ? 0.84 : 0.62);
-          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, Math.max(1.4, planetRadius * 0.66));
+          this.staticMap.strokeCircle(planetPoint.x, planetPoint.y, planetRadius + (selectedSectorId ? 1.8 : 1.1));
+          this.staticMap.fillStyle(0xfff8e6, 0.92);
+          this.staticMap.fillCircle(planetPoint.x, planetPoint.y, Math.max(1.8, planetRadius * 0.42));
           this.staticMap.fillStyle(0xfff6dd, 0.86);
           this.staticMap.fillCircle(
             planetPoint.x - Math.max(0.6, planetRadius * 0.22),
@@ -549,11 +555,12 @@ export class GalaxyMapOverlay {
 
         const moons = moonsByPlanetId.get(planet.id) ?? [];
         moons.forEach((moon) => {
-          if (!this.isWorldPointVisible(moon, viewBounds, moon.radius)) {
+          const moonPosition = getGalaxyMoonPositionAtTime(galaxy, moon, orbitTimeMs);
+          if (!this.isWorldPointVisible(moonPosition, viewBounds, moon.radius)) {
             return;
           }
 
-          const moonPoint = this.worldToMap(moon);
+          const moonPoint = this.worldToMap(moonPosition);
           if (showOrbitLinks) {
             this.staticMap.lineStyle(1, planet.color, 0.12);
             this.staticMap.lineBetween(planetPoint.x, planetPoint.y, moonPoint.x, moonPoint.y);
@@ -576,7 +583,7 @@ export class GalaxyMapOverlay {
       this.drawStationGlyph(
         stationPoint.x,
         stationPoint.y,
-        selectedSectorId ? 4.8 : 3.9,
+        selectedSectorId ? 6.2 : 5.1,
         station.color,
         station.borderColor,
         selectedSectorId !== null,
@@ -624,14 +631,15 @@ export class GalaxyMapOverlay {
     detailView: boolean,
   ): void {
     this.staticMap.fillStyle(0x08111d, detailView ? 0.92 : 0.76);
-    this.staticMap.fillCircle(x, y, size + (detailView ? 2.2 : 1.4));
+    this.staticMap.fillCircle(x, y, size + (detailView ? 2.6 : 1.8));
     this.staticMap.fillStyle(color, detailView ? 0.96 : 0.82);
     this.staticMap.fillCircle(x, y, size);
-    this.staticMap.lineStyle(detailView ? 2.2 : 1.6, borderColor, detailView ? 0.92 : 0.68);
-    this.staticMap.strokeCircle(x, y, size + (detailView ? 1.4 : 0.8));
-    this.staticMap.lineStyle(1, 0xf5fbff, detailView ? 0.8 : 0.52);
-    this.staticMap.lineBetween(x - size * 0.6, y, x + size * 0.6, y);
-    this.staticMap.lineBetween(x, y - size * 0.6, x, y + size * 0.6);
+    this.staticMap.lineStyle(detailView ? 2.4 : 1.8, borderColor, detailView ? 0.92 : 0.72);
+    this.staticMap.strokeCircle(x, y, size + (detailView ? 1.2 : 0.8));
+    this.staticMap.lineStyle(1.2, borderColor, detailView ? 0.64 : 0.46);
+    this.staticMap.strokeCircle(x, y, Math.max(2.2, size * 0.56));
+    this.staticMap.fillStyle(0xf5fbff, detailView ? 0.9 : 0.74);
+    this.staticMap.fillCircle(x, y, Math.max(1.6, size * 0.26));
   }
 
   private getMapBodyRadius(
@@ -640,12 +648,12 @@ export class GalaxyMapOverlay {
     emphasize = false,
     isMoon = false,
   ): number {
-    const scaled = this.scaleWorldLengthToMap(worldRadius * (isMoon ? 0.24 : 0.3), viewBounds);
+    const scaled = this.scaleWorldLengthToMap(worldRadius * (isMoon ? 0.24 : 0.285), viewBounds);
     if (isMoon) {
       return Phaser.Math.Clamp(scaled, 1, 2.6);
     }
     return emphasize
-      ? Phaser.Math.Clamp(scaled + 1.1, 2.8, 5.8)
+      ? Phaser.Math.Clamp(scaled + 1.5, 3.4, 6.6)
       : Phaser.Math.Clamp(scaled, 1.4, 4.4);
   }
 
@@ -676,7 +684,7 @@ export class GalaxyMapOverlay {
     const viewBounds = this.getMapViewBounds();
     const missionId = gameSession.getTrackedMissionId();
     const mission = missionId ? getMissionContract(missionId) : null;
-    const missionPlanet = gameSession.getMissionPlanetForMission(missionId);
+    const missionPlanet = gameSession.getMissionPlanetForMission(missionId, this.scene.time.now);
     const travel = gameSession.getShipTravelState();
     const sectorHomeworld = selectedSector
       ? homeworldPlanets.find((planet) => planet.sectorId === selectedSector.id) ?? null
@@ -768,16 +776,6 @@ export class GalaxyMapOverlay {
         .setVisible(true);
     } else {
       this.missionLabel.setVisible(false);
-    }
-
-    if (sectorHomeworld && this.isWorldPointVisible(sectorHomeworld, viewBounds, sectorHomeworld.radius)) {
-      const homeworldMarker = this.worldToMap(sectorHomeworld);
-      const labelOnRight = homeworldMarker.x <= MAP_RECT.centerX;
-      this.homeworldLabel
-        .setPosition(homeworldMarker.x + (labelOnRight ? 18 : -18), homeworldMarker.y - 18)
-        .setOrigin(labelOnRight ? 0 : 1, 0.5)
-        .setText(sectorHomeworld.name)
-        .setVisible(Boolean(selectedSector));
     }
 
     if (this.hoverWorldPoint && this.isWorldPointVisible(this.hoverWorldPoint, viewBounds)) {

@@ -131,7 +131,23 @@ try {
     `Radar did not report a station contact: ${JSON.stringify(stationRangeState.radarContacts)}`);
   assert(stationRangeState.repairCost > 0, `Repair cost should be positive after damaging the ship: ${stationRangeState.repairCost}`);
 
-  await page.keyboard.press("KeyE");
+  const keybindState = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    return {
+      desktopControls: space?.desktopControlsText?.text ?? "",
+      interactKeyCode: space?.inputKeys?.interact?.keyCode ?? null,
+    };
+  });
+  assert(keybindState.interactKeyCode === 70,
+    `Space interaction key should be F: ${JSON.stringify(keybindState)}`);
+  assert(keybindState.desktopControls.includes("F interact / land"),
+    `Desktop controls text did not update to the F interaction hint: ${keybindState.desktopControls}`);
+
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    space?.tryHandlePrimaryInteraction?.();
+    space?.refreshHud?.();
+  });
   await page.waitForTimeout(180);
   await capture(page, "station-overlay-open.png");
 
@@ -150,7 +166,7 @@ try {
     };
   });
 
-  assert(overlayOpenState.visible === true, "Station comms overlay did not open with E");
+  assert(overlayOpenState.visible === true, "Station comms overlay did not open with F");
   assert(overlayOpenState.snapshot?.stationOverlayVisible === true,
     `Space debug snapshot did not report the station overlay as visible: ${JSON.stringify(overlayOpenState.snapshot)}`);
   assert(overlayOpenState.summaryText.includes("Repair bay quote"),

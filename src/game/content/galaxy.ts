@@ -90,6 +90,9 @@ export type GalaxyPlanetRecord = {
   sectorId: string;
   ringId: GalaxyRingId;
   orbitIndex: number;
+  orbitRadius: number;
+  orbitBaseAngleDeg: number;
+  orbitSpeed: number;
   name: string;
   x: number;
   y: number;
@@ -108,6 +111,9 @@ export type GalaxyMoonRecord = {
   sectorId: string;
   ringId: GalaxyRingId;
   orbitIndex: number;
+  orbitRadius: number;
+  orbitBaseAngleDeg: number;
+  orbitSpeed: number;
   name: string;
   x: number;
   y: number;
@@ -179,11 +185,13 @@ type GalaxySystemCluster = {
 const STAR_COLORS = [0xffffff, 0xe4f1ff, 0xa4d2ff, 0xffe9ae] as const;
 const DEFAULT_PLAYER_RACE_ID: RaceId = "olydran";
 const ACTIVE_SYSTEM_RING_IDS = ["inner", "second", "third", "outer"] as const;
-const GALAXY_SYSTEM_MIN_DISTANCE = 1260;
+const GALAXY_SYSTEM_MIN_DISTANCE = 1720;
 const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
 const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
+const GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND = 0.16;
+const GALAXY_MOON_ORBIT_DEGREES_PER_SECOND = 0.22;
 const GALAXY_STATION_RADIUS = 180;
 const GALAXY_STATION_RING_EDGE_MARGIN = 460;
 const GALAXY_STATION_SYSTEM_BUFFER = 1180;
@@ -410,6 +418,75 @@ function interpolateColor(start: number, end: number, t: number): number {
   const g = Math.round(startG + ((endG - startG) * t));
   const b = Math.round(startB + ((endB - startB) * t));
   return (r << 16) | (g << 8) | b;
+}
+
+function hashStringToSeed(value: string): number {
+  let hash = 2166136261 >>> 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function normalizeAngleDegrees(angleDeg: number): number {
+  const wrapped = angleDeg % 360;
+  return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+
+function getAngleDegreesBetweenPoints(originX: number, originY: number, targetX: number, targetY: number): number {
+  return normalizeAngleDegrees(Math.atan2(targetY - originY, targetX - originX) * (180 / Math.PI));
+}
+
+function getOrbitSpeed(rng: SeededRandom): number {
+  return pickWeighted<number>([
+    { value: 1, weight: 0.18 },
+    { value: 2, weight: 0.38 },
+    { value: 3, weight: 0.28 },
+    { value: 4, weight: 0.16 },
+  ], rng);
+}
+
+function getDeterministicOrbitSpeed(recordId: string): number {
+  return (hashStringToSeed(recordId) % 4) + 1;
+}
+
+function getOrbitPositionAtTime(
+  anchorX: number,
+  anchorY: number,
+  orbitRadius: number,
+  orbitBaseAngleDeg: number,
+  orbitSpeed: number,
+  orbitDegreesPerSecond: number,
+  orbitTimeMs = 0,
+): GalaxyPoint {
+  const angleDeg = normalizeAngleDegrees(
+    orbitBaseAngleDeg + ((orbitTimeMs / 1000) * orbitDegreesPerSecond * orbitSpeed),
+  );
+  const angleRad = angleDeg * (Math.PI / 180);
+  return {
+    x: Math.round(anchorX + (Math.cos(angleRad) * orbitRadius)),
+    y: Math.round(anchorY + (Math.sin(angleRad) * orbitRadius)),
+  };
+}
+
+function getNormalizedOrbitRadius(value: number | undefined, fallbackValue: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(1, value)
+    : Math.max(1, fallbackValue);
+}
+
+function getNormalizedOrbitBaseAngleDeg(value: number | undefined, fallbackValue: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? normalizeAngleDegrees(value)
+    : normalizeAngleDegrees(fallbackValue);
+}
+
+function getNormalizedOrbitSpeed(value: number | undefined, fallbackValue: number): number {
+  const candidate = typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value)
+    : fallbackValue;
+  return Math.max(1, Math.min(4, candidate));
 }
 
 function getGalaxyWorldMaxRadius(config: GalaxyWorldConfig): number {
@@ -674,6 +751,9 @@ function isStationPointValid(
     sectorId: sector.id,
     ringId: "second",
     orbitIndex: 0,
+    orbitRadius: 0,
+    orbitBaseAngleDeg: 0,
+    orbitSpeed: 1,
     name: "",
     x: point.x,
     y: point.y,
@@ -901,7 +981,7 @@ function createCandidateSystemPoint(
   let bestCandidate: GalaxyPoint | null = null;
   let bestCandidateDistanceSq = Number.NEGATIVE_INFINITY;
 
-  for (let attempt = 0; attempt < 36; attempt += 1) {
+  for (let attempt = 0; attempt < 52; attempt += 1) {
     const angleDeg = clampAngleToSector(
       cluster.centerAngleDeg + rng.range(-cluster.angularJitterDeg, cluster.angularJitterDeg),
       sector,
@@ -926,7 +1006,7 @@ function createCandidateSystemPoint(
     }
   }
 
-  for (let attempt = 0; attempt < 48; attempt += 1) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
     const point = pointFromDegrees(pickAngleInSector(sector, rng), pickRadiusInRing(ring, rng));
     if (getGalaxySectorAtPosition(point.x, point.y).id !== sector.id || getGalaxyRingAtPosition(point.x, point.y).id !== ringId) {
       continue;
@@ -979,11 +1059,16 @@ function createPlanetsForSystem(
 
   for (let orbitIndex = 0; orbitIndex < planetCount; orbitIndex += 1) {
     const orbitDistance = baseOrbit + (orbitIndex * 190) + rng.range(-16, 32);
-    const orbitAngle = rng.range(0, Math.PI * 2);
-    const point = {
-      x: system.x + Math.cos(orbitAngle) * orbitDistance,
-      y: system.y + Math.sin(orbitAngle) * orbitDistance,
-    };
+    const orbitBaseAngleDeg = rng.range(0, 360);
+    const point = getOrbitPositionAtTime(
+      system.x,
+      system.y,
+      orbitDistance,
+      orbitBaseAngleDeg,
+      1,
+      GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND,
+      0,
+    );
 
     const planetId = `${system.id}-planet-${orbitIndex + 1}`;
     const planet: GalaxyPlanetRecord = {
@@ -993,6 +1078,9 @@ function createPlanetsForSystem(
       sectorId: system.sectorId,
       ringId: system.ringId,
       orbitIndex,
+      orbitRadius: Math.round(orbitDistance),
+      orbitBaseAngleDeg,
+      orbitSpeed: getOrbitSpeed(rng),
       name: buildPlanetName(rng, usedPlanetNames),
       x: Math.round(point.x),
       y: Math.round(point.y),
@@ -1071,7 +1159,16 @@ function createMoonsForPlanets(
 
     for (let orbitIndex = 0; orbitIndex < moonCount; orbitIndex += 1) {
       const orbitDistance = planet.radius + 52 + (orbitIndex * 30) + rng.range(0, 10);
-      const orbitAngle = rng.range(0, Math.PI * 2);
+      const orbitBaseAngleDeg = rng.range(0, 360);
+      const point = getOrbitPositionAtTime(
+        planet.x,
+        planet.y,
+        orbitDistance,
+        orbitBaseAngleDeg,
+        1,
+        GALAXY_MOON_ORBIT_DEGREES_PER_SECOND,
+        0,
+      );
       const moon: GalaxyMoonRecord = {
         id: `${planet.id}-moon-${orbitIndex + 1}`,
         planetId: planet.id,
@@ -1079,9 +1176,12 @@ function createMoonsForPlanets(
         sectorId: planet.sectorId,
         ringId: planet.ringId,
         orbitIndex,
+        orbitRadius: Math.round(orbitDistance),
+        orbitBaseAngleDeg,
+        orbitSpeed: getOrbitSpeed(rng),
         name: `${planet.name} ${String.fromCharCode(65 + orbitIndex)}`,
-        x: Math.round(planet.x + Math.cos(orbitAngle) * orbitDistance),
-        y: Math.round(planet.y + Math.sin(orbitAngle) * orbitDistance),
+        x: Math.round(point.x),
+        y: Math.round(point.y),
         radius: Math.round(28 + rng.range(0, 10)),
         color: interpolateColor(planet.color, 0xffffff, 0.3 + rng.range(0, 0.2)),
       };
@@ -1156,7 +1256,11 @@ function createSectorSystems(
         starId: `${systemId}-star`,
         x: Math.round(point.x),
         y: Math.round(point.y),
-        starColor: interpolateColor(sector.borderColor, 0xffffff, 0.14 + rng.range(0, 0.18)),
+        starColor: interpolateColor(
+          interpolateColor(sector.color, sector.borderColor, 0.64),
+          0xffffff,
+          0.3 + rng.range(0, 0.12),
+        ),
         starSize: 2.2 + rng.range(0, 1.8),
         planetIds: [],
       };
@@ -1220,16 +1324,51 @@ export function normalizeGalaxyDefinition(
 ): GalaxyDefinition {
   if (isGalaxyDefinitionLike(galaxy)) {
     const systems = galaxy.systems.map((system) => ({ ...system, planetIds: [...system.planetIds] }));
+    const systemsById = systems.reduce<Map<string, GalaxySystemRecord>>((lookup, system) => {
+      lookup.set(system.id, system);
+      return lookup;
+    }, new Map());
+    const planets = galaxy.planets.map((planet) => {
+      const system = systemsById.get(planet.systemId);
+      const fallbackOrbitRadius = system
+        ? Math.max(160, Math.round(Math.hypot(planet.x - system.x, planet.y - system.y)))
+        : Math.max(160, 240 + (planet.orbitIndex * 190));
+      const fallbackOrbitAngleDeg = system
+        ? getAngleDegreesBetweenPoints(system.x, system.y, planet.x, planet.y)
+        : normalizeAngleDegrees(planet.orbitIndex * 90);
+      return {
+        ...planet,
+        orbitRadius: getNormalizedOrbitRadius(planet.orbitRadius, fallbackOrbitRadius),
+        orbitBaseAngleDeg: getNormalizedOrbitBaseAngleDeg(planet.orbitBaseAngleDeg, fallbackOrbitAngleDeg),
+        orbitSpeed: getNormalizedOrbitSpeed(planet.orbitSpeed, getDeterministicOrbitSpeed(planet.id)),
+        moonIds: [...planet.moonIds],
+        missionIds: [...planet.missionIds],
+      };
+    });
+    const planetsById = planets.reduce<Map<string, GalaxyPlanetRecord>>((lookup, planet) => {
+      lookup.set(planet.id, planet);
+      return lookup;
+    }, new Map());
     return {
       seed: galaxy.seed,
       rings: galaxy.rings.map((ring) => ({ ...ring })),
       systems,
-      planets: galaxy.planets.map((planet) => ({
-        ...planet,
-        moonIds: [...planet.moonIds],
-        missionIds: [...planet.missionIds],
-      })),
-      moons: galaxy.moons.map((moon) => ({ ...moon })),
+      planets,
+      moons: galaxy.moons.map((moon) => {
+        const planet = planetsById.get(moon.planetId);
+        const fallbackOrbitRadius = planet
+          ? Math.max(56, Math.round(Math.hypot(moon.x - planet.x, moon.y - planet.y)))
+          : Math.max(56, 110 + (moon.orbitIndex * 30));
+        const fallbackOrbitAngleDeg = planet
+          ? getAngleDegreesBetweenPoints(planet.x, planet.y, moon.x, moon.y)
+          : normalizeAngleDegrees(moon.orbitIndex * 120);
+        return {
+          ...moon,
+          orbitRadius: getNormalizedOrbitRadius(moon.orbitRadius, fallbackOrbitRadius),
+          orbitBaseAngleDeg: getNormalizedOrbitBaseAngleDeg(moon.orbitBaseAngleDeg, fallbackOrbitAngleDeg),
+          orbitSpeed: getNormalizedOrbitSpeed(moon.orbitSpeed, getDeterministicOrbitSpeed(moon.id)),
+        };
+      }),
       homeworlds: galaxy.homeworlds.map((homeworld) => ({ ...homeworld })),
       stations: Array.isArray(galaxy.stations) && galaxy.stations.length > 0
         ? galaxy.stations.map((station) => ({ ...station }))
@@ -1331,13 +1470,43 @@ export function getGalaxySectorMidAngleDeg(sector: GalaxySectorConfig): number {
   return wrapAngleDegrees((start + end) * 0.5);
 }
 
-export function getGalaxySpawnPointForRace(raceId: RaceId): GalaxyPoint {
+function getGalaxyHomeworldSpawnPoint(
+  galaxy: GalaxyDefinition | null | undefined,
+  raceId: RaceId,
+): GalaxyPoint | null {
+  const homeworld = getGalaxyHomeworldByRace(galaxy, raceId);
+  if (!galaxy || !homeworld) {
+    return null;
+  }
+
+  const system = getGalaxySystemById(galaxy, homeworld.systemId);
+  const planet = getGalaxyPlanetById(galaxy, homeworld.planetId);
+  if (!system || !planet) {
+    return null;
+  }
+
+  const spawnAngleDeg = normalizeAngleDegrees(planet.orbitBaseAngleDeg + 180);
+  const spawnDistance = Math.max(420, Math.min(680, planet.orbitRadius * 0.72));
+  const spawnAngleRad = spawnAngleDeg * (Math.PI / 180);
+  return clampPointToGalaxyTravelBounds(
+    Math.round(system.x + (Math.cos(spawnAngleRad) * spawnDistance)),
+    Math.round(system.y + (Math.sin(spawnAngleRad) * spawnDistance)),
+    180,
+  );
+}
+
+export function getGalaxySpawnPointForRace(raceId: RaceId, galaxy?: GalaxyDefinition | null): GalaxyPoint {
+  const homeworldSpawn = getGalaxyHomeworldSpawnPoint(galaxy, raceId);
+  if (homeworldSpawn) {
+    return homeworldSpawn;
+  }
+
   const sector = getGalaxySectorByRace(raceId);
   return pointFromDegrees(getGalaxySectorMidAngleDeg(sector), GALAXY_WORLD_CONFIG.raceSpawnRadius);
 }
 
-export function getDefaultGalaxySpawnPoint(): GalaxyPoint {
-  return getGalaxySpawnPointForRace(DEFAULT_PLAYER_RACE_ID);
+export function getDefaultGalaxySpawnPoint(galaxy?: GalaxyDefinition | null): GalaxyPoint {
+  return getGalaxySpawnPointForRace(DEFAULT_PLAYER_RACE_ID, galaxy);
 }
 
 export function getGalaxySectorPolygonPoints(sector: GalaxySectorConfig, steps = 18): number[] {
@@ -1408,9 +1577,53 @@ export function getGalaxyHomeworldPlanets(galaxy: GalaxyDefinition | null | unde
   return galaxy.planets.filter((planet) => planet.isHomeworld);
 }
 
+export function getGalaxyPlanetPositionAtTime(
+  galaxy: GalaxyDefinition | null | undefined,
+  planet: GalaxyPlanetRecord,
+  orbitTimeMs = 0,
+): GalaxyPoint {
+  const system = getGalaxySystemById(galaxy, planet.systemId);
+  if (!system) {
+    return { x: planet.x, y: planet.y };
+  }
+
+  return getOrbitPositionAtTime(
+    system.x,
+    system.y,
+    planet.orbitRadius,
+    planet.orbitBaseAngleDeg,
+    planet.orbitSpeed,
+    GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND,
+    orbitTimeMs,
+  );
+}
+
+export function getGalaxyMoonPositionAtTime(
+  galaxy: GalaxyDefinition | null | undefined,
+  moon: GalaxyMoonRecord,
+  orbitTimeMs = 0,
+): GalaxyPoint {
+  const planet = getGalaxyPlanetById(galaxy, moon.planetId);
+  if (!planet) {
+    return { x: moon.x, y: moon.y };
+  }
+
+  const planetPosition = getGalaxyPlanetPositionAtTime(galaxy, planet, orbitTimeMs);
+  return getOrbitPositionAtTime(
+    planetPosition.x,
+    planetPosition.y,
+    moon.orbitRadius,
+    moon.orbitBaseAngleDeg,
+    moon.orbitSpeed,
+    GALAXY_MOON_ORBIT_DEGREES_PER_SECOND,
+    orbitTimeMs,
+  );
+}
+
 export function getMissionPlanetForMission(
   missionId: string | null | undefined,
   galaxy: GalaxyDefinition | null | undefined,
+  orbitTimeMs = 0,
 ): GalaxyMissionPlanet | null {
   if (!missionId || !galaxy) {
     return null;
@@ -1424,6 +1637,7 @@ export function getMissionPlanetForMission(
 
   return {
     ...planet,
+    ...getGalaxyPlanetPositionAtTime(galaxy, planet, orbitTimeMs),
     missionId,
   };
 }

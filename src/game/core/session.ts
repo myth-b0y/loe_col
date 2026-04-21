@@ -214,14 +214,15 @@ function normalizeShipRepairState(repair: Partial<ShipRepairState> | undefined):
 function normalizeShipSpacePosition(
   spacePosition: Partial<ShipSpacePosition> | undefined,
   raceId: RaceId | undefined,
+  galaxy?: GalaxyDefinition | undefined,
 ): ShipSpacePosition {
-  const fallback = raceId ? getGalaxySpawnPointForRace(raceId) : getDefaultGalaxySpawnPoint();
+  const fallback = raceId ? getGalaxySpawnPointForRace(raceId, galaxy) : getDefaultGalaxySpawnPoint(galaxy);
   const x = typeof spacePosition?.x === "number" && Number.isFinite(spacePosition.x) ? spacePosition.x : fallback.x;
   const y = typeof spacePosition?.y === "number" && Number.isFinite(spacePosition.y) ? spacePosition.y : fallback.y;
   return clampPointToGalaxyTravelBounds(Math.round(x), Math.round(y));
 }
 
-function createDefaultShipState(raceId?: RaceId): ShipState {
+function createDefaultShipState(raceId?: RaceId, galaxy?: GalaxyDefinition): ShipState {
   return {
     travel: {
       status: "docked",
@@ -238,7 +239,7 @@ function createDefaultShipState(raceId?: RaceId): ShipState {
     storage: {
       cargo: createEmptyCargoSlots(DEFAULT_SHIP_STORAGE_SLOT_COUNT),
     },
-    spacePosition: normalizeShipSpacePosition(undefined, raceId),
+    spacePosition: normalizeShipSpacePosition(undefined, raceId, galaxy),
   };
 }
 
@@ -421,6 +422,8 @@ function deriveLegacyGalaxySeed(parsed: Partial<SaveData>, raceId: RaceId): numb
 }
 
 function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
+  const profileRaceId: RaceId = "olydran";
+  const galaxy = createGalaxyDefinition(galaxySeed);
   return {
     version: 9,
     meta: {
@@ -428,7 +431,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
     },
     profile: {
       callsign: "Champion",
-      raceId: "olydran",
+      raceId: profileRaceId,
       level: 1,
       xp: 0,
       credits: 140,
@@ -452,8 +455,8 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
       exhaustedMissionIds: [],
       unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
     },
-    galaxy: createGalaxyDefinition(galaxySeed),
-    ship: createDefaultShipState(),
+    galaxy,
+    ship: createDefaultShipState(profileRaceId, galaxy),
   };
 }
 
@@ -532,6 +535,10 @@ function normalizeCargoSlots(cargo: unknown[] | undefined, count = DEFAULT_CARGO
 
 function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const profile = { ...clone(DEFAULT_SAVE.profile), ...parsed.profile };
+  const normalizedGalaxy = normalizeGalaxyDefinition(
+    parsed.galaxy as Partial<GalaxyDefinition> | undefined,
+    deriveLegacyGalaxySeed(parsed, profile.raceId),
+  );
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
@@ -550,12 +557,9 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...clone(DEFAULT_SAVE.progression),
       ...parsed.progression,
     },
-    galaxy: normalizeGalaxyDefinition(
-      parsed.galaxy as Partial<GalaxyDefinition> | undefined,
-      deriveLegacyGalaxySeed(parsed, profile.raceId),
-    ),
+    galaxy: normalizedGalaxy,
     ship: {
-      ...createDefaultShipState(profile.raceId),
+      ...createDefaultShipState(profile.raceId, normalizedGalaxy),
       ...parsed.ship,
       travel: normalizeShipTravelState(parsed.ship?.travel),
       systems: normalizeShipSystemsState(parsed.ship?.systems as Partial<Record<ShipSystemId, Partial<ShipSystemState>>> | undefined),
@@ -563,7 +567,11 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       storage: {
         cargo: normalizeCargoSlots(parsed.ship?.storage?.cargo, DEFAULT_SHIP_STORAGE_SLOT_COUNT),
       },
-      spacePosition: normalizeShipSpacePosition(parsed.ship?.spacePosition as Partial<ShipSpacePosition> | undefined, profile.raceId),
+      spacePosition: normalizeShipSpacePosition(
+        parsed.ship?.spacePosition as Partial<ShipSpacePosition> | undefined,
+        profile.raceId,
+        normalizedGalaxy,
+      ),
     },
   };
 
@@ -797,8 +805,8 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return station ? { ...station } : null;
   }
 
-  getMissionPlanetForMission(missionId = this.getTrackedMissionId()): GalaxyMissionPlanet | null {
-    const missionPlanet = getMissionPlanetForMissionFromGalaxy(missionId, this.saveData.galaxy);
+  getMissionPlanetForMission(missionId = this.getTrackedMissionId(), orbitTimeMs = 0): GalaxyMissionPlanet | null {
+    const missionPlanet = getMissionPlanetForMissionFromGalaxy(missionId, this.saveData.galaxy, orbitTimeMs);
     return missionPlanet ? clone(missionPlanet) : null;
   }
 
@@ -826,7 +834,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   resetShipSpacePosition(): ShipSpacePosition {
-    this.saveData.ship.spacePosition = getGalaxySpawnPointForRace(this.saveData.profile.raceId);
+    this.saveData.ship.spacePosition = getGalaxySpawnPointForRace(this.saveData.profile.raceId, this.saveData.galaxy);
     return this.getShipSpacePosition();
   }
 
@@ -1266,7 +1274,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.activeSlotIndex = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.saveData = createDefaultSaveData();
-    this.saveData.ship = createDefaultShipState(this.saveData.profile.raceId);
+    this.saveData.ship = createDefaultShipState(this.saveData.profile.raceId, this.saveData.galaxy);
     this.activeMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);

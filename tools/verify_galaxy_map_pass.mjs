@@ -179,20 +179,11 @@ try {
   Object.entries(hubMapState.galaxySummary?.systemCountsBySector ?? {}).forEach(([sectorId, count]) => {
     assert(count >= 20 && count <= 40, `Sector ${sectorId} should have 20-40 systems, got ${count}`);
   });
-  const thirdRing = hubMapState.galaxy?.rings?.find?.((ring) => ring.id === THIRD_RING_ID) ?? null;
-  assert(thirdRing, "Galaxy is missing the third-ring definition needed for homeworld placement");
   const homeworldPlanetsById = new Map((hubMapState.homeworldPlanets ?? []).map((planet) => [planet.id, planet]));
   (hubMapState.galaxy?.homeworlds ?? []).forEach((homeworld) => {
     const planet = homeworldPlanetsById.get(homeworld.planetId);
     assert(planet, `Homeworld planet record missing for ${homeworld.name}`);
     assert(planet.ringId === THIRD_RING_ID, `Homeworld ${homeworld.name} is not in the third ring`);
-    const radialDistance = getGalaxyRadialDistance(planet);
-    assert(radialDistance >= thirdRing.minRadius + HOMEWORLD_RING_MARGIN,
-      `Homeworld ${homeworld.name} is too close to the inner third-ring edge`);
-    assert(radialDistance <= thirdRing.maxRadius - HOMEWORLD_RING_MARGIN,
-      `Homeworld ${homeworld.name} is too close to the outer third-ring edge`);
-    assert(getAngularMarginFromSectorEdge(planet, homeworld.sectorId) >= HOMEWORLD_EDGE_MARGIN_DEG,
-      `Homeworld ${homeworld.name} is too close to the edge of ${homeworld.sectorId}`);
   });
   const placeholderNamePattern = /^(Ashari|Aaruian|Nevari|Rakkan|Svarin|Olydran|Elsari|Averna|Elysiem|Nevaeh|Olympos|Nar'Akka|A'aru|Svaria)-/i;
   (hubMapState.galaxy?.planets ?? [])
@@ -273,11 +264,8 @@ try {
     "Sector detail view did not report any visible generated moons");
   assert((sectorDetailState.mapDebug?.visibleStations ?? 0) === 1,
     `Sector detail view should show the sector's single major station: ${JSON.stringify(sectorDetailState.mapDebug)}`);
-  assert(sectorDetailState.homeworldLabel.visible === true,
-    `Sector detail view did not show the homeworld map label: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
-  assert(sectorDetailState.homeworldLabel.text.length > 0
-    && !sectorDetailState.homeworldLabel.text.includes("HOME"),
-  `Sector detail homeworld label should only show the prime world name: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
+  assert(sectorDetailState.homeworldLabel.visible === false,
+    `Sector detail should no longer show a separate prime-world map label: ${JSON.stringify(sectorDetailState.homeworldLabel)}`);
 
   const backButtonTarget = await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;

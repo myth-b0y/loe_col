@@ -6,6 +6,8 @@ import {
   GALAXY_STARS,
   GALAXY_WORLD_CONFIG,
   clampPointToGalaxyTravelBounds,
+  getGalaxyMoonPositionAtTime,
+  getGalaxyPlanetPositionAtTime,
   getGalaxyRegionLabelAtPosition,
   getGalaxySectorAtPosition,
   isGalaxyDeepSpaceAtPosition,
@@ -211,6 +213,13 @@ type SpaceCelestialPlanetView = {
   label: Phaser.GameObjects.Text;
 };
 
+type SpaceCelestialMoonView = {
+  moonId: string;
+  planetId: string;
+  root: Phaser.GameObjects.Container;
+  orbit: Phaser.GameObjects.Ellipse;
+};
+
 type SpaceCelestialSystemView = {
   systemId: string;
   root: Phaser.GameObjects.Container;
@@ -240,6 +249,7 @@ const FACTION_DAMAGE = 1;
 const PLAYER_DAMAGE = 1;
 const AGGRESSION_DURATION = 12;
 const MISSION_LANDING_RANGE_BUFFER = 150;
+const FORMATION_RECOVERY_DISTANCE = 180;
 const PLAYER_TARGET_LOCK_RANGE = 980;
 const TOUCH_STICK_RADIUS = 72;
 const TOUCH_STICK_DEADZONE = 18;
@@ -440,6 +450,7 @@ export class SpaceScene extends Phaser.Scene {
   private activeCelestialCellKeys: SpaceWorldCellKey[] = [];
   private activeCelestialSystems = new Map<string, SpaceCelestialSystemView>();
   private activePlanetViews = new Map<string, SpaceCelestialPlanetView>();
+  private activeMoonViews = new Map<string, SpaceCelestialMoonView>();
   private activeStationViews = new Map<string, SpaceStationView>();
   private shots: SpaceProjectile[] = [];
   private burstParticles: SpaceBurstParticle[] = [];
@@ -526,7 +537,7 @@ export class SpaceScene extends Phaser.Scene {
       this.galaxyDefinition,
       Date.now() >>> 0,
     );
-    this.trackedMissionPlanet = gameSession.getMissionPlanetForMission(this.routeMissionId ?? gameSession.getTrackedMissionId());
+    this.syncTrackedMissionPlanet();
     this.galaxySystemsByCell.clear();
     this.galaxySystemsById.clear();
     this.galaxyPlanetsById.clear();
@@ -548,6 +559,7 @@ export class SpaceScene extends Phaser.Scene {
     this.activeCelestialCellKeys = [];
     this.activeCelestialSystems.clear();
     this.activePlanetViews.clear();
+    this.activeMoonViews.clear();
     this.activeStationViews.clear();
     this.shots = [];
     this.burstParticles = [];
@@ -555,7 +567,7 @@ export class SpaceScene extends Phaser.Scene {
     this.activeShipCellKeys = [];
     this.destroyedObjects = 0;
     this.destroyedFactionShips = 0;
-    this.playerHull = PLAYER_MAX_HULL;
+    this.restorePlayerHullFromSession();
     this.playerFlash = 0;
     this.hyperdrive = createShipHyperdriveSystemState();
     this.hyperdriveCountdownValue = 0;
@@ -630,6 +642,7 @@ export class SpaceScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.05);
     this.hudRefreshTimerMs = Math.max(0, this.hudRefreshTimerMs - delta);
+    this.syncTrackedMissionPlanet();
 
     if (this.isMenuOverlayVisible()) {
       if (this.hudRefreshTimerMs <= 0) {
@@ -639,8 +652,12 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    if (this.inputKeys && !this.playerDestroyed && Phaser.Input.Keyboard.JustDown(this.inputKeys.interact)) {
+      this.tryHandlePrimaryInteraction();
+    }
+
     if (this.inputKeys && !this.playerDestroyed && Phaser.Input.Keyboard.JustDown(this.inputKeys.returnToShip)) {
-      this.attemptExitSpace();
+      this.returnToShip();
       return;
     }
 
@@ -655,6 +672,7 @@ export class SpaceScene extends Phaser.Scene {
     this.updatePlayerShip(dt);
     this.syncBackdropVisuals();
     this.syncActiveWorld();
+    this.updateCelestialMotion();
     this.updateFieldObjects(dt);
     this.updateFactionShips(dt);
     this.resolveFactionShipCollisions();
@@ -941,11 +959,73 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private getPlanetRenderRadius(planet: GalaxyPlanetRecord): number {
-    return Math.max(22, planet.radius * (planet.isHomeworld ? 0.66 : 0.54));
+    return Math.max(22, planet.radius * 0.95 * (planet.isHomeworld ? 0.66 : 0.54));
   }
 
   private getMoonRenderRadius(moon: GalaxyMoonRecord): number {
     return Math.max(10, moon.radius * 0.48);
+  }
+
+  private getOrbitTimeMs(): number {
+    return this.time.now;
+  }
+
+  private getSessionHullIntegrity(): number {
+    const hullSystem = gameSession.getShipSystemsState().hull;
+    return Phaser.Math.Clamp(hullSystem.integrity, 0, 100);
+  }
+
+  private getPlayerHullFromSession(): number {
+    return Phaser.Math.Clamp(
+      Math.round((this.getSessionHullIntegrity() / 100) * PLAYER_MAX_HULL),
+      0,
+      PLAYER_MAX_HULL,
+    );
+  }
+
+  private syncPlayerHullToSession(): void {
+    const integrity = Phaser.Math.Clamp(Math.round((Math.max(0, this.playerHull) / PLAYER_MAX_HULL) * 100), 0, 100);
+    gameSession.setShipSystemIntegrity("hull", integrity);
+    gameSession.setShipSystemOnline("hull", integrity > 0);
+  }
+
+  private restorePlayerHullFromSession(): void {
+    this.playerHull = this.getPlayerHullFromSession();
+  }
+
+  private syncTrackedMissionPlanet(orbitTimeMs = this.getOrbitTimeMs()): void {
+    this.trackedMissionPlanet = gameSession.getMissionPlanetForMission(
+      this.routeMissionId ?? gameSession.getTrackedMissionId(),
+      orbitTimeMs,
+    );
+  }
+
+  private updateCelestialMotion(orbitTimeMs = this.getOrbitTimeMs()): void {
+    this.syncTrackedMissionPlanet(orbitTimeMs);
+    this.activePlanetViews.forEach((planetView, planetId) => {
+      const planet = this.galaxyPlanetsById.get(planetId);
+      const system = planet ? this.galaxySystemsById.get(planet.systemId) : null;
+      if (!planet || !system) {
+        return;
+      }
+
+      const position = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, planet, orbitTimeMs);
+      planetView.root.setPosition(position.x - system.x, position.y - system.y);
+    });
+
+    this.activeMoonViews.forEach((moonView, moonId) => {
+      const moon = this.galaxyMoonsById.get(moonId);
+      const planet = moon ? this.galaxyPlanetsById.get(moon.planetId) : null;
+      const system = moon ? this.galaxySystemsById.get(moon.systemId) : null;
+      if (!moon || !planet || !system) {
+        return;
+      }
+
+      const planetPosition = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, planet, orbitTimeMs);
+      const moonPosition = getGalaxyMoonPositionAtTime(this.galaxyDefinition, moon, orbitTimeMs);
+      moonView.orbit.setPosition(planetPosition.x - system.x, planetPosition.y - system.y);
+      moonView.root.setPosition(moonPosition.x - system.x, moonPosition.y - system.y);
+    });
   }
 
   private createCelestialSystemView(system: GalaxySystemRecord): SpaceCelestialSystemView {
@@ -964,7 +1044,7 @@ export class SpaceScene extends Phaser.Scene {
       starRadius * (systemIsHomeworld ? 0.98 : 0.84),
       starRadius * (systemIsHomeworld ? 0.42 : 0.34),
       systemIsHomeworld ? 8 : 4,
-      0xfff4d7,
+      system.starColor,
       systemIsHomeworld ? 0.94 : 0.86,
       0xffffff,
       systemIsHomeworld ? 0.34 : 0.22,
@@ -1034,10 +1114,17 @@ export class SpaceScene extends Phaser.Scene {
         const moonOrbit = this.add.ellipse(localX, localY, moonOrbitDistance * 2, moonOrbitDistance * 2, 0xffffff, 0)
           .setStrokeStyle(1, planet.color, 0.1);
         const moonRadius = this.getMoonRenderRadius(moon);
-        const moonHalo = this.add.circle(localMoonX, localMoonY, moonRadius * 1.18, moon.color, 0.14);
-        const moonBody = this.add.circle(localMoonX, localMoonY, moonRadius, moon.color, 0.9)
+        const moonHalo = this.add.circle(0, 0, moonRadius * 1.18, moon.color, 0.14);
+        const moonBody = this.add.circle(0, 0, moonRadius, moon.color, 0.9)
           .setStrokeStyle(1, 0xf4fbff, 0.34);
-        children.push(moonOrbit, moonHalo, moonBody);
+        const moonRoot = this.add.container(localMoonX, localMoonY, [moonHalo, moonBody]);
+        children.push(moonOrbit, moonRoot);
+        this.activeMoonViews.set(moon.id, {
+          moonId: moon.id,
+          planetId: planet.id,
+          root: moonRoot,
+          orbit: moonOrbit,
+        });
         moonIds.push(moon.id);
       });
     });
@@ -1053,17 +1140,32 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createStationView(station: GalaxyStationRecord): SpaceStationView {
-    const halo = this.add.circle(0, 0, station.radius * 1.7, station.color, 0.1);
-    const outerRing = this.add.circle(0, 0, station.radius, 0xffffff, 0)
-      .setStrokeStyle(3, station.borderColor, 0.82);
-    const innerRing = this.add.circle(0, 0, station.radius * 0.68, 0xffffff, 0)
-      .setStrokeStyle(1.5, 0xf4fbff, 0.46);
-    const horizontalSpine = this.add.rectangle(0, 0, station.radius * 1.58, 18, station.color, 0.94)
-      .setStrokeStyle(2, station.borderColor, 0.48);
-    const verticalSpine = this.add.rectangle(0, 0, 18, station.radius * 1.58, station.color, 0.94)
-      .setStrokeStyle(2, station.borderColor, 0.48);
-    const core = this.add.circle(0, 0, station.radius * 0.32, 0xeaf4ff, 0.96)
-      .setStrokeStyle(2, station.borderColor, 0.58);
+    const halo = this.add.circle(0, 0, station.radius * 1.8, station.color, 0.08);
+    const driftRing = this.add.ellipse(0, 0, station.radius * 2.1, station.radius * 1.28, 0xffffff, 0)
+      .setRotation(0.36)
+      .setStrokeStyle(3, station.borderColor, 0.78);
+    const innerDriftRing = this.add.ellipse(0, 0, station.radius * 1.52, station.radius * 0.92, 0xffffff, 0)
+      .setRotation(0.36)
+      .setStrokeStyle(1.5, 0xeef7ff, 0.42);
+    const spine = this.add.rectangle(0, 0, 20, station.radius * 1.68, 0xdfeeff, 0.96)
+      .setStrokeStyle(2, station.borderColor, 0.52);
+    const dockArmLeft = this.add.rectangle(-(station.radius * 0.52), 0, station.radius * 0.54, 14, station.color, 0.92)
+      .setRotation(0.06)
+      .setStrokeStyle(2, station.borderColor, 0.46);
+    const dockArmRight = this.add.rectangle(station.radius * 0.52, 0, station.radius * 0.54, 14, station.color, 0.92)
+      .setRotation(-0.06)
+      .setStrokeStyle(2, station.borderColor, 0.46);
+    const upperHab = this.add.circle(0, -(station.radius * 0.54), station.radius * 0.18, station.color, 0.92)
+      .setStrokeStyle(2, station.borderColor, 0.52);
+    const lowerHab = this.add.circle(0, station.radius * 0.54, station.radius * 0.18, station.color, 0.92)
+      .setStrokeStyle(2, station.borderColor, 0.52);
+    const dockPodLeft = this.add.circle(-(station.radius * 0.86), 0, station.radius * 0.14, 0xe8f4ff, 0.96)
+      .setStrokeStyle(2, station.borderColor, 0.42);
+    const dockPodRight = this.add.circle(station.radius * 0.86, 0, station.radius * 0.14, 0xe8f4ff, 0.96)
+      .setStrokeStyle(2, station.borderColor, 0.42);
+    const core = this.add.circle(0, 0, station.radius * 0.26, 0xf6fbff, 0.98)
+      .setStrokeStyle(2.4, station.borderColor, 0.68);
+    const coreGlow = this.add.circle(0, 0, station.radius * 0.44, station.borderColor, 0.12);
     const interactionRing = this.add.circle(0, 0, station.radius + STATION_INTERACTION_BUFFER, 0xffffff, 0)
       .setStrokeStyle(2, station.borderColor, 0.12);
     const label = this.add.text(0, station.radius + 18, station.name, {
@@ -1077,10 +1179,16 @@ export class SpaceScene extends Phaser.Scene {
     const root = this.add.container(station.x, station.y, [
       interactionRing,
       halo,
-      outerRing,
-      innerRing,
-      horizontalSpine,
-      verticalSpine,
+      driftRing,
+      innerDriftRing,
+      coreGlow,
+      dockArmLeft,
+      dockArmRight,
+      spine,
+      upperHab,
+      lowerHab,
+      dockPodLeft,
+      dockPodRight,
       core,
       label,
     ]).setDepth(11);
@@ -1227,6 +1335,9 @@ export class SpaceScene extends Phaser.Scene {
   private deactivateCelestialSystem(systemView: SpaceCelestialSystemView): void {
     systemView.planetIds.forEach((planetId) => {
       this.activePlanetViews.delete(planetId);
+    });
+    systemView.moonIds.forEach((moonId) => {
+      this.activeMoonViews.delete(moonId);
     });
     systemView.root.destroy(true);
     this.activeCelestialSystems.delete(systemView.systemId);
@@ -1650,7 +1761,7 @@ export class SpaceScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  E station comms  |  Space hyperdrive  |  T target  |  TAB inventory  |  L datapad  |  ESC pause  |  X abort / land", {
+    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  F interact / land  |  Space hyperdrive  |  T target  |  TAB inventory  |  M map  |  ESC pause  |  X return to ship", {
       fontFamily: "Arial",
       fontSize: "15px",
       color: "#dcecff",
@@ -1692,7 +1803,7 @@ export class SpaceScene extends Phaser.Scene {
       width: 184,
       height: 40,
       label: "Return To Ship",
-      onClick: () => this.attemptExitSpace(),
+      onClick: () => this.returnToShip(),
       depth: 52,
       accentColor: 0x234566,
     });
@@ -1785,8 +1896,8 @@ export class SpaceScene extends Phaser.Scene {
       y: 494,
       width: 126,
       height: 54,
-      label: "Comms",
-      onClick: () => this.tryOpenNearestStationComms(),
+      label: "Interact",
+      onClick: () => this.tryHandlePrimaryInteraction(),
       depth: 55,
       accentColor: 0x2a394c,
       disabled: true,
@@ -1848,7 +1959,7 @@ export class SpaceScene extends Phaser.Scene {
       down: Phaser.Input.Keyboard.KeyCodes.S,
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
-      interact: Phaser.Input.Keyboard.KeyCodes.E,
+      interact: Phaser.Input.Keyboard.KeyCodes.F,
       hyperdrive: Phaser.Input.Keyboard.KeyCodes.SPACE,
       returnToShip: Phaser.Input.Keyboard.KeyCodes.X,
     }) as SpaceScene["inputKeys"];
@@ -1861,9 +1972,9 @@ export class SpaceScene extends Phaser.Scene {
       }
       this.openPauseMenu();
     });
-    keyboard.on("keydown-L", () => {
+    keyboard.on("keydown-M", () => {
       this.reportDesktopInput();
-      this.toggleLogbookOverlay();
+      this.openDataPadTab("map");
     });
     keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
       event.preventDefault();
@@ -1877,20 +1988,19 @@ export class SpaceScene extends Phaser.Scene {
       }
       this.cycleTargetLock();
     });
-    keyboard.on("keydown-E", () => {
+    keyboard.on("keydown-F", () => {
       this.reportDesktopInput();
       if (this.isMenuOverlayVisible()) {
         return;
       }
-      this.tryOpenNearestStationComms();
+      this.tryHandlePrimaryInteraction();
     });
-
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
-      keyboard.removeAllListeners("keydown-L");
+      keyboard.removeAllListeners("keydown-M");
       keyboard.removeAllListeners("keydown-TAB");
       keyboard.removeAllListeners("keydown-T");
-      keyboard.removeAllListeners("keydown-E");
+      keyboard.removeAllListeners("keydown-F");
     });
   }
 
@@ -2509,16 +2619,12 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private canShipAttackPlayer(ship: SpaceFactionShip): boolean {
-    if (ship.factionId === "republic") {
-      return false;
-    }
-
     const faction = SPACE_FACTIONS[ship.factionId];
     return faction.attackPlayerByDefault || ship.provokedByPlayer;
   }
 
   private canPlayerDamageShip(ship: SpaceFactionShip): boolean {
-    return ship.factionId !== "republic";
+    return !this.playerDestroyed && !this.returningToShip && Boolean(ship);
   }
 
   private getWorldAudioMix(
@@ -2535,8 +2641,8 @@ export class SpaceScene extends Phaser.Scene {
     const distanceFactor = Phaser.Math.Clamp(1 - (distance / maxDistance), 0, 1);
     const viewFactor = viewDistance <= 0
       ? 1
-      : Phaser.Math.Clamp(1 - (viewDistance / Math.max(this.cameras.main.width, this.cameras.main.height)), 0.18, 1);
-    const volume = Math.pow(distanceFactor, 1.25) * viewFactor;
+      : Phaser.Math.Clamp(1 - (viewDistance / Math.max(this.cameras.main.width, this.cameras.main.height)), 0.08, 1);
+    const volume = Math.pow(distanceFactor, 1.4) * viewFactor;
     if (volume <= 0.02) {
       return null;
     }
@@ -3000,17 +3106,19 @@ export class SpaceScene extends Phaser.Scene {
       return null;
     }
 
+    const orbitTimeMs = this.getOrbitTimeMs();
+
     if (kind === "planet") {
       const planet = this.galaxyPlanetsById.get(id);
       return planet
-        ? { kind, id, x: planet.x, y: planet.y, radius: this.getPlanetRenderRadius(planet) }
+        ? { kind, id, ...getGalaxyPlanetPositionAtTime(this.galaxyDefinition, planet, orbitTimeMs), radius: this.getPlanetRenderRadius(planet) }
         : null;
     }
 
     if (kind === "moon") {
       const moon = this.galaxyMoonsById.get(id);
       return moon
-        ? { kind, id, x: moon.x, y: moon.y, radius: this.getMoonRenderRadius(moon) }
+        ? { kind, id, ...getGalaxyMoonPositionAtTime(this.galaxyDefinition, moon, orbitTimeMs), radius: this.getMoonRenderRadius(moon) }
         : null;
     }
 
@@ -3100,6 +3208,25 @@ export class SpaceScene extends Phaser.Scene {
     );
   }
 
+  private getFormationSlotDistance(ship: SpaceFactionShip): number {
+    const leader = this.getPatrolLeader(ship);
+    if (!leader || leader.id === ship.id) {
+      return 0;
+    }
+
+    const slotTarget = this.getFormationSlotTarget(ship, leader);
+    return Phaser.Math.Distance.Between(ship.root.x, ship.root.y, slotTarget.x, slotTarget.y);
+  }
+
+  private getLeaderFormationLag(leader: SpaceFactionShip): number {
+    return this.factionShips.reduce((largestLag, ship) => {
+      if (ship.leaderId !== leader.id) {
+        return largestLag;
+      }
+      return Math.max(largestLag, this.getFormationSlotDistance(ship));
+    }, 0);
+  }
+
   private getShipTravelDirection(ship: SpaceFactionShip): Phaser.Math.Vector2 {
     if (ship.velocity.lengthSq() > 16) {
       return ship.velocity.clone().normalize();
@@ -3126,17 +3253,28 @@ export class SpaceScene extends Phaser.Scene {
     faction: (typeof SPACE_FACTIONS)[SpaceFactionId],
     dt: number,
   ): void {
+    let acceleration = faction.acceleration;
+    let maxSpeed = faction.maxSpeed;
+    const formationSlotDistance = this.getFormationSlotDistance(ship);
+    const leaderLag = ship.leaderId ? 0 : this.getLeaderFormationLag(ship);
+    if (formationSlotDistance > FORMATION_RECOVERY_DISTANCE) {
+      acceleration *= 1.22;
+      maxSpeed *= 1.18;
+    } else if (!ship.leaderId && leaderLag > FORMATION_RECOVERY_DISTANCE) {
+      maxSpeed *= 0.72;
+    }
+
     if (desiredDirection.lengthSq() > 0.0001) {
       const normalized = desiredDirection.clone().normalize();
-      ship.velocity.x += normalized.x * faction.acceleration * dt;
-      ship.velocity.y += normalized.y * faction.acceleration * dt;
+      ship.velocity.x += normalized.x * acceleration * dt;
+      ship.velocity.y += normalized.y * acceleration * dt;
       ship.velocity.scale(Math.max(0, 1 - (0.92 * dt)));
     } else {
       ship.velocity.scale(Math.max(0, 1 - (1.9 * dt)));
     }
 
-    if (ship.velocity.length() > faction.maxSpeed) {
-      ship.velocity.setLength(faction.maxSpeed);
+    if (ship.velocity.length() > maxSpeed) {
+      ship.velocity.setLength(maxSpeed);
     }
 
     ship.root.x += ship.velocity.x * dt;
@@ -3477,18 +3615,49 @@ export class SpaceScene extends Phaser.Scene {
 
     ship.hp -= damage;
     ship.flash = 1;
-    ship.aggressionTimer = AGGRESSION_DURATION;
-    if (source.kind === "player") {
-      ship.provokedByPlayer = true;
-    } else if (source.shipId && source.shipId !== ship.id) {
-      ship.provokedByShips.add(source.shipId);
-    }
+    this.provokeShip(ship, source);
+    this.propagateGroupAggro(ship, source);
 
     this.playWorldCue(ship.hp <= 0 ? "shield-break" : "shield-hit", ship.root.x, ship.root.y, ship.hp <= 0 ? 0.7 : 0.64);
 
     if (ship.hp <= 0) {
       this.destroyFactionShip(ship);
     }
+  }
+
+  private provokeShip(ship: SpaceFactionShip, source: SpaceDamageSource): void {
+    ship.aggressionTimer = AGGRESSION_DURATION;
+    if (source.kind === "player") {
+      ship.provokedByPlayer = true;
+      return;
+    }
+
+    if (source.shipId && source.shipId !== ship.id) {
+      ship.provokedByShips.add(source.shipId);
+    }
+  }
+
+  private propagateGroupAggro(targetShip: SpaceFactionShip, source: SpaceDamageSource): void {
+    const linkedGuardAnchor = targetShip.guardAnchor;
+    const allyAlertRadius = targetShip.factionId === "homeguard" ? 1800 : 820;
+    this.factionShips.forEach((ally) => {
+      if (ally.id === targetShip.id || ally.factionId !== targetShip.factionId) {
+        return;
+      }
+
+      const sameGroup = ally.groupId === targetShip.groupId;
+      const sameGuardAnchor = Boolean(
+        linkedGuardAnchor
+        && ally.guardAnchor
+        && Phaser.Math.Distance.Between(linkedGuardAnchor.x, linkedGuardAnchor.y, ally.guardAnchor.x, ally.guardAnchor.y) <= 140,
+      );
+      const nearby = Phaser.Math.Distance.Between(targetShip.root.x, targetShip.root.y, ally.root.x, ally.root.y) <= allyAlertRadius;
+      if (!sameGroup && !sameGuardAnchor && !nearby) {
+        return;
+      }
+
+      this.provokeShip(ally, source);
+    });
   }
 
   private destroyFactionShip(ship: SpaceFactionShip): void {
@@ -3534,6 +3703,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     this.playerHull -= amount;
+    this.syncPlayerHullToSession();
     this.playerFlash = 1;
     retroSfx.play(this.playerHull <= 0 ? "shield-break" : "shield-hit", {
       volume: this.playerHull <= 0 ? 0.82 : 0.72,
@@ -3675,11 +3845,19 @@ export class SpaceScene extends Phaser.Scene {
       : "None";
     const autoAim = gameSession.settings.controls.autoAim;
     const autoFire = gameSession.settings.controls.autoFire;
-    const stationStatus = stationInteraction
-      ? stationInteraction.inRange
-        ? `Station ${stationInteraction.station.name} | Press E to hail`
-        : `Nearest station ${stationInteraction.station.name} | Dist ${Math.round(stationInteraction.distance)}`
-      : "No station comm link nearby";
+    const stationStatus = landingReady
+      ? `Mission world ${missionPlanet?.name ?? "target"} | Press F to land`
+      : stationInteraction
+        ? stationInteraction.inRange
+          ? `Station ${stationInteraction.station.name} | Press F to hail`
+          : `Nearest station ${stationInteraction.station.name} | Dist ${Math.round(stationInteraction.distance)}`
+        : "No station comm link nearby";
+    const interactionAvailable = landingReady || Boolean(stationInteraction?.inRange);
+    const interactionLabel = landingReady
+      ? "Land"
+      : stationInteraction?.inRange
+        ? "Comms"
+        : "Interact";
 
     this.routeText?.setText(trackedMission
       ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
@@ -3692,7 +3870,7 @@ export class SpaceScene extends Phaser.Scene {
     this.coordinateText?.setText(missionPlanet
       ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : `REGION ${regionLabel}`}\nHYPER ${hyperdriveStatus}`
       : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : "STATION none nearby"}\nHYPER ${hyperdriveStatus}`);
-    this.returnButton?.setLabel(landingReady ? "Land On Planet" : "Return To Ship");
+    this.returnButton?.setLabel("Return To Ship");
     this.attackButton?.setLabel("Attack");
     this.attackButton?.setCooldownProgress(0);
     this.attackButton?.setInputEnabled(this.touchMode && !touchLocked && !hyperdriveCombatLocked);
@@ -3702,10 +3880,10 @@ export class SpaceScene extends Phaser.Scene {
     this.abilityOneButton?.setLabel(this.getHyperdriveTouchLabel());
     this.abilityOneButton?.setCooldownProgress(this.getHyperdriveTouchProgress());
     this.abilityOneButton?.setInputEnabled(this.touchMode && !touchLocked && this.hyperdrive.state !== "cooldown");
-    this.abilityTwoButton?.setLabel("Comms");
+    this.abilityTwoButton?.setLabel(interactionLabel);
     this.abilityTwoButton?.setCooldownProgress(0);
-    this.abilityTwoButton?.setEnabled(Boolean(stationInteraction?.inRange));
-    this.abilityTwoButton?.setInputEnabled(this.touchMode && !touchLocked && Boolean(stationInteraction?.inRange));
+    this.abilityTwoButton?.setEnabled(interactionAvailable);
+    this.abilityTwoButton?.setInputEnabled(this.touchMode && !touchLocked && interactionAvailable);
     this.activeStationViews.forEach((stationView, stationId) => {
       const station = this.galaxyStationsById.get(stationId);
       const isNearestStation = stationInteraction?.station.id === stationId;
@@ -3725,6 +3903,9 @@ export class SpaceScene extends Phaser.Scene {
       if (station) {
         this.stationOverlay.update(this.buildStationOverlayState(station));
       }
+    }
+    if (this.galaxyMapOverlay?.isVisible()) {
+      this.galaxyMapOverlay.refresh();
     }
     this.syncSceneOverlayChrome();
     this.hudRefreshTimerMs = HUD_REFRESH_INTERVAL_MS;
@@ -3915,6 +4096,19 @@ export class SpaceScene extends Phaser.Scene {
     };
   }
 
+  private tryHandlePrimaryInteraction(): void {
+    if (this.playerDestroyed || this.returningToShip || this.isMenuOverlayVisible()) {
+      return;
+    }
+
+    if (this.canLandOnTrackedMissionPlanet()) {
+      this.landAtMissionPlanet();
+      return;
+    }
+
+    this.tryOpenNearestStationComms();
+  }
+
   private tryOpenNearestStationComms(): void {
     if (this.playerDestroyed || this.returningToShip) {
       return;
@@ -3949,6 +4143,8 @@ export class SpaceScene extends Phaser.Scene {
       this.stationOverlayStatusText = "Repair bay confirms all systems are already nominal.";
     } else {
       this.stationOverlayStatusText = `Repair complete. ${result.cost} credits transferred.`;
+      this.restorePlayerHullFromSession();
+      this.playerFlash = 0;
       retroSfx.play("shield-recharge", { volume: 0.42, pan: 0 });
     }
 
@@ -4127,15 +4323,6 @@ export class SpaceScene extends Phaser.Scene {
         ? `${missionPlanet.name}\nLANDING WINDOW OPEN`
         : `${missionPlanet.name}\n${Math.round(missionDistance)} units`)
       .setVisible(true);
-  }
-
-  private attemptExitSpace(): void {
-    if (this.canLandOnTrackedMissionPlanet()) {
-      this.landAtMissionPlanet();
-      return;
-    }
-
-    this.returnToShip();
   }
 
   private landAtMissionPlanet(): void {

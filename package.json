@@ -1,7 +1,7 @@
 {
   "name": "loe-col",
   "private": true,
-  "version": "0.0.78",
+  "version": "0.0.79",
   "type": "module",
   "scripts": {
     "dev": "vite",

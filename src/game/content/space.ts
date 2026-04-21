@@ -316,10 +316,10 @@ export const SHIP_HYPERDRIVE_CONFIG: ShipHyperdriveConfig = {
 };
 
 export const SHIP_RADAR_CONFIG: ShipRadarConfig = {
-  range: 2200,
-  width: 278,
-  height: 78,
-  sweepSpeedDegPerSec: 112,
+  range: 1880,
+  width: 304,
+  height: 88,
+  sweepSpeedDegPerSec: 84,
   sweepWidthDeg: 14,
   memoryFadeMs: 1400,
   memoryClearMs: 2400,
@@ -676,10 +676,11 @@ function canPlaceFormation(
   sector: GalaxySectorConfig,
   config: SpaceWorldConfig,
   radius: number,
+  galaxyDefinition?: GalaxyDefinition | null,
 ): boolean {
   return points.every((point) => (
     isPointInSectorBounds(point, sector, config)
-    && !isPointNearAnySpawn(point, config.shipSpawnSafeRadius)
+    && !isPointNearAnySpawn(point, config.shipSpawnSafeRadius, galaxyDefinition)
     && canPlaceShipSeed(seeds, point.x, point.y, radius, 150)
   ));
 }
@@ -944,10 +945,14 @@ function createDistantSeed(
   });
 }
 
-function isPointNearAnySpawn(point: GalaxyPoint, safeRadius: number): boolean {
+function isPointNearAnySpawn(
+  point: GalaxyPoint,
+  safeRadius: number,
+  galaxyDefinition?: GalaxyDefinition | null,
+): boolean {
   const safeRadiusSq = safeRadius * safeRadius;
   return GALAXY_SECTORS.some((sector) => {
-    const spawn = getGalaxySpawnPointForRace(sector.raceId);
+    const spawn = getGalaxySpawnPointForRace(sector.raceId, galaxyDefinition);
     const dx = point.x - spawn.x;
     const dy = point.y - spawn.y;
     return (dx * dx) + (dy * dy) < safeRadiusSq;
@@ -965,7 +970,7 @@ function createSpaceFieldSeedsInternal(
   const createId = (): string => `field-${fieldIndex++}`;
 
   GALAXY_SECTORS.forEach((sector) => {
-    const spawn = getGalaxySpawnPointForRace(sector.raceId);
+    const spawn = getGalaxySpawnPointForRace(sector.raceId, galaxyDefinition);
     for (let clusterIndex = 0; clusterIndex < config.nearbyObjectCount; clusterIndex += 1) {
       const center = pickSpawnClusterCenter(spawn, config, () => rng.next());
       const clusterSeeds = createFieldClusterSeeds(center, config, seeds, () => rng.next(), createId, galaxyDefinition, {
@@ -1073,7 +1078,7 @@ function createSpaceFactionShipSeedsInternal(
             ? randomBetween(() => rng.next(), 0, Math.PI * 2)
             : Math.atan2(headingDeltaY, headingDeltaX);
           const formationPoints = formationOffsets.map((offset) => rotateFormationOffset(anchor, heading, offset.x, offset.y));
-          if (!canPlaceFormation(seeds, formationPoints, galaxySector, config, faction.radius)) {
+          if (!canPlaceFormation(seeds, formationPoints, galaxySector, config, faction.radius, galaxyDefinition)) {
             continue;
           }
 

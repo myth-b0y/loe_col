@@ -215,7 +215,7 @@ try {
   };
 
   assert(localRadarState.radar, "Radar state was missing from the space snapshot");
-  assert(localRadarState.radar.range === 2200,
+  assert(localRadarState.radar.range === 1880,
     `Radar range drifted from the tuned value: ${JSON.stringify(localRadarState.radar)}`);
 
   const spaceSeeds = await getSpaceSeeds(page);
