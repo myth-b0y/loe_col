@@ -79,6 +79,9 @@ export type GalaxyZoneRecord = {
   sectorId: string;
   coreSectorId: string;
   ringId: GalaxyRingId;
+  territoryPoints: GalaxyPoint[];
+  anchorWeight: number;
+  isPrimeWorldZone: boolean;
   currentControllerId: GalaxyZoneControllerId;
   zoneState: GalaxyZoneState;
   zoneCaptureProgress: number;
@@ -207,11 +210,19 @@ type GalaxySystemCluster = {
 const STAR_COLORS = [0xffffff, 0xe4f1ff, 0xa4d2ff, 0xffe9ae] as const;
 const DEFAULT_PLAYER_RACE_ID: RaceId = "olydran";
 const ACTIVE_SYSTEM_RING_IDS = ["inner", "second", "third", "outer"] as const;
-const GALAXY_SYSTEM_MIN_DISTANCE = 1720;
+const GALAXY_SYSTEM_MIN_DISTANCE_BY_RING: Record<Exclude<GalaxyRingId, "deep-space">, number> = {
+  inner: 1880,
+  second: 2080,
+  third: 2320,
+  outer: 2480,
+};
 const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
 const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR = 0.42;
+const GALAXY_ZONE_POLYGON_STEPS = 28;
+const GALAXY_ZONE_CLIP_EPSILON = 0.0001;
 const GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND = 0.12;
 const GALAXY_MOON_ORBIT_DEGREES_PER_SECOND = 0.18;
 const GALAXY_STATION_RADIUS = 180;
@@ -1035,11 +1046,28 @@ function createRingClustersForSector(
   return clusters;
 }
 
-function canPlaceSystem(point: GalaxyPoint, systems: GalaxySystemRecord[]): boolean {
+function getSystemPlacementMinDistance(ringId: Exclude<GalaxyRingId, "deep-space">): number {
+  return GALAXY_SYSTEM_MIN_DISTANCE_BY_RING[ringId];
+}
+
+function getPairwiseSystemPlacementDistance(
+  ringId: Exclude<GalaxyRingId, "deep-space">,
+  otherRingId: Exclude<GalaxyRingId, "deep-space">,
+): number {
+  return Math.max(getSystemPlacementMinDistance(ringId), getSystemPlacementMinDistance(otherRingId));
+}
+
+function canPlaceSystem(
+  point: GalaxyPoint,
+  ringId: Exclude<GalaxyRingId, "deep-space">,
+  systems: GalaxySystemRecord[],
+): boolean {
   return systems.every((system) => {
     const dx = system.x - point.x;
     const dy = system.y - point.y;
-    return (dx * dx) + (dy * dy) >= GALAXY_SYSTEM_MIN_DISTANCE * GALAXY_SYSTEM_MIN_DISTANCE;
+    const otherRingId = system.ringId === "deep-space" ? "outer" : system.ringId;
+    const minimumDistance = getPairwiseSystemPlacementDistance(ringId, otherRingId);
+    return (dx * dx) + (dy * dy) >= minimumDistance * minimumDistance;
   });
 }
 
@@ -1090,7 +1118,7 @@ function createCandidateSystemPoint(
         bestCandidate = point;
         bestCandidateDistanceSq = nearestDistanceSq;
       }
-      if (canPlaceSystem(point, systems)) {
+      if (canPlaceSystem(point, ringId, systems)) {
         return point;
       }
     }
@@ -1107,7 +1135,7 @@ function createCandidateSystemPoint(
       bestCandidate = point;
       bestCandidateDistanceSq = nearestDistanceSq;
     }
-    if (canPlaceSystem(point, systems)) {
+    if (canPlaceSystem(point, ringId, systems)) {
       return point;
     }
   }
@@ -1186,9 +1214,48 @@ function createPlanetsForSystem(
   }
 }
 
-function assignHomeworlds(planets: GalaxyPlanetRecord[]): GalaxyHomeworldRecord[] {
+function getNearestSystemDistanceForHomeworldCandidate(
+  system: GalaxySystemRecord | undefined,
+  systems: GalaxySystemRecord[],
+): number {
+  if (!system) {
+    return 0;
+  }
+
+  return systems.reduce((nearestDistance, otherSystem) => {
+    if (otherSystem.id === system.id || otherSystem.sectorId !== system.sectorId) {
+      return nearestDistance;
+    }
+    const dx = otherSystem.x - system.x;
+    const dy = otherSystem.y - system.y;
+    return Math.min(nearestDistance, Math.sqrt((dx * dx) + (dy * dy)));
+  }, Number.POSITIVE_INFINITY);
+}
+
+function getHomeworldIsolationPenalty(
+  system: GalaxySystemRecord | undefined,
+  systems: GalaxySystemRecord[],
+): number {
+  const nearestDistance = getNearestSystemDistanceForHomeworldCandidate(system, systems);
+  if (!Number.isFinite(nearestDistance)) {
+    return 0;
+  }
+
+  const thirdRingSpacing = getSystemPlacementMinDistance("third");
+  const normalizedIsolation = clamp01((nearestDistance - thirdRingSpacing) / (thirdRingSpacing * 1.55));
+  return (1 - normalizedIsolation) * 0.34;
+}
+
+function assignHomeworlds(
+  planets: GalaxyPlanetRecord[],
+  systems: GalaxySystemRecord[],
+): GalaxyHomeworldRecord[] {
   const homeworlds: GalaxyHomeworldRecord[] = [];
   const thirdRing = getGalaxyRingByIdLocal("third");
+  const systemsById = systems.reduce<Map<string, GalaxySystemRecord>>((lookup, system) => {
+    lookup.set(system.id, system);
+    return lookup;
+  }, new Map());
 
   GALAXY_SECTORS.forEach((sector) => {
     const spec = GALAXY_HOMEWORLD_SPECS[sector.raceId];
@@ -1207,7 +1274,13 @@ function assignHomeworlds(planets: GalaxyPlanetRecord[]): GalaxyHomeworldRecord[
     });
     const candidatePool = (safeCandidates.length > 0 ? safeCandidates : candidates.length > 0 ? candidates : fallbackCandidates)
       .slice()
-      .sort((left, right) => getHomeworldCandidateScore(left, sector) - getHomeworldCandidateScore(right, sector));
+      .sort((left, right) => {
+        const leftScore = getHomeworldCandidateScore(left, sector)
+          + getHomeworldIsolationPenalty(systemsById.get(left.systemId), systems);
+        const rightScore = getHomeworldCandidateScore(right, sector)
+          + getHomeworldIsolationPenalty(systemsById.get(right.systemId), systems);
+        return leftScore - rightScore;
+      });
     const homeworldPlanet = candidatePool[0] ?? fallbackCandidates[0];
     homeworldPlanet.isHomeworld = true;
     homeworldPlanet.homeworldRaceId = sector.raceId;
@@ -1315,15 +1388,279 @@ function assignMissionTargets(
   return assignments;
 }
 
-function createZonesForSystems(systems: GalaxySystemRecord[]): GalaxyZoneRecord[] {
+function roundZoneCoordinate(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function getZoneAnchorWeight(
+  system: GalaxySystemRecord,
+  sectorSystems: GalaxySystemRecord[],
+  homeworldSystemIds: Set<string>,
+  weightFactor = GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR,
+): number {
+  if (!homeworldSystemIds.has(system.id)) {
+    return 0;
+  }
+
+  const nearestDistanceSq = sectorSystems.reduce((nearest, otherSystem) => {
+    if (otherSystem.id === system.id) {
+      return nearest;
+    }
+    const dx = otherSystem.x - system.x;
+    const dy = otherSystem.y - system.y;
+    return Math.min(nearest, (dx * dx) + (dy * dy));
+  }, Number.POSITIVE_INFINITY);
+
+  if (!Number.isFinite(nearestDistanceSq)) {
+    return 0;
+  }
+
+  return Math.round(nearestDistanceSq * weightFactor);
+}
+
+function getSectorPolygonPointObjects(sector: GalaxySectorConfig): GalaxyPoint[] {
+  const polygon = getGalaxySectorPolygonPoints(sector, GALAXY_ZONE_POLYGON_STEPS);
+  const points: GalaxyPoint[] = [];
+  for (let index = 0; index < polygon.length; index += 2) {
+    points.push({
+      x: polygon[index],
+      y: polygon[index + 1],
+    });
+  }
+  return points;
+}
+
+function normalizeZonePolygonPoints(points: GalaxyPoint[]): GalaxyPoint[] {
+  if (points.length <= 0) {
+    return [];
+  }
+
+  const normalized: GalaxyPoint[] = [];
+  points.forEach((point) => {
+    const roundedPoint = {
+      x: roundZoneCoordinate(point.x),
+      y: roundZoneCoordinate(point.y),
+    };
+    const previous = normalized[normalized.length - 1];
+    if (!previous || Math.abs(previous.x - roundedPoint.x) > GALAXY_ZONE_CLIP_EPSILON || Math.abs(previous.y - roundedPoint.y) > GALAXY_ZONE_CLIP_EPSILON) {
+      normalized.push(roundedPoint);
+    }
+  });
+
+  if (normalized.length >= 2) {
+    const first = normalized[0];
+    const last = normalized[normalized.length - 1];
+    if (Math.abs(first.x - last.x) <= GALAXY_ZONE_CLIP_EPSILON && Math.abs(first.y - last.y) <= GALAXY_ZONE_CLIP_EPSILON) {
+      normalized.pop();
+    }
+  }
+
+  return normalized;
+}
+
+function isPointInsideHalfPlane(
+  point: GalaxyPoint,
+  normalX: number,
+  normalY: number,
+  constant: number,
+): boolean {
+  return ((normalX * point.x) + (normalY * point.y)) <= constant + GALAXY_ZONE_CLIP_EPSILON;
+}
+
+function getHalfPlaneIntersectionPoint(
+  start: GalaxyPoint,
+  end: GalaxyPoint,
+  normalX: number,
+  normalY: number,
+  constant: number,
+): GalaxyPoint {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const denominator = (normalX * deltaX) + (normalY * deltaY);
+  if (Math.abs(denominator) <= GALAXY_ZONE_CLIP_EPSILON) {
+    return { x: end.x, y: end.y };
+  }
+
+  const startValue = (normalX * start.x) + (normalY * start.y);
+  const t = (constant - startValue) / denominator;
+  return {
+    x: start.x + (deltaX * t),
+    y: start.y + (deltaY * t),
+  };
+}
+
+function clipPolygonAgainstHalfPlane(
+  polygon: GalaxyPoint[],
+  normalX: number,
+  normalY: number,
+  constant: number,
+): GalaxyPoint[] {
+  if (polygon.length < 3) {
+    return [];
+  }
+
+  const clipped: GalaxyPoint[] = [];
+  for (let index = 0; index < polygon.length; index += 1) {
+    const current = polygon[index];
+    const next = polygon[(index + 1) % polygon.length];
+    const currentInside = isPointInsideHalfPlane(current, normalX, normalY, constant);
+    const nextInside = isPointInsideHalfPlane(next, normalX, normalY, constant);
+
+    if (currentInside && nextInside) {
+      clipped.push(next);
+      continue;
+    }
+
+    if (currentInside && !nextInside) {
+      clipped.push(getHalfPlaneIntersectionPoint(current, next, normalX, normalY, constant));
+      continue;
+    }
+
+    if (!currentInside && nextInside) {
+      clipped.push(getHalfPlaneIntersectionPoint(current, next, normalX, normalY, constant));
+      clipped.push(next);
+    }
+  }
+
+  return normalizeZonePolygonPoints(clipped);
+}
+
+function isPointOnZoneSegment(point: GalaxyPoint, start: GalaxyPoint, end: GalaxyPoint): boolean {
+  const cross = ((point.y - start.y) * (end.x - start.x)) - ((point.x - start.x) * (end.y - start.y));
+  if (Math.abs(cross) > 0.001) {
+    return false;
+  }
+
+  const dot = ((point.x - start.x) * (end.x - start.x)) + ((point.y - start.y) * (end.y - start.y));
+  if (dot < -0.001) {
+    return false;
+  }
+
+  const squaredLength = ((end.x - start.x) * (end.x - start.x)) + ((end.y - start.y) * (end.y - start.y));
+  return dot <= squaredLength + 0.001;
+}
+
+function isPointInsideZonePolygon(point: GalaxyPoint, polygon: GalaxyPoint[]): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const currentPoint = polygon[index];
+    const previousPoint = polygon[previous];
+    if (isPointOnZoneSegment(point, previousPoint, currentPoint)) {
+      return true;
+    }
+
+    const intersects = ((currentPoint.y > point.y) !== (previousPoint.y > point.y))
+      && (point.x < (((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) / ((previousPoint.y - currentPoint.y) || 0.000001)) + currentPoint.x);
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+function buildZoneTerritoryPolygon(
+  system: GalaxySystemRecord,
+  sectorSystems: GalaxySystemRecord[],
+  sectorPolygon: GalaxyPoint[],
+  zoneAnchorWeights: Map<string, number>,
+): GalaxyPoint[] {
+  const anchorWeight = zoneAnchorWeights.get(system.id) ?? 0;
+  let polygon = sectorPolygon.map((point) => ({ ...point }));
+
+  sectorSystems.forEach((otherSystem) => {
+    if (otherSystem.id === system.id) {
+      return;
+    }
+
+    const otherWeight = zoneAnchorWeights.get(otherSystem.id) ?? 0;
+    const normalX = 2 * (otherSystem.x - system.x);
+    const normalY = 2 * (otherSystem.y - system.y);
+    const constant = (
+      (otherSystem.x * otherSystem.x)
+      + (otherSystem.y * otherSystem.y)
+      - (system.x * system.x)
+      - (system.y * system.y)
+      + anchorWeight
+      - otherWeight
+    );
+    polygon = clipPolygonAgainstHalfPlane(polygon, normalX, normalY, constant);
+  });
+
+  return normalizeZonePolygonPoints(polygon);
+}
+
+function createZonesForSystems(
+  systems: GalaxySystemRecord[],
+  homeworlds: GalaxyHomeworldRecord[],
+): GalaxyZoneRecord[] {
+  const homeworldSystemIds = new Set(homeworlds.map((homeworld) => homeworld.systemId));
+  const systemsBySectorId = systems.reduce<Map<string, GalaxySystemRecord[]>>((lookup, system) => {
+    const bucket = lookup.get(system.sectorId);
+    if (bucket) {
+      bucket.push(system);
+      return lookup;
+    }
+    lookup.set(system.sectorId, [system]);
+    return lookup;
+  }, new Map());
+
+  const zoneGeometryBySystemId = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
+  GALAXY_SECTORS.forEach((sector) => {
+    const sectorSystems = systemsBySectorId.get(sector.id) ?? [];
+    if (sectorSystems.length <= 0) {
+      return;
+    }
+
+    const sectorPolygon = getSectorPolygonPointObjects(sector);
+    const zoneAnchorWeights = new Map<string, number>();
+    const sectorZoneGeometry = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
+    let weightFactor = GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR;
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      zoneAnchorWeights.clear();
+      sectorZoneGeometry.clear();
+      sectorSystems.forEach((system) => {
+        zoneAnchorWeights.set(system.id, getZoneAnchorWeight(system, sectorSystems, homeworldSystemIds, weightFactor));
+      });
+      sectorSystems.forEach((system) => {
+        const territoryPoints = buildZoneTerritoryPolygon(system, sectorSystems, sectorPolygon, zoneAnchorWeights);
+        sectorZoneGeometry.set(system.id, {
+          territoryPoints,
+          anchorWeight: zoneAnchorWeights.get(system.id) ?? 0,
+          isPrimeWorldZone: homeworldSystemIds.has(system.id),
+        });
+      });
+
+      const allAnchorsContained = sectorSystems.every((system) => {
+        const territoryPoints = sectorZoneGeometry.get(system.id)?.territoryPoints ?? [];
+        return territoryPoints.length >= 3 && isPointInsideZonePolygon(system, territoryPoints);
+      });
+
+      if (allAnchorsContained) {
+        break;
+      }
+
+      weightFactor *= 0.72;
+    }
+
+    sectorZoneGeometry.forEach((geometry, systemId) => {
+      zoneGeometryBySystemId.set(systemId, geometry);
+    });
+  });
+
   return systems.map((system) => {
     const sector = getGalaxySectorById(system.sectorId) ?? GALAXY_SECTORS[0];
+    const zoneGeometry = zoneGeometryBySystemId.get(system.id);
     return {
       id: system.zoneId,
       systemId: system.id,
       sectorId: system.sectorId,
       coreSectorId: system.sectorId,
       ringId: system.ringId,
+      territoryPoints: zoneGeometry?.territoryPoints ?? [],
+      anchorWeight: zoneGeometry?.anchorWeight ?? 0,
+      isPrimeWorldZone: zoneGeometry?.isPrimeWorldZone ?? false,
       currentControllerId: sector.raceId,
       zoneState: "stable",
       zoneCaptureProgress: 0,
@@ -1393,8 +1730,8 @@ export function createGalaxyDefinition(seed = createGalaxySeed()): GalaxyDefinit
     createSectorSystems(sector, sectorIndex, systems, planets, rng, usedSystemNames, usedPlanetNames);
   });
 
-  const zones = createZonesForSystems(systems);
-  const homeworlds = assignHomeworlds(planets);
+  const homeworlds = assignHomeworlds(planets, systems);
+  const zones = createZonesForSystems(systems, homeworlds);
   const moons: GalaxyMoonRecord[] = [];
   createMoonsForPlanets(planets, homeworlds, moons, rng);
   const stations = createStationsForSectors(systems, new SeededRandom((seed ^ GALAXY_STATION_SEED_SALT) >>> 0));
@@ -1449,6 +1786,7 @@ export function normalizeGalaxyDefinition(
   fallbackSeed?: number,
 ): GalaxyDefinition {
   if (isGalaxyDefinitionLike(galaxy)) {
+    const homeworlds = galaxy.homeworlds.map((homeworld) => ({ ...homeworld }));
     const systems = galaxy.systems.map((system) => ({
       ...system,
       zoneId: typeof system.zoneId === "string" && system.zoneId.length > 0
@@ -1460,7 +1798,7 @@ export function normalizeGalaxyDefinition(
       lookup.set(system.id, system);
       return lookup;
     }, new Map());
-    const generatedZones = createZonesForSystems(systems);
+    const generatedZones = createZonesForSystems(systems, homeworlds);
     const sourceZones = Array.isArray(galaxy.zones) ? galaxy.zones : [];
     const planets = galaxy.planets.map((planet) => {
       const system = systemsById.get(planet.systemId);
@@ -1496,6 +1834,9 @@ export function normalizeGalaxyDefinition(
         sectorId: system.sectorId,
         coreSectorId: system.sectorId,
         ringId: system.ringId,
+        territoryPoints: [],
+        anchorWeight: 0,
+        isPrimeWorldZone: false,
         currentControllerId: (getGalaxySectorById(system.sectorId) ?? GALAXY_SECTORS[0]).raceId,
         zoneState: "stable" as const,
         zoneCaptureProgress: 0,
@@ -1509,6 +1850,15 @@ export function normalizeGalaxyDefinition(
           ? sourceZone.coreSectorId
           : fallbackZone.coreSectorId,
         ringId: system.ringId,
+        territoryPoints: Array.isArray(sourceZone?.territoryPoints) && sourceZone.territoryPoints.length >= 3
+          ? normalizeZonePolygonPoints(sourceZone.territoryPoints)
+          : fallbackZone.territoryPoints,
+        anchorWeight: typeof sourceZone?.anchorWeight === "number" && Number.isFinite(sourceZone.anchorWeight)
+          ? sourceZone.anchorWeight
+          : fallbackZone.anchorWeight,
+        isPrimeWorldZone: typeof sourceZone?.isPrimeWorldZone === "boolean"
+          ? sourceZone.isPrimeWorldZone
+          : fallbackZone.isPrimeWorldZone,
         currentControllerId: isGalaxyZoneControllerId(sourceZone?.currentControllerId)
           ? sourceZone.currentControllerId
           : fallbackZone.currentControllerId,
@@ -1545,7 +1895,7 @@ export function normalizeGalaxyDefinition(
           ),
         };
       }),
-      homeworlds: galaxy.homeworlds.map((homeworld) => ({ ...homeworld })),
+      homeworlds,
       stations: Array.isArray(galaxy.stations) && galaxy.stations.length > 0
         ? galaxy.stations.map((station) => ({ ...station }))
         : createStationsForSectors(systems, new SeededRandom((galaxy.seed ^ GALAXY_STATION_SEED_SALT) >>> 0)),

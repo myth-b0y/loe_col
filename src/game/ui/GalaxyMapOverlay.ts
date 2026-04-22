@@ -576,26 +576,115 @@ export class GalaxyMapOverlay {
     viewBounds: Phaser.Geom.Rectangle,
     selectedSectorId: string | null,
   ): void {
-    galaxy.zones.forEach((zone) => {
-      if (selectedSectorId && zone.sectorId !== selectedSectorId) {
+    const sectorIds = selectedSectorId
+      ? [selectedSectorId]
+      : GALAXY_SECTORS.map((sector) => sector.id);
+
+    sectorIds.forEach((sectorId) => {
+      const zones = galaxy.zones.filter((zone) => zone.sectorId === sectorId && zone.territoryPoints.length >= 3);
+      const sector = GALAXY_SECTORS.find((candidate) => candidate.id === sectorId);
+      if (!sector || zones.length <= 0) {
         return;
       }
 
-      const system = this.cachedSystemsById.get(zone.systemId);
-      if (!system || !this.isWorldPointVisible(system, viewBounds, 280)) {
+      const controllerIds = [...new Set(zones.map((zone) => zone.currentControllerId))];
+      if (controllerIds.length === 1) {
+        const palette = getGalaxyControllerPalette(controllerIds[0], sector.id);
+        const polygon = getGalaxySectorPolygonPoints(sector);
+        const mapped = this.mapFlatPolygonPoints(polygon, viewBounds);
+        this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.36 : 0.22);
+        this.staticMap.fillPoints(mapped, true);
         return;
       }
 
-      const palette = getGalaxyControllerPalette(zone.currentControllerId, zone.coreSectorId);
-      const point = this.worldToMapWithBounds(system, viewBounds);
-      const cellSize = selectedSectorId ? 14 : 9;
-      const inset = cellSize * 0.5;
+      zones.forEach((zone) => {
+        const palette = getGalaxyControllerPalette(zone.currentControllerId, zone.coreSectorId);
+        const mapped = this.mapPointPolygon(zone.territoryPoints, viewBounds);
+        this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.34 : 0.2);
+        this.staticMap.fillPoints(mapped, true);
+      });
 
-      this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.2 : 0.12);
-      this.staticMap.fillRect(point.x - inset, point.y - inset, cellSize, cellSize);
-      this.staticMap.lineStyle(selectedSectorId ? 1.4 : 1, palette.borderColor, selectedSectorId ? 0.42 : 0.24);
-      this.staticMap.strokeRect(point.x - inset, point.y - inset, cellSize, cellSize);
+      const boundarySegments = this.getZoneBoundarySegments(zones);
+      this.staticMap.lineStyle(selectedSectorId ? 2.2 : 1.4, 0xf4fbff, selectedSectorId ? 0.7 : 0.5);
+      boundarySegments.forEach((segment) => {
+        const start = this.worldToMapWithBounds(segment.start, viewBounds);
+        const end = this.worldToMapWithBounds(segment.end, viewBounds);
+        this.staticMap.lineBetween(start.x, start.y, end.x, end.y);
+      });
     });
+  }
+
+  private mapPointPolygon(
+    polygon: Array<{ x: number; y: number }>,
+    viewBounds: Phaser.Geom.Rectangle,
+  ): Phaser.Geom.Point[] {
+    return polygon.map((point) => {
+      const mapped = this.worldToMapWithBounds(point, viewBounds);
+      return new Phaser.Geom.Point(mapped.x, mapped.y);
+    });
+  }
+
+  private mapFlatPolygonPoints(
+    polygon: number[],
+    viewBounds: Phaser.Geom.Rectangle,
+  ): Phaser.Geom.Point[] {
+    const mapped: Phaser.Geom.Point[] = [];
+    for (let index = 0; index < polygon.length; index += 2) {
+      const point = this.worldToMapWithBounds({ x: polygon[index], y: polygon[index + 1] }, viewBounds);
+      mapped.push(new Phaser.Geom.Point(point.x, point.y));
+    }
+    return mapped;
+  }
+
+  private getZoneBoundarySegments(
+    zones: GalaxyDefinition["zones"],
+  ): Array<{ start: { x: number; y: number }; end: { x: number; y: number } }> {
+    const segmentMap = new Map<string, {
+      start: { x: number; y: number };
+      end: { x: number; y: number };
+      controllers: string[];
+    }>();
+
+    zones.forEach((zone) => {
+      for (let index = 0; index < zone.territoryPoints.length; index += 1) {
+        const start = zone.territoryPoints[index];
+        const end = zone.territoryPoints[(index + 1) % zone.territoryPoints.length];
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        if ((dx * dx) + (dy * dy) <= 1) {
+          continue;
+        }
+
+        const key = this.getZoneBoundaryKey(start, end);
+        const existing = segmentMap.get(key);
+        if (existing) {
+          existing.controllers.push(zone.currentControllerId);
+          continue;
+        }
+
+        segmentMap.set(key, {
+          start,
+          end,
+          controllers: [zone.currentControllerId],
+        });
+      }
+    });
+
+    return [...segmentMap.values()]
+      .filter((segment) => segment.controllers.length >= 2 && new Set(segment.controllers).size > 1)
+      .map((segment) => ({
+        start: segment.start,
+        end: segment.end,
+      }));
+  }
+
+  private getZoneBoundaryKey(
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+  ): string {
+    const left = `${Math.round(start.x * 10) / 10},${Math.round(start.y * 10) / 10}`;
+    const right = `${Math.round(end.x * 10) / 10},${Math.round(end.y * 10) / 10}`;
+    return left < right ? `${left}|${right}` : `${right}|${left}`;
   }
 
   private drawGeneratedBodies(
@@ -767,19 +856,13 @@ export class GalaxyMapOverlay {
 
   private drawSector(sector: GalaxySectorConfig, viewBounds: Phaser.Geom.Rectangle): void {
     const polygon = getGalaxySectorPolygonPoints(sector);
-    const mapped: number[] = [];
-    for (let index = 0; index < polygon.length; index += 2) {
-      const point = this.worldToMapWithBounds({ x: polygon[index], y: polygon[index + 1] }, viewBounds);
-      mapped.push(point.x, point.y);
-    }
-
-    const shape = new Phaser.Geom.Polygon(mapped);
+    const mapped = this.mapFlatPolygonPoints(polygon, viewBounds);
     const isSelectedSector = sector.id === this.selectedSectorId;
     const controllerPalette = this.getSectorControllerPalette(sector);
-    this.staticMap.fillStyle(controllerPalette.color, isSelectedSector ? 0.26 : 0.14);
-    this.staticMap.fillPoints(shape.points, true);
+    this.staticMap.fillStyle(0x07111b, isSelectedSector ? 0.7 : 0.44);
+    this.staticMap.fillPoints(mapped, true);
     this.staticMap.lineStyle(isSelectedSector ? 3 : 2, controllerPalette.borderColor, isSelectedSector ? 0.94 : 0.54);
-    this.staticMap.strokePoints(shape.points, true);
+    this.staticMap.strokePoints(mapped, true);
   }
 
   private getSectorControllerPalette(sector: GalaxySectorConfig): ReturnType<typeof getGalaxyControllerPalette> {
@@ -856,7 +939,7 @@ export class GalaxyMapOverlay {
           missionPlanet && getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).id === selectedSector.id
             ? `Mission planet in sector: ${missionPlanet.name}`
             : "Mission planet is outside this sector detail view.",
-          "Zone cells are datapad-only strategic overlays on top of the same coordinates used in live space.",
+          "Zone territories are datapad-only strategic overlays on top of the same coordinates used in live space.",
         ].join("\n")
       : missionPlanet
         ? [
@@ -880,8 +963,8 @@ export class GalaxyMapOverlay {
       : "Hover over the map to inspect live galaxy coordinates.");
 
     this.footerText.setText(selectedSector
-      ? "Sector detail is a zoomed view of the same playable galaxy. Zone cells are map-only and do not place tile overlays into flight space."
-      : "This is the same coordinate space used by the playable space map. The datapad adds strategic zone cells without turning space into a tile overlay.");
+      ? "Sector detail is a zoomed view of the same playable galaxy. Zone territories are map-only and do not place tile overlays into flight space."
+      : "This is the same coordinate space used by the playable space map. The datapad adds strategic territorial partitions without turning space into a tile overlay.");
 
     this.markerMap.clear();
     this.homeworldLabel.setVisible(false);
@@ -976,8 +1059,7 @@ export class GalaxyMapOverlay {
       if (selectedSectorId && zone.sectorId !== selectedSectorId) {
         return false;
       }
-      const system = this.cachedSystemsById.get(zone.systemId);
-      return Boolean(system && this.isWorldPointVisible(system, viewBounds, 280));
+      return this.isWorldPolygonVisible(zone.territoryPoints, viewBounds);
     }).length;
 
     return {
@@ -1085,6 +1167,31 @@ export class GalaxyMapOverlay {
       && point.x <= (viewBounds.right + padding)
       && point.y >= (viewBounds.y - padding)
       && point.y <= (viewBounds.bottom + padding);
+  }
+
+  private isWorldPolygonVisible(
+    polygon: Array<{ x: number; y: number }>,
+    viewBounds: Phaser.Geom.Rectangle,
+  ): boolean {
+    if (polygon.length <= 0) {
+      return false;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    polygon.forEach((point) => {
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    });
+
+    return maxX >= viewBounds.x
+      && minX <= viewBounds.right
+      && maxY >= viewBounds.y
+      && minY <= viewBounds.bottom;
   }
 
   private getSectorAtWorldPoint(point: { x: number; y: number }): GalaxySectorConfig | null {

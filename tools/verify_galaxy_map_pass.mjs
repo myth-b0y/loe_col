@@ -16,6 +16,9 @@ const HOMEWORLD_RING_MARGIN = 520;
 const HOMEWORLD_EDGE_MARGIN_DEG = 7;
 const SECOND_RING_ID = "second";
 const THIRD_RING_ID = "third";
+const GALAXY_VERTICAL_SCALE = 0.72;
+const GALAXY_SECTOR_INNER_RADIUS = 9600;
+const GALAXY_SECTOR_OUTER_RADIUS = 30000;
 const SECTOR_ARCS = {
   "olydran-expanse": { startAngleDeg: 338, endAngleDeg: 28 },
   "aaruian-reach": { startAngleDeg: 28, endAngleDeg: 78 },
@@ -51,7 +54,7 @@ function expandWrappedArc(startAngleDeg, endAngleDeg) {
 
 function getGalaxyRadialDistance(point) {
   const dx = point.x - 40000;
-  const dy = (point.y - 40000) / 0.72;
+  const dy = (point.y - 40000) / GALAXY_VERTICAL_SCALE;
   return Math.sqrt((dx * dx) + (dy * dy));
 }
 
@@ -59,12 +62,97 @@ function getAngularMarginFromSectorEdge(point, sectorId) {
   const sector = SECTOR_ARCS[sectorId];
   const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
   const dx = point.x - 40000;
-  const dy = (point.y - 40000) / 0.72;
+  const dy = (point.y - 40000) / GALAXY_VERTICAL_SCALE;
   let angleDeg = wrapAngleDegrees((Math.atan2(dy, dx) * 180) / Math.PI);
   if (angleDeg < start) {
     angleDeg += 360;
   }
   return Math.min(angleDeg - start, end - angleDeg);
+}
+
+function getPolygonArea(points) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return 0;
+  }
+
+  let area = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    area += (current.x * next.y) - (next.x * current.y);
+  }
+
+  return Math.abs(area) * 0.5;
+}
+
+function isPointOnSegment(point, start, end, epsilon = 0.001) {
+  const cross = ((point.y - start.y) * (end.x - start.x)) - ((point.x - start.x) * (end.y - start.y));
+  if (Math.abs(cross) > epsilon) {
+    return false;
+  }
+
+  const dot = ((point.x - start.x) * (end.x - start.x)) + ((point.y - start.y) * (end.y - start.y));
+  if (dot < -epsilon) {
+    return false;
+  }
+
+  const squaredLength = ((end.x - start.x) ** 2) + ((end.y - start.y) ** 2);
+  return dot <= squaredLength + epsilon;
+}
+
+function isPointInsidePolygon(point, polygon) {
+  let sign = 0;
+  for (let index = 0; index < polygon.length; index += 1) {
+    const start = polygon[index];
+    const end = polygon[(index + 1) % polygon.length];
+    if (isPointOnSegment(point, start, end)) {
+      return true;
+    }
+
+    const cross = ((end.x - start.x) * (point.y - start.y)) - ((end.y - start.y) * (point.x - start.x));
+    if (Math.abs(cross) <= 0.001) {
+      continue;
+    }
+
+    const currentSign = Math.sign(cross);
+    if (sign === 0) {
+      sign = currentSign;
+      continue;
+    }
+
+    if (currentSign !== sign) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function getExpectedSectorArea(sectorId) {
+  const sector = SECTOR_ARCS[sectorId];
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  const theta = ((end - start) * Math.PI) / 180;
+  return 0.5
+    * GALAXY_VERTICAL_SCALE
+    * ((GALAXY_SECTOR_OUTER_RADIUS * GALAXY_SECTOR_OUTER_RADIUS) - (GALAXY_SECTOR_INNER_RADIUS * GALAXY_SECTOR_INNER_RADIUS))
+    * theta;
+}
+
+function isPointInsidePolygonBounds(point, polygon) {
+  const bounds = polygon.reduce((acc, current) => ({
+    minX: Math.min(acc.minX, current.x),
+    maxX: Math.max(acc.maxX, current.x),
+    minY: Math.min(acc.minY, current.y),
+    maxY: Math.max(acc.maxY, current.y),
+  }), {
+    minX: Number.POSITIVE_INFINITY,
+    maxX: Number.NEGATIVE_INFINITY,
+    minY: Number.POSITIVE_INFINITY,
+    maxY: Number.NEGATIVE_INFINITY,
+  });
+  return point.x >= bounds.minX
+    && point.x <= bounds.maxX
+    && point.y >= bounds.minY
+    && point.y <= bounds.maxY;
 }
 
 async function ensureDir(dir) {
@@ -74,6 +162,25 @@ async function ensureDir(dir) {
 async function getState(page) {
   const raw = await page.evaluate(() => window.render_game_to_text?.() ?? "{}");
   return JSON.parse(raw);
+}
+
+async function getRadarSnapshot(page) {
+  const state = await getState(page);
+  return state.snapshot?.radar ?? null;
+}
+
+async function waitForRadarContact(page, predicate, timeoutMs = 6000) {
+  const start = Date.now();
+  let lastRadar = null;
+  while ((Date.now() - start) < timeoutMs) {
+    lastRadar = await getRadarSnapshot(page);
+    if (lastRadar && predicate(lastRadar)) {
+      return lastRadar;
+    }
+    await page.waitForTimeout(140);
+  }
+
+  throw new Error(`Timed out waiting for expected radar contact. Last radar state: ${JSON.stringify(lastRadar)}`);
 }
 
 async function waitForScene(page, sceneKey, timeoutMs = 8000) {
@@ -243,6 +350,8 @@ try {
     assert(count === systemCount, `Sector ${sectorId} should have one zone per system, got zones=${count} systems=${systemCount}`);
   });
   const systemsById = new Map((hubMapState.galaxy?.systems ?? []).map((system) => [system.id, system]));
+  const zonesById = new Map((hubMapState.galaxy?.zones ?? []).map((zone) => [zone.id, zone]));
+  const zoneAreaBySector = new Map();
   (hubMapState.galaxy?.systems ?? []).forEach((system) => {
     assert(typeof system.zoneId === "string" && system.zoneId.length > 0,
       `Generated system ${system.id} is missing a zone id`);
@@ -264,12 +373,34 @@ try {
       `Zone ${zone.id} should start owned by its sector race, got ${zone.currentControllerId}`);
     assert(zone.zoneState === "stable", `Zone ${zone.id} should start stable, got ${zone.zoneState}`);
     assert(zone.zoneCaptureProgress === 0, `Zone ${zone.id} should start with zero capture progress, got ${zone.zoneCaptureProgress}`);
+    assert(Array.isArray(zone.territoryPoints) && zone.territoryPoints.length >= 3,
+      `Zone ${zone.id} should store a full territorial polygon, got ${JSON.stringify(zone.territoryPoints)}`);
+    assert(isPointInsidePolygonBounds({ x: system.x, y: system.y }, zone.territoryPoints),
+      `Zone ${zone.id} territorial bounds do not contain its system anchor ${system.id}`);
+    const zoneArea = getPolygonArea(zone.territoryPoints);
+    zoneAreaBySector.set(zone.sectorId, (zoneAreaBySector.get(zone.sectorId) ?? 0) + zoneArea);
+  });
+  Object.entries(SECTOR_ARCS).forEach(([sectorId]) => {
+    const actualArea = zoneAreaBySector.get(sectorId) ?? 0;
+    const expectedArea = getExpectedSectorArea(sectorId);
+    const areaRatioDelta = Math.abs(actualArea - expectedArea) / expectedArea;
+    assert(areaRatioDelta <= 0.05,
+      `Zone territories should fully partition sector ${sectorId}; got ${actualArea} vs expected ${expectedArea}`);
   });
   const homeworldPlanetsById = new Map((hubMapState.homeworldPlanets ?? []).map((planet) => [planet.id, planet]));
   (hubMapState.galaxy?.homeworlds ?? []).forEach((homeworld) => {
     const planet = homeworldPlanetsById.get(homeworld.planetId);
     assert(planet, `Homeworld planet record missing for ${homeworld.name}`);
     assert(planet.ringId === THIRD_RING_ID, `Homeworld ${homeworld.name} is not in the third ring`);
+    const zone = zonesById.get(`${homeworld.systemId}-zone`);
+    const sectorZoneCount = hubMapState.galaxySummary?.zoneCountsBySector?.[homeworld.sectorId] ?? 1;
+    const averageZoneArea = (zoneAreaBySector.get(homeworld.sectorId) ?? 0) / sectorZoneCount;
+    assert(zone?.isPrimeWorldZone === true,
+      `Prime world zone flag was not preserved for ${homeworld.name}: ${JSON.stringify(zone)}`);
+    assert((zone?.anchorWeight ?? 0) > 0,
+      `Prime world zone should carry an expanded territory weight for ${homeworld.name}: ${JSON.stringify(zone)}`);
+    assert(getPolygonArea(zone?.territoryPoints ?? []) > averageZoneArea * 1.02,
+      `Prime world zone should be larger than an average sector zone for ${homeworld.name}`);
   });
   const placeholderNamePattern = /^(Ashari|Aaruian|Nevari|Rakkan|Svarin|Olydran|Elsari|Averna|Elysiem|Nevaeh|Olympos|Nar'Akka|A'aru|Svaria)-/i;
   (hubMapState.galaxy?.planets ?? [])
@@ -356,7 +487,7 @@ try {
   assert(sectorDetailState.detailText.includes("Zones "),
     `Sector detail should now expose zone readout text: ${sectorDetailState.detailText}`);
   assert((sectorDetailState.mapDebug?.visibleZones ?? 0) > 0,
-    "Sector detail view did not report any visible zone cells");
+    "Sector detail view did not report any visible territorial zones");
   assert((sectorDetailState.mapDebug?.visiblePlanets ?? 0) > 0,
     "Sector detail view did not report any visible generated planets");
   assert((sectorDetailState.mapDebug?.visibleMoons ?? 0) > 0,
@@ -497,6 +628,10 @@ try {
   await page.waitForTimeout(180);
   await capture(page, "space-homeworld-guard.png");
 
+  const homeworldRadarState = await waitForRadarContact(page, (radar) => (
+    radar.contacts.some((contact) => contact.kind === "star")
+  ));
+
   const homeworldSpaceState = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     return {
@@ -509,10 +644,10 @@ try {
     `Homeworld system did not activate in space: ${JSON.stringify(homeworldSpaceState.snapshot)}`);
   assert((homeworldSpaceState.snapshot?.activeFactionCounts?.homeguard ?? 0) > 0,
     `Homeworld guard fleet did not activate near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.activeFactionCounts)}`);
-  assert((homeworldSpaceState.snapshot?.radar?.contacts ?? []).some((contact) => contact.kind === "star"),
-    `Radar did not expose a nearby star contact near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.radar)}`);
-  assert((homeworldSpaceState.snapshot?.radar?.contacts ?? []).every((contact) => contact.kind !== "planet"),
-    `Radar should not show normal planets near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.radar)}`);
+  assert((homeworldRadarState?.contacts ?? []).some((contact) => contact.kind === "star"),
+    `Radar did not expose a nearby star contact near the home system: ${JSON.stringify(homeworldRadarState)}`);
+  assert((homeworldRadarState?.contacts ?? []).every((contact) => contact.kind !== "planet"),
+    `Radar should not show normal planets near the home system: ${JSON.stringify(homeworldRadarState)}`);
 
   await page.evaluate((shipPosition) => {
     const space = window.__loeGame?.scene.keys.space;
