@@ -21,6 +21,12 @@ import {
   type GalaxyStationRecord,
   type GalaxySystemRecord,
 } from "../content/galaxy";
+import {
+  advanceFactionForceProduction,
+  getFactionForceDebugSnapshot,
+  markFactionForceShipDestroyed,
+  type FactionForceState,
+} from "../content/factionForces";
 import { getMissionContract } from "../content/missions";
 import {
   SPACE_FACTIONS,
@@ -28,6 +34,7 @@ import {
   SHIP_RADAR_CONFIG,
   SPACE_WORLD_CONFIG,
   createShipHyperdriveSystemState,
+  createSpaceForceShipSeeds,
   createSpaceWorldDefinition,
   createSpacePatrolTarget,
   getShipHyperdriveTopSpeed,
@@ -114,6 +121,10 @@ type SpaceFactionShip = {
   customGlowColor: number | null;
   guardAnchor: Phaser.Math.Vector2 | null;
   guardRadius: number;
+  originPoolId: string | null;
+  originPoolKind: "zone" | "prime-world" | null;
+  originZoneId: string | null;
+  originSystemId: string | null;
   radius: number;
   hp: number;
   maxHp: number;
@@ -150,6 +161,10 @@ type SpaceFactionShipState = {
   guardAnchorX: number | null;
   guardAnchorY: number | null;
   guardRadius: number | null;
+  originPoolId: string | null;
+  originPoolKind: "zone" | "prime-world" | null;
+  originZoneId: string | null;
+  originSystemId: string | null;
   aimX: number;
   aimY: number;
   radius: number;
@@ -264,6 +279,7 @@ const DEEP_SPACE_OVERLAY_COLOR = 0x132033;
 const STATION_INTERACTION_BUFFER = 180;
 const SMUGGLER_ROUTE_WAIT_MIN_MS = 2200;
 const SMUGGLER_ROUTE_WAIT_MAX_MS = 4200;
+const FORCE_STATE_SYNC_INTERVAL_MS = 1000;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -425,6 +441,7 @@ export class SpaceScene extends Phaser.Scene {
   private aimDirection = new Phaser.Math.Vector2(1, 0);
   private pointerWorld = new Phaser.Math.Vector2();
   private galaxyDefinition!: GalaxyDefinition;
+  private forceState!: FactionForceState;
   private worldDefinition!: SpaceWorldDefinition;
   private currentSector!: GalaxySectorConfig;
   private currentRegionLabel = "";
@@ -440,6 +457,8 @@ export class SpaceScene extends Phaser.Scene {
   private galaxyStationsById = new Map<string, GalaxyStationRecord>();
   private fieldStates = new Map<string, SpaceFieldObjectState>();
   private shipStates = new Map<string, SpaceFactionShipState>();
+  private forceStateDirty = false;
+  private forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
   private backdropSectorOverlay?: Phaser.GameObjects.Rectangle;
   private backdropStarSeedsByCell = new Map<SpaceWorldCellKey, GalaxyStarSeed[]>();
   private activeBackdropCellKeys: SpaceWorldCellKey[] = [];
@@ -532,10 +551,12 @@ export class SpaceScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.galaxyDefinition = gameSession.getGalaxyDefinition();
+    this.forceState = gameSession.getFactionForceState();
     this.worldDefinition = createSpaceWorldDefinition(
       SPACE_WORLD_CONFIG,
       this.galaxyDefinition,
       Date.now() >>> 0,
+      this.forceState,
     );
     this.syncTrackedMissionPlanet();
     this.galaxySystemsByCell.clear();
@@ -548,6 +569,8 @@ export class SpaceScene extends Phaser.Scene {
     this.galaxyStationsById.clear();
     this.fieldStates.clear();
     this.shipStates.clear();
+    this.forceStateDirty = false;
+    this.forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
     this.backdropStarSeedsByCell.clear();
     this.activeBackdropCellKeys = [];
     this.activeBackdropStarCells.clear();
@@ -635,6 +658,7 @@ export class SpaceScene extends Phaser.Scene {
       gameSession.off("settings-changed", handleSettingsChanged);
       gameSession.off("input-mode-changed", syncInputMode);
       this.events.off(Phaser.Scenes.Events.RESUME, handleResume);
+      this.syncForceStateToSession();
       this.releaseTouchControls();
     });
   }
@@ -675,10 +699,12 @@ export class SpaceScene extends Phaser.Scene {
     this.updateCelestialMotion();
     this.updateFieldObjects(dt);
     this.updateFactionShips(dt);
+    this.updateForceProduction(delta);
     this.resolveFactionShipCollisions();
     this.updateProjectiles(dt);
     this.updateBurstParticles(dt);
     this.updateRadar(dt);
+    this.syncDirtyForceState(delta);
     if (this.hudRefreshTimerMs <= 0) {
       this.refreshHud();
       this.hudRefreshTimerMs = HUD_REFRESH_INTERVAL_MS;
@@ -1229,48 +1255,54 @@ export class SpaceScene extends Phaser.Scene {
       destroyed: false,
     }] as const)));
 
-    this.shipStates = new Map<string, SpaceFactionShipState>(this.worldDefinition.factionSeeds.map((seed) => {
-      const faction = SPACE_FACTIONS[seed.factionId];
-      const aimDirection = angleToDirection(seed.rotation);
-      return [seed.id, {
-        id: seed.id,
-        cellKey: seed.cellKey,
-        factionId: seed.factionId,
-        sectorId: seed.sectorId,
-        groupId: seed.groupId,
-        leaderId: seed.leaderId,
-        formationOffsetX: seed.formationOffsetX,
-        formationOffsetY: seed.formationOffsetY,
-        x: seed.x,
-        y: seed.y,
-        velocityX: seed.velocityX,
-        velocityY: seed.velocityY,
-        rotation: seed.rotation,
-        patrolX: seed.patrolX,
-        patrolY: seed.patrolY,
-        customColor: seed.customColor ?? null,
-        customTrimColor: seed.customTrimColor ?? null,
-        customGlowColor: seed.customGlowColor ?? null,
-        guardAnchorX: seed.guardAnchorX ?? null,
-        guardAnchorY: seed.guardAnchorY ?? null,
-        guardRadius: seed.guardRadius ?? null,
-        aimX: aimDirection.x,
-        aimY: aimDirection.y,
-        radius: faction.radius,
-        hp: faction.maxHull,
-        maxHp: faction.maxHull,
-        flash: 0,
-        fireCooldown: createInitialFactionFireCooldown(seed.id, faction.fireCooldown),
-        provokedByPlayer: false,
-        provokedByShips: [],
-        aggressionTimer: 0,
-        strafeSign: createInitialStrafeSign(seed.id),
-        routeTargetKind: null,
-        routeTargetId: null,
-        routeWaitRemainingMs: 0,
-        destroyed: false,
-      } satisfies SpaceFactionShipState] as const;
-    }));
+    this.shipStates = new Map<string, SpaceFactionShipState>(this.worldDefinition.factionSeeds.map((seed) => ([seed.id, this.createShipStateFromSeed(seed)] as const)));
+  }
+
+  private createShipStateFromSeed(seed: SpaceWorldDefinition["factionSeeds"][number]): SpaceFactionShipState {
+    const faction = SPACE_FACTIONS[seed.factionId];
+    const aimDirection = angleToDirection(seed.rotation);
+    return {
+      id: seed.id,
+      cellKey: seed.cellKey,
+      factionId: seed.factionId,
+      sectorId: seed.sectorId,
+      groupId: seed.groupId,
+      leaderId: seed.leaderId,
+      formationOffsetX: seed.formationOffsetX,
+      formationOffsetY: seed.formationOffsetY,
+      x: seed.x,
+      y: seed.y,
+      velocityX: seed.velocityX,
+      velocityY: seed.velocityY,
+      rotation: seed.rotation,
+      patrolX: seed.patrolX,
+      patrolY: seed.patrolY,
+      customColor: seed.customColor ?? null,
+      customTrimColor: seed.customTrimColor ?? null,
+      customGlowColor: seed.customGlowColor ?? null,
+      guardAnchorX: seed.guardAnchorX ?? null,
+      guardAnchorY: seed.guardAnchorY ?? null,
+      guardRadius: seed.guardRadius ?? null,
+      originPoolId: seed.originPoolId ?? null,
+      originPoolKind: seed.originPoolKind ?? null,
+      originZoneId: seed.originZoneId ?? null,
+      originSystemId: seed.originSystemId ?? null,
+      aimX: aimDirection.x,
+      aimY: aimDirection.y,
+      radius: faction.radius,
+      hp: faction.maxHull,
+      maxHp: faction.maxHull,
+      flash: 0,
+      fireCooldown: createInitialFactionFireCooldown(seed.id, faction.fireCooldown),
+      provokedByPlayer: false,
+      provokedByShips: [],
+      aggressionTimer: 0,
+      strafeSign: createInitialStrafeSign(seed.id),
+      routeTargetKind: null,
+      routeTargetId: null,
+      routeWaitRemainingMs: 0,
+      destroyed: false,
+    };
   }
 
   private syncActiveWorld(force = false): void {
@@ -1444,6 +1476,70 @@ export class SpaceScene extends Phaser.Scene {
     });
   }
 
+  private registerFactionSeed(seed: SpaceWorldDefinition["factionSeeds"][number]): void {
+    this.worldDefinition.factionSeeds.push(seed);
+    this.worldDefinition.factionSeedIndex[seed.id] = seed;
+    if (!this.worldDefinition.factionSeedsByCell[seed.cellKey]) {
+      this.worldDefinition.factionSeedsByCell[seed.cellKey] = [];
+    }
+    this.worldDefinition.factionSeedsByCell[seed.cellKey].push(seed);
+    this.worldDefinition.factionCounts[seed.factionId] += 1;
+  }
+
+  private spawnProducedForceShips(spawnedShipIds: string[]): void {
+    if (spawnedShipIds.length <= 0) {
+      return;
+    }
+
+    const seedLookup = new Map(
+      createSpaceForceShipSeeds(this.galaxyDefinition, this.forceState, SPACE_WORLD_CONFIG)
+        .filter((seed) => spawnedShipIds.includes(seed.id))
+        .map((seed) => ([seed.id, seed] as const)),
+    );
+
+    seedLookup.forEach((seed, shipId) => {
+      if (this.shipStates.has(shipId)) {
+        return;
+      }
+
+      this.registerFactionSeed(seed);
+      const state = this.createShipStateFromSeed(seed);
+      this.shipStates.set(shipId, state);
+      if (this.activeShipCellKeys.includes(state.cellKey)) {
+        this.factionShips.push(this.createFactionShip(state));
+      }
+    });
+  }
+
+  private updateForceProduction(deltaMs: number): void {
+    const productionUpdate = advanceFactionForceProduction(this.forceState, this.galaxyDefinition, deltaMs);
+    if (!productionUpdate.changed) {
+      return;
+    }
+
+    this.forceStateDirty = true;
+    this.spawnProducedForceShips(productionUpdate.spawnedShipIds);
+  }
+
+  private syncDirtyForceState(deltaMs: number): void {
+    this.forceStateSyncTimerMs = Math.max(0, this.forceStateSyncTimerMs - deltaMs);
+    if (!this.forceStateDirty || this.forceStateSyncTimerMs > 0) {
+      return;
+    }
+
+    this.syncForceStateToSession();
+  }
+
+  private syncForceStateToSession(): void {
+    if (!this.forceStateDirty) {
+      return;
+    }
+
+    gameSession.setFactionForceState(this.forceState);
+    this.forceStateDirty = false;
+    this.forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
+  }
+
   private captureFieldObjectState(fieldObject: SpaceFieldObject, destroyed = false): SpaceFieldObjectState {
     return {
       id: fieldObject.id,
@@ -1489,6 +1585,10 @@ export class SpaceScene extends Phaser.Scene {
       guardAnchorX: ship.guardAnchor?.x ?? null,
       guardAnchorY: ship.guardAnchor?.y ?? null,
       guardRadius: ship.guardRadius > 0 ? ship.guardRadius : null,
+      originPoolId: ship.originPoolId,
+      originPoolKind: ship.originPoolKind,
+      originZoneId: ship.originZoneId,
+      originSystemId: ship.originSystemId,
       aimX: ship.aimDirection.x,
       aimY: ship.aimDirection.y,
       radius: ship.radius,
@@ -1694,6 +1794,10 @@ export class SpaceScene extends Phaser.Scene {
         ? new Phaser.Math.Vector2(state.guardAnchorX, state.guardAnchorY)
         : null,
       guardRadius: state.guardRadius ?? 0,
+      originPoolId: state.originPoolId,
+      originPoolKind: state.originPoolKind,
+      originZoneId: state.originZoneId,
+      originSystemId: state.originSystemId,
       radius: faction.radius,
       hp: state.hp,
       maxHp: state.maxHp,
@@ -3675,6 +3779,11 @@ export class SpaceScene extends Phaser.Scene {
     const palette = this.getShipPalette(ship);
     const x = ship.root.x;
     const y = ship.root.y;
+    if (ship.originPoolId) {
+      if (markFactionForceShipDestroyed(this.forceState, ship.id)) {
+        this.forceStateDirty = true;
+      }
+    }
     this.shipStates.set(ship.id, this.captureFactionShipState(ship, true));
     this.clearShipTargetReferences(ship.id);
     ship.root.destroy(true);
@@ -4656,6 +4765,7 @@ export class SpaceScene extends Phaser.Scene {
       destroyedFactionShips: this.destroyedFactionShips,
       factionCounts: worldFactionCounts,
       activeFactionCounts,
+      production: getFactionForceDebugSnapshot(this.forceState, this.galaxyDefinition),
       activeFieldCellKeys: [...this.activeFieldCellKeys],
       activeShipCellKeys: [...this.activeShipCellKeys],
       activeBackdropStarCells: this.activeBackdropStarCells.size,

@@ -67,14 +67,31 @@ async function getSpaceSeeds(page) {
 
     const factionSeeds = space.worldDefinition?.factionSeeds ?? [];
     const fieldSeeds = space.worldDefinition?.fieldSeeds ?? [];
+    const liveShips = space.factionShips ?? [];
     const galaxy = window.__loeSession?.getGalaxyDefinition?.() ?? null;
     const pickSeed = (factionId) => factionSeeds.find((seed) => seed.factionId === factionId) ?? null;
+    const pickLiveShip = (factionId) => {
+      const liveShip = liveShips.find((ship) => ship.factionId === factionId) ?? null;
+      if (!liveShip) {
+        return null;
+      }
+
+      const palette = liveShip.customColor ?? liveShip.root?.first?.fillColor ?? 0xffffff;
+      return {
+        id: liveShip.id,
+        factionId: liveShip.factionId,
+        x: liveShip.root.x,
+        y: liveShip.root.y,
+        radius: liveShip.radius,
+        color: palette,
+      };
+    };
     const homeworld = galaxy?.homeworlds?.[0] ?? null;
     const homeSystem = galaxy?.systems?.find?.((system) => system.id === homeworld?.systemId) ?? null;
     return {
-      enemy: pickSeed("pirate"),
-      guard: pickSeed("homeguard"),
-      neutral: pickSeed("smuggler"),
+      enemy: pickLiveShip("pirate") ?? pickSeed("pirate"),
+      guard: pickLiveShip("homeguard") ?? pickSeed("homeguard"),
+      neutral: pickLiveShip("smuggler") ?? pickSeed("smuggler"),
       asteroid: fieldSeeds.find((seed) => seed.kind === "asteroid") ?? null,
       largeAsteroid: fieldSeeds.find((seed) => seed.kind === "asteroid" && seed.isLarge) ?? null,
       homeSystem,
@@ -90,8 +107,8 @@ async function focusOnContact(page, contact, filename, freezeTarget = true) {
       return null;
     }
 
-    const offsetX = -1200;
-    const offsetY = 480;
+    const offsetX = -760;
+    const offsetY = 260;
     const playerX = Math.round(contact.x + offsetX);
     const playerY = Math.round(contact.y + offsetY);
 
@@ -164,14 +181,31 @@ async function focusOnContact(page, contact, filename, freezeTarget = true) {
     });
 
     if (freezeTarget) {
-      const targetShip = space.factionShips.find((ship) => ship.id === contact.id);
+      const targetShip = space.factionShips.find((ship) => ship.id === contact.id)
+        ?? (
+          typeof contact.factionId === "string"
+            ? space.factionShips.find((ship) => ship.factionId === contact.factionId)
+            : null
+        );
       if (targetShip) {
+        targetShip.root.setPosition(contact.x, contact.y);
         targetShip.velocity.set(0, 0);
-        targetShip.patrolTarget.set(targetShip.root.x, targetShip.root.y);
+        targetShip.patrolTarget.set(contact.x, contact.y);
         targetShip.fireCooldown = Math.max(targetShip.fireCooldown, 999);
         targetShip.aggressionTimer = 0;
         targetShip.provokedByPlayer = false;
         targetShip.provokedByShips.clear();
+        const targetShipState = space.shipStates?.get?.(targetShip.id) ?? null;
+        if (targetShipState) {
+          targetShipState.x = contact.x;
+          targetShipState.y = contact.y;
+          targetShipState.velocityX = 0;
+          targetShipState.velocityY = 0;
+          targetShipState.patrolX = contact.x;
+          targetShipState.patrolY = contact.y;
+          targetShipState.destroyed = false;
+          targetShipState.cellKey = nextCellKey;
+        }
       }
     }
 
@@ -194,7 +228,95 @@ async function focusOnContact(page, contact, filename, freezeTarget = true) {
     throw new Error(`Could not focus radar on contact: ${JSON.stringify(contact)}`);
   }
 
-  await page.waitForTimeout(2100);
+  await page.waitForTimeout(900);
+  await capture(page, filename);
+  return result;
+}
+
+async function focusOnFactionShip(page, factionId, filename, anchor = null) {
+  const result = await page.evaluate(({ factionId, anchor }) => {
+    const space = window.__loeGame?.scene.keys.space;
+    if (!space) {
+      return null;
+    }
+
+    const targetState = [...(space.shipStates?.values?.() ?? [])]
+      .find((state) => state.factionId === factionId && !state.destroyed)
+      ?? null;
+    if (!targetState) {
+      return null;
+    }
+
+    const targetX = anchor?.x ?? targetState.x;
+    const targetY = anchor?.y ?? targetState.y;
+    const playerX = Math.round(targetX - 260);
+    const playerY = Math.round(targetY + 80);
+    const cellSize = 3200;
+    const nextCellKey = `${Math.max(0, Math.floor(targetX / cellSize))},${Math.max(0, Math.floor(targetY / cellSize))}`;
+
+    space.shipRoot.setPosition(playerX, playerY);
+    space.shipVelocity.set(0, 0);
+    space.playerHull = 999;
+    space.playerFlash = 0;
+    space.playerDestroyed = false;
+    space.returningToShip = false;
+
+    targetState.x = targetX;
+    targetState.y = targetY;
+    targetState.velocityX = 0;
+    targetState.velocityY = 0;
+    targetState.patrolX = targetX;
+    targetState.patrolY = targetY;
+    targetState.destroyed = false;
+    targetState.cellKey = nextCellKey;
+
+    window.__loeSession?.setShipSpacePosition?.(playerX, playerY);
+    space.cameras.main.centerOn(playerX, playerY);
+    space.syncActiveWorld?.(true);
+
+    const liveShip = space.factionShips.find((ship) => ship.id === targetState.id)
+      ?? space.factionShips.find((ship) => ship.factionId === factionId)
+      ?? null;
+    if (!liveShip) {
+      return null;
+    }
+
+    liveShip.root.setPosition(targetX, targetY);
+    liveShip.velocity.set(0, 0);
+    liveShip.patrolTarget.set(targetX, targetY);
+    liveShip.fireCooldown = Math.max(liveShip.fireCooldown, 999);
+    liveShip.aggressionTimer = 0;
+    liveShip.provokedByPlayer = false;
+    liveShip.provokedByShips.clear();
+
+    const liveShipState = space.shipStates?.get?.(liveShip.id) ?? null;
+    if (liveShipState) {
+      liveShipState.x = targetX;
+      liveShipState.y = targetY;
+      liveShipState.velocityX = 0;
+      liveShipState.velocityY = 0;
+      liveShipState.patrolX = targetX;
+      liveShipState.patrolY = targetY;
+      liveShipState.destroyed = false;
+      liveShipState.cellKey = nextCellKey;
+    }
+
+    space.refreshHud?.();
+    return {
+      factionId,
+      shipId: liveShip.id,
+      targetX: Math.round(targetX),
+      targetY: Math.round(targetY),
+      playerX: Math.round(playerX),
+      playerY: Math.round(playerY),
+    };
+  }, { factionId, anchor });
+
+  if (!result) {
+    throw new Error(`Could not focus radar on faction ship: ${factionId}`);
+  }
+
+  await page.waitForTimeout(400);
   await capture(page, filename);
   return result;
 }
@@ -244,16 +366,13 @@ try {
   assert(localRadarState.radar.range === 1880,
     `Radar range drifted from the tuned value: ${JSON.stringify(localRadarState.radar)}`);
 
-  const spaceSeeds = await getSpaceSeeds(page);
-  assert(spaceSeeds, "Could not read space seed data for radar verification");
-  assert(spaceSeeds.enemy, "Could not resolve an enemy faction seed for radar verification");
-  assert(spaceSeeds.guard, "Could not resolve a homeguard seed for radar verification");
-  assert(spaceSeeds.neutral, "Could not resolve a neutral smuggler seed for radar verification");
-  assert(spaceSeeds.asteroid, "Could not resolve an asteroid seed for radar verification");
-  assert(spaceSeeds.homeSystem, "Could not resolve a generated home system for radar verification");
-  assert(spaceSeeds.missionPlanet, "Could not resolve a tracked mission world for radar verification");
+  const initialSpaceSeeds = await getSpaceSeeds(page);
+  assert(initialSpaceSeeds, "Could not read space seed data for radar verification");
+  assert(initialSpaceSeeds.asteroid, "Could not resolve an asteroid seed for radar verification");
+  assert(initialSpaceSeeds.homeSystem, "Could not resolve a generated home system for radar verification");
+  assert(initialSpaceSeeds.missionPlanet, "Could not resolve a tracked mission world for radar verification");
 
-  const asteroidMoveState = await focusOnContact(page, spaceSeeds.asteroid, "space-radar-asteroid.png");
+  const asteroidMoveState = await focusOnContact(page, initialSpaceSeeds.asteroid, "space-radar-asteroid.png");
   const asteroidRadarState = await waitForRadarContact(page, (radar) => (
     radar.contacts.some((contact) => contact.kind === "asteroid")
   ));
@@ -261,7 +380,7 @@ try {
   assert(asteroidRadarState.contacts.some((contact) => contact.kind === "asteroid"),
     `Radar did not report an asteroid contact after moving into a field: ${JSON.stringify(asteroidRadarState.contacts)}`);
 
-  const enemyMoveState = await focusOnContact(page, spaceSeeds.enemy, "space-radar-enemy.png");
+  const enemyMoveState = await focusOnFactionShip(page, "pirate", "space-radar-enemy.png");
   const enemyRadarState = await waitForRadarContact(page, (radar) => (
     radar.contacts.some((contact) => contact.kind === "enemy-ship")
   ));
@@ -270,7 +389,14 @@ try {
   assert(enemyRadarState.contacts.some((contact) => contact.kind === "enemy-ship"),
     `Radar did not report an enemy ship contact: ${JSON.stringify(enemyRadarState.contacts)}`);
 
-  const guardMoveState = await focusOnContact(page, spaceSeeds.guard, "space-radar-homeguard.png");
+  const guardMoveState = await focusOnFactionShip(
+    page,
+    "homeguard",
+    "space-radar-homeguard.png",
+    initialSpaceSeeds.homeSystem
+      ? { x: initialSpaceSeeds.homeSystem.x, y: initialSpaceSeeds.homeSystem.y }
+      : null,
+  );
   const guardRadarState = await waitForRadarContact(page, (radar) => (
     radar.contacts.some((contact) => contact.kind === "friendly-ship")
       && radar.contacts.some((contact) => contact.kind === "star")
@@ -284,7 +410,7 @@ try {
   assert(guardRadarState.contacts.every((contact) => contact.kind !== "planet"),
     `Radar should not show ordinary planets near a home system: ${JSON.stringify(guardRadarState.contacts)}`);
 
-  const neutralMoveState = await focusOnContact(page, spaceSeeds.neutral, "space-radar-neutral.png");
+  const neutralMoveState = await focusOnFactionShip(page, "smuggler", "space-radar-neutral.png");
   const neutralRadarState = await waitForRadarContact(page, (radar) => (
     radar.contacts.some((contact) => contact.kind === "neutral-ship")
   ));
@@ -294,13 +420,13 @@ try {
     `Radar did not report a neutral ship contact: ${JSON.stringify(neutralRadarState.contacts)}`);
 
   const missionPlanetMoveState = await focusOnContact(page, {
-    id: `mission:${spaceSeeds.missionPlanet?.missionId ?? "unknown"}`,
+    id: `mission:${initialSpaceSeeds.missionPlanet?.missionId ?? "unknown"}`,
     kind: "mission-planet",
-    label: spaceSeeds.missionPlanet?.name ?? "Mission Planet",
-    x: spaceSeeds.missionPlanet?.x ?? 0,
-    y: spaceSeeds.missionPlanet?.y ?? 0,
-    radius: spaceSeeds.missionPlanet?.radius ?? 0,
-    color: spaceSeeds.missionPlanet?.color ?? 0xffffff,
+    label: initialSpaceSeeds.missionPlanet?.name ?? "Mission Planet",
+    x: initialSpaceSeeds.missionPlanet?.x ?? 0,
+    y: initialSpaceSeeds.missionPlanet?.y ?? 0,
+    radius: initialSpaceSeeds.missionPlanet?.radius ?? 0,
+    color: initialSpaceSeeds.missionPlanet?.color ?? 0xffffff,
   }, "space-radar-mission.png", false);
   const missionRadarState = await waitForRadarContact(page, (radar) => (
     radar.contacts.some((contact) => contact.kind === "mission-planet")
@@ -319,7 +445,7 @@ try {
   const result = {
     url: URL,
     localRadarState,
-    spaceSeeds,
+    initialSpaceSeeds,
     asteroidMoveState,
     asteroidRadarState,
     enemyMoveState,

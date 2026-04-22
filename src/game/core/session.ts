@@ -22,6 +22,11 @@ import {
   type GalaxyZoneRecord,
 } from "../content/galaxy";
 import {
+  createFactionForceState,
+  normalizeFactionForceState,
+  type FactionForceState,
+} from "../content/factionForces";
+import {
   DEFAULT_SQUAD_ASSIGNMENTS,
   canCompanionOccupySlot,
   getCompanionDefinition,
@@ -319,7 +324,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 9;
+  version: 10;
   meta: {
     lastSavedAt: string | null;
   };
@@ -350,6 +355,7 @@ export type SaveData = {
     unlockedMissionIds: string[];
   };
   galaxy: GalaxyDefinition;
+  forces: FactionForceState;
   ship: ShipState;
 };
 
@@ -428,7 +434,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
   const profileRaceId: RaceId = "olydran";
   const galaxy = createGalaxyDefinition(galaxySeed);
   return {
-    version: 9,
+    version: 10,
     meta: {
       lastSavedAt: null,
     },
@@ -459,6 +465,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
       unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
     },
     galaxy,
+    forces: createFactionForceState(galaxy),
     ship: createDefaultShipState(profileRaceId, galaxy),
   };
 }
@@ -545,7 +552,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 9 as const,
+    version: 10 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -561,6 +568,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...parsed.progression,
     },
     galaxy: normalizedGalaxy,
+    forces: normalizeFactionForceState(parsed.forces as Partial<FactionForceState> | undefined, normalizedGalaxy),
     ship: {
       ...createDefaultShipState(profile.raceId, normalizedGalaxy),
       ...parsed.ship,
@@ -797,6 +805,17 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getGalaxyDefinition(): GalaxyDefinition {
     return clone(this.saveData.galaxy);
+  }
+
+  getFactionForceState(): FactionForceState {
+    return clone(this.saveData.forces);
+  }
+
+  setFactionForceState(forceState: FactionForceState, emit = false): void {
+    this.saveData.forces = normalizeFactionForceState(forceState, this.saveData.galaxy);
+    if (emit) {
+      this.emit("save-changed", this.saveData);
+    }
   }
 
   getGalaxyStations(): GalaxyStationRecord[] {

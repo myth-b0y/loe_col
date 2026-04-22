@@ -75,6 +75,7 @@ try {
   const spawnSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     const ships = [...space.worldDefinition.factionSeeds];
+    const debugSnapshot = space.getDebugSnapshot();
     const groupSizes = ships.reduce((acc, ship) => {
       const key = `${ship.factionId}:${ship.groupId}`;
       if (!acc[key]) {
@@ -94,10 +95,11 @@ try {
       return acc;
     }, {});
     return {
-      factionCounts: space.getDebugSnapshot().factionCounts,
+      factionCounts: debugSnapshot.factionCounts,
       sectorCounts,
       shipCount: ships.length,
       groupSizes: Object.values(groupSizes),
+      production: debugSnapshot.production,
     };
   });
 
@@ -113,8 +115,20 @@ try {
     `Pirate groups should remain 2-3 ship nuisance packs: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "pirate"))}`);
   assert(spawnSummary.groupSizes.filter((group) => group.factionId === "smuggler").every((group) => group.size === 1),
     `Smuggler groups should remain solo routes: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "smuggler"))}`);
-  assert(spawnSummary.groupSizes.filter((group) => group.factionId === "homeguard").every((group) => group.size === 4 || group.size === 1),
+  assert(spawnSummary.groupSizes.filter((group) => group.factionId === "homeguard").every((group) => group.size >= 1 && group.size <= 4),
     `Home guard groups should remain compact local formations: ${JSON.stringify(spawnSummary.groupSizes.filter((group) => group.factionId === "homeguard"))}`);
+  assert(spawnSummary.production, "Production snapshot missing from debug state");
+  assert(spawnSummary.production.zoneShipPoolCap === 5, `Zone ship pool cap should be 5: ${JSON.stringify(spawnSummary.production)}`);
+  assert(spawnSummary.production.primeWorldBaseShipPoolCap === 10, `Prime world base ship pool cap should be 10: ${JSON.stringify(spawnSummary.production)}`);
+  assert(spawnSummary.production.primeWorldZoneBonusPerControlledZone === 1, `Prime world zone bonus should be +1 per controlled zone: ${JSON.stringify(spawnSummary.production)}`);
+  const zonePools = spawnSummary.production.pools.filter((pool) => pool.kind === "zone");
+  const primePools = spawnSummary.production.pools.filter((pool) => pool.kind === "prime-world");
+  assert(zonePools.length === spawnSummary.production.totalPools - primePools.length && zonePools.length > 0, `Zone pools should exist for controlled systems: ${JSON.stringify(spawnSummary.production)}`);
+  assert(primePools.length === 7, `Expected one prime-world pool per race: ${JSON.stringify(spawnSummary.production)}`);
+  assert(zonePools.every((pool) => pool.capacity === 5), `Every controlled zone should expose a local 5-ship pool: ${JSON.stringify(zonePools)}`);
+  assert(primePools.every((pool) => pool.capacity === 10 + pool.controlledZoneCount), `Prime world capacity should equal 10 plus controlled zones: ${JSON.stringify(primePools)}`);
+  assert(primePools.every((pool) => pool.activeShipCount === 3 && pool.desiredDefenseShips === 3), `Prime world defense should be filled first to 3 ships in this baseline: ${JSON.stringify(primePools)}`);
+  assert(zonePools.every((pool) => pool.activeShipCount === 0), `Zone defense pools should remain reserved until the defense-AI phase: ${JSON.stringify(zonePools.slice(0, 8))}`);
 
   const behaviorCheck = await page.evaluate((cellSize) => {
     const space = window.__loeGame?.scene.keys.space;
