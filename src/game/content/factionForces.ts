@@ -368,6 +368,24 @@ export function getFactionForceRespawnCooldownMs(kind: FactionForcePoolKind, rol
     : baseCooldown;
 }
 
+function isZoneSpawnSuppressed(
+  galaxy: GalaxyDefinition,
+  pool: Pick<FactionForcePoolRecord, "kind" | "originZoneId">,
+): boolean {
+  if (pool.kind !== "zone") {
+    return false;
+  }
+
+  const zone = galaxy.zones.find((candidate) => candidate.id === pool.originZoneId);
+  if (!zone) {
+    return false;
+  }
+
+  return zone.zoneState !== "stable"
+    || zone.captureAttackerRaceId !== null
+    || zone.zoneCaptureProgress > 0;
+}
+
 export function createFactionForceState(galaxy: GalaxyDefinition): FactionForceState {
   const zonePools = galaxy.zones.map((zone) => createZonePool(zone));
   const primePools = galaxy.homeworlds
@@ -457,7 +475,9 @@ export function advanceFactionForceProduction(
     const capacity = getFactionForcePoolCapacity(galaxy, pool);
     const desiredDefenseShips = Math.min(pool.desiredDefenseShips, capacity);
     const desiredReserveShips = Math.min(pool.desiredReserveShips, Math.max(0, capacity - desiredDefenseShips));
-    const desiredTotalShips = Math.min(capacity, desiredDefenseShips + desiredReserveShips);
+    const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
+      ? Math.min(capacity, pool.activeShips.length)
+      : Math.min(capacity, desiredDefenseShips + desiredReserveShips);
     if (desiredTotalShips <= 0 || pool.activeShips.length >= desiredTotalShips || pool.spawnCooldownRemainingMs > 0) {
       return;
     }

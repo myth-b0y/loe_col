@@ -335,6 +335,69 @@ try {
   assert(hostilitySummary.empireVsHomeguard, `Empire should be hostile to neutral homeguard fleets: ${JSON.stringify(hostilitySummary)}`);
   assert(!hostilitySummary.republicVsHomeguard, `Republic and neutral homeguard should not default to fighting each other: ${JSON.stringify(hostilitySummary)}`);
 
+  const republicProtectionSummary = await page.evaluate((cellSize) => {
+    const space = window.__loeGame?.scene.keys.space;
+    const playerX = space.shipRoot.x;
+    const playerY = space.shipRoot.y;
+
+    const stageShip = (predicate, x, y) => {
+      const state = [...space.shipStates.values()].find((candidate) => !candidate.destroyed && predicate(candidate));
+      if (!state) {
+        return null;
+      }
+
+      state.x = x;
+      state.y = y;
+      state.velocityX = 0;
+      state.velocityY = 0;
+      state.patrolX = x;
+      state.patrolY = y;
+      state.aimX = 0;
+      state.aimY = -1;
+      state.provokedByPlayer = false;
+      state.provokedByShips = [];
+      state.aggressionTimer = 0;
+      state.cellKey = `${Math.max(0, Math.floor(x / cellSize))},${Math.max(0, Math.floor(y / cellSize))}`;
+      const activeShip = space.factionShips.find((ship) => ship.id === state.id);
+      if (activeShip) {
+        activeShip.root.x = x;
+        activeShip.root.y = y;
+        activeShip.velocity.set(0, 0);
+        activeShip.patrolTarget.set(x, y);
+        activeShip.aimDirection.set(0, -1);
+        activeShip.provokedByPlayer = false;
+        activeShip.provokedByShips.clear();
+        activeShip.aggressionTimer = 0;
+      }
+      return state.id;
+    };
+
+    const republicId = stageShip((state) => state.factionId === "republic", playerX + 320, playerY);
+    space.syncActiveWorld?.(true);
+    const republic = space.factionShips.find((ship) => ship.id === republicId);
+    if (!republic) {
+      return null;
+    }
+
+    const hpBefore = republic.hp;
+    const canPlayerDamage = space.canPlayerDamageShip?.(republic) ?? true;
+    space.damageFactionShip?.(republic, 1, { kind: "player" });
+    return {
+      shipId: republic.id,
+      canPlayerDamage,
+      hpBefore,
+      hpAfter: republic.hp,
+      threatensPlayer: space.canShipAttackPlayer?.(republic) ?? true,
+      provokedByPlayer: republic.provokedByPlayer,
+    };
+  }, 3200);
+
+  assert(republicProtectionSummary, "Could not stage a Republic ship for player-protection checks");
+  assert(!republicProtectionSummary.canPlayerDamage, `Player should not be able to damage Republic ships: ${JSON.stringify(republicProtectionSummary)}`);
+  assert(republicProtectionSummary.hpAfter === republicProtectionSummary.hpBefore, `Republic ships should ignore player damage attempts: ${JSON.stringify(republicProtectionSummary)}`);
+  assert(!republicProtectionSummary.threatensPlayer, `Republic ships should never attack the player: ${JSON.stringify(republicProtectionSummary)}`);
+  assert(!republicProtectionSummary.provokedByPlayer, `Republic ships should not become provoked by player damage attempts: ${JSON.stringify(republicProtectionSummary)}`);
+
   const neutralDefenseSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     const war = space.warState;
@@ -391,12 +454,118 @@ try {
     || neutralDefenseSummary.finalControllerRaceId === neutralDefenseSummary.ownerRaceId,
     `Neutral races should defend themselves when the Empire takes their zones: ${JSON.stringify(neutralDefenseSummary)}`);
 
+  const contestedDefenseSummary = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    const war = space.warState;
+    const zoneCoreRaceBySectorId = Object.fromEntries(space.galaxyDefinition.homeworlds.map((homeworld) => [homeworld.sectorId, homeworld.raceId]));
+    const neutralRaceIds = war.raceStates
+      .map((raceState) => raceState.raceId)
+      .filter((raceId) => !war.republicRaceIds.includes(raceId) && raceId !== war.empireRaceId);
+    const targetZone = space.galaxyDefinition.zones.find((zone) => (
+      !zone.isPrimeWorldZone
+      && neutralRaceIds.includes(zoneCoreRaceBySectorId[zone.coreSectorId])
+      && zone.currentControllerId === zoneCoreRaceBySectorId[zone.coreSectorId]
+    ));
+    if (!targetZone) {
+      return null;
+    }
+
+    const ownerRaceId = zoneCoreRaceBySectorId[targetZone.coreSectorId];
+    targetZone.currentControllerId = ownerRaceId;
+    targetZone.zoneState = "capturing";
+    targetZone.zoneCaptureProgress = 0.42;
+    targetZone.captureAttackerRaceId = war.empireRaceId;
+    war.raceStates.forEach((raceState) => {
+      if (raceState.raceId === ownerRaceId || war.republicRaceIds.includes(raceState.raceId) || raceState.raceId === war.empireRaceId) {
+        raceState.activeTargetZoneId = null;
+        raceState.retargetCooldownRemainingMs = 0;
+      }
+    });
+
+    let ownerAidAssignments = 0;
+    let republicAidAssignments = 0;
+
+    for (let index = 0; index < 8; index += 1) {
+      space.updateFactionWar(12000);
+      space.updateForceProduction(30000);
+      space.updateFactionWar(12000);
+      const debug = space.getDebugSnapshot();
+      const defendAssignments = debug.production.pools
+        .flatMap((pool) => pool.activeShips.map((ship) => ({
+          raceId: pool.raceId,
+          assignmentKind: ship.assignmentKind,
+          assignmentZoneId: ship.assignmentZoneId,
+        })))
+        .filter((ship) => ship.assignmentKind === "defend" && ship.assignmentZoneId === targetZone.id);
+      ownerAidAssignments = Math.max(ownerAidAssignments, defendAssignments.filter((ship) => ship.raceId === ownerRaceId).length);
+      republicAidAssignments = Math.max(republicAidAssignments, defendAssignments.filter((ship) => war.republicRaceIds.includes(ship.raceId)).length);
+    }
+
+    return {
+      ownerRaceId,
+      targetZoneId: targetZone.id,
+      ownerAidAssignments,
+      republicAidAssignments,
+      finalControllerRaceId: targetZone.currentControllerId,
+      finalZoneState: targetZone.zoneState,
+    };
+  });
+
+  assert(contestedDefenseSummary, "Could not stage a contested-zone defense scenario");
+  assert(contestedDefenseSummary.ownerAidAssignments > 0, `The owning faction should send defenders to contested zones: ${JSON.stringify(contestedDefenseSummary)}`);
+  assert(contestedDefenseSummary.republicAidAssignments > 0, `Republic factions should help non-Empire zones under active Empire capture pressure: ${JSON.stringify(contestedDefenseSummary)}`);
+
+  const contestedSpawnSuppressionSummary = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    const war = space.warState;
+    const zoneCoreRaceBySectorId = Object.fromEntries(space.galaxyDefinition.homeworlds.map((homeworld) => [homeworld.sectorId, homeworld.raceId]));
+    const targetZone = space.galaxyDefinition.zones.find((zone) => (
+      !zone.isPrimeWorldZone
+      && zoneCoreRaceBySectorId[zone.coreSectorId] !== war.empireRaceId
+      && zone.currentControllerId === zoneCoreRaceBySectorId[zone.coreSectorId]
+    ));
+    if (!targetZone) {
+      return null;
+    }
+
+    const ownerRaceId = zoneCoreRaceBySectorId[targetZone.coreSectorId];
+    const pool = space.forceState.pools.find((candidate) => candidate.kind === "zone" && candidate.originZoneId === targetZone.id);
+    if (!pool) {
+      return null;
+    }
+
+    targetZone.currentControllerId = ownerRaceId;
+    targetZone.zoneState = "capturing";
+    targetZone.zoneCaptureProgress = 0.5;
+    targetZone.captureAttackerRaceId = war.empireRaceId;
+    pool.activeShips = [];
+    pool.spawnCooldownRemainingMs = 0;
+    pool.desiredDefenseShips = 3;
+    pool.desiredReserveShips = 0;
+
+    space.updateFactionWar(12000);
+    space.updateForceProduction(30000);
+
+    return {
+      targetZoneId: targetZone.id,
+      activeShipCount: pool.activeShips.length,
+      desiredDefenseShips: pool.desiredDefenseShips,
+      spawnCooldownRemainingMs: pool.spawnCooldownRemainingMs,
+    };
+  });
+
+  assert(contestedSpawnSuppressionSummary, "Could not stage a contested-zone spawn-suppression scenario");
+  assert(contestedSpawnSuppressionSummary.activeShipCount === 0, `Contested local zones should not instantly respawn new defenders: ${JSON.stringify(contestedSpawnSuppressionSummary)}`);
+
   const summary = {
     initialSummary,
     naturalWarSummary,
     republicResistanceSummary,
     hostilitySummary,
+    republicProtectionSummary,
     neutralDefenseSummary,
+    contestedDefenseSummary,
+    contestedSpawnSuppressionSummary,
     consoleErrors,
   };
 

@@ -3053,6 +3053,10 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private canShipAttackPlayer(ship: SpaceFactionShip): boolean {
+    if (ship.factionId === "republic") {
+      return false;
+    }
+
     const faction = this.getShipCombatConfig(ship);
     return faction.attackPlayerByDefault || ship.provokedByPlayer;
   }
@@ -3165,7 +3169,10 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private canPlayerDamageShip(ship: SpaceFactionShip): boolean {
-    return !this.playerDestroyed && !this.returningToShip && Boolean(ship);
+    return !this.playerDestroyed
+      && !this.returningToShip
+      && Boolean(ship)
+      && ship.factionId !== "republic";
   }
 
   private getWorldAudioMix(
@@ -3881,7 +3888,7 @@ export class SpaceScene extends Phaser.Scene {
       life: FACTION_PROJECTILE_LIFETIME,
       radius: 4,
       damage: this.getShipFireDamage(ship),
-      canHitPlayer: faction.attackPlayerByDefault || ship.provokedByPlayer,
+      canHitPlayer: this.canShipAttackPlayer(ship),
     });
 
     this.playWorldCue(
