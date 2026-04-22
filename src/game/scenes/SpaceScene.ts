@@ -25,9 +25,17 @@ import {
   advanceFactionForceProduction,
   getFactionForceDebugSnapshot,
   markFactionForceShipDestroyed,
+  type FactionForceAssignmentKind,
   type FactionForceShipRole,
   type FactionForceState,
 } from "../content/factionForces";
+import {
+  advanceFactionWarState,
+  buildFactionWarZoneAdjacency,
+  getRaceAllianceStatus,
+  type FactionWarState,
+  type FactionWarZoneAdjacency,
+} from "../content/factionWar";
 import { getMissionContract } from "../content/missions";
 import {
   SPACE_FACTIONS,
@@ -112,6 +120,8 @@ type SpaceFactionShip = {
   factionId: SpaceFactionId;
   originRaceId: RaceId | null;
   shipRole: FactionForceShipRole | null;
+  assignmentKind: FactionForceAssignmentKind | null;
+  assignmentZoneId: string | null;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -153,6 +163,8 @@ type SpaceFactionShipState = {
   factionId: SpaceFactionId;
   originRaceId: RaceId | null;
   shipRole: FactionForceShipRole | null;
+  assignmentKind: FactionForceAssignmentKind | null;
+  assignmentZoneId: string | null;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -291,6 +303,7 @@ const STATION_INTERACTION_BUFFER = 180;
 const SMUGGLER_ROUTE_WAIT_MIN_MS = 2200;
 const SMUGGLER_ROUTE_WAIT_MAX_MS = 4200;
 const FORCE_STATE_SYNC_INTERVAL_MS = 1000;
+const WAR_STATE_UPDATE_INTERVAL_MS = 1000;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -452,7 +465,9 @@ export class SpaceScene extends Phaser.Scene {
   private aimDirection = new Phaser.Math.Vector2(1, 0);
   private pointerWorld = new Phaser.Math.Vector2();
   private galaxyDefinition!: GalaxyDefinition;
+  private warState!: FactionWarState;
   private forceState!: FactionForceState;
+  private zoneAdjacency: FactionWarZoneAdjacency = {};
   private worldDefinition!: SpaceWorldDefinition;
   private currentSector!: GalaxySectorConfig;
   private currentRegionLabel = "";
@@ -468,8 +483,11 @@ export class SpaceScene extends Phaser.Scene {
   private galaxyStationsById = new Map<string, GalaxyStationRecord>();
   private fieldStates = new Map<string, SpaceFieldObjectState>();
   private shipStates = new Map<string, SpaceFactionShipState>();
+  private galaxyStateDirty = false;
+  private warStateDirty = false;
   private forceStateDirty = false;
   private forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
+  private warStateUpdateTimerMs = 0;
   private backdropSectorOverlay?: Phaser.GameObjects.Rectangle;
   private backdropStarSeedsByCell = new Map<SpaceWorldCellKey, GalaxyStarSeed[]>();
   private activeBackdropCellKeys: SpaceWorldCellKey[] = [];
@@ -562,12 +580,22 @@ export class SpaceScene extends Phaser.Scene {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
     this.galaxyDefinition = gameSession.getGalaxyDefinition();
+    this.warState = gameSession.getFactionWarState();
     this.forceState = gameSession.getFactionForceState();
+    this.zoneAdjacency = buildFactionWarZoneAdjacency(this.galaxyDefinition);
+    const initialWarUpdate = advanceFactionWarState(
+      this.warState,
+      this.galaxyDefinition,
+      this.forceState,
+      this.zoneAdjacency,
+      0,
+    );
     this.worldDefinition = createSpaceWorldDefinition(
       SPACE_WORLD_CONFIG,
       this.galaxyDefinition,
       Date.now() >>> 0,
       this.forceState,
+      this.warState,
     );
     this.syncTrackedMissionPlanet();
     this.galaxySystemsByCell.clear();
@@ -580,8 +608,11 @@ export class SpaceScene extends Phaser.Scene {
     this.galaxyStationsById.clear();
     this.fieldStates.clear();
     this.shipStates.clear();
-    this.forceStateDirty = false;
+    this.galaxyStateDirty = initialWarUpdate.changed;
+    this.warStateDirty = initialWarUpdate.changed;
+    this.forceStateDirty = initialWarUpdate.changed;
     this.forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
+    this.warStateUpdateTimerMs = 0;
     this.backdropStarSeedsByCell.clear();
     this.activeBackdropCellKeys = [];
     this.activeBackdropStarCells.clear();
@@ -709,8 +740,9 @@ export class SpaceScene extends Phaser.Scene {
     this.syncActiveWorld();
     this.updateCelestialMotion();
     this.updateFieldObjects(dt);
-    this.updateFactionShips(dt);
+    this.updateFactionWar(delta);
     this.updateForceProduction(delta);
+    this.updateFactionShips(dt);
     this.resolveFactionShipCollisions();
     this.updateProjectiles(dt);
     this.updateBurstParticles(dt);
@@ -1279,6 +1311,8 @@ export class SpaceScene extends Phaser.Scene {
       factionId: seed.factionId,
       originRaceId: seed.originRaceId ?? null,
       shipRole: seed.shipRole ?? null,
+      assignmentKind: seed.assignmentKind ?? null,
+      assignmentZoneId: seed.assignmentZoneId ?? null,
       sectorId: seed.sectorId,
       groupId: seed.groupId,
       leaderId: seed.leaderId,
@@ -1501,13 +1535,129 @@ export class SpaceScene extends Phaser.Scene {
     this.worldDefinition.factionCounts[seed.factionId] += 1;
   }
 
+  private unregisterFactionSeed(seed: SpaceWorldDefinition["factionSeeds"][number]): void {
+    delete this.worldDefinition.factionSeedIndex[seed.id];
+    Phaser.Utils.Array.Remove(this.worldDefinition.factionSeeds, seed);
+    const cellBucket = this.worldDefinition.factionSeedsByCell[seed.cellKey];
+    if (cellBucket) {
+      Phaser.Utils.Array.Remove(cellBucket, seed);
+      if (cellBucket.length <= 0) {
+        delete this.worldDefinition.factionSeedsByCell[seed.cellKey];
+      }
+    }
+    this.worldDefinition.factionCounts[seed.factionId] = Math.max(0, this.worldDefinition.factionCounts[seed.factionId] - 1);
+  }
+
+  private replaceForceSeeds(forceSeeds: SpaceWorldDefinition["factionSeeds"]): void {
+    [...this.worldDefinition.factionSeeds]
+      .filter((seed) => seed.originPoolId)
+      .forEach((seed) => this.unregisterFactionSeed(seed));
+    forceSeeds.forEach((seed) => this.registerFactionSeed(seed));
+  }
+
+  private mergeForceShipState(
+    existingState: SpaceFactionShipState | undefined,
+    desiredState: SpaceFactionShipState,
+    preserveKinematics: boolean,
+  ): SpaceFactionShipState {
+    if (!existingState) {
+      return desiredState;
+    }
+
+    const hpRatio = existingState.maxHp > 0
+      ? Phaser.Math.Clamp(existingState.hp / existingState.maxHp, 0, 1)
+      : 1;
+    return {
+      ...desiredState,
+      x: preserveKinematics ? existingState.x : desiredState.x,
+      y: preserveKinematics ? existingState.y : desiredState.y,
+      velocityX: preserveKinematics ? existingState.velocityX : desiredState.velocityX,
+      velocityY: preserveKinematics ? existingState.velocityY : desiredState.velocityY,
+      rotation: preserveKinematics ? existingState.rotation : desiredState.rotation,
+      aimX: preserveKinematics ? existingState.aimX : desiredState.aimX,
+      aimY: preserveKinematics ? existingState.aimY : desiredState.aimY,
+      hp: Math.min(desiredState.maxHp, desiredState.maxHp * hpRatio),
+      flash: existingState.flash,
+      fireCooldown: existingState.fireCooldown,
+      provokedByPlayer: existingState.provokedByPlayer,
+      provokedByShips: [...existingState.provokedByShips],
+      aggressionTimer: existingState.aggressionTimer,
+      strafeSign: existingState.strafeSign,
+      supportRepairCooldown: existingState.supportRepairCooldown,
+      destroyed: false,
+    };
+  }
+
+  private replaceActiveForceShip(ship: SpaceFactionShip, nextState: SpaceFactionShipState): void {
+    const shipIndex = this.factionShips.indexOf(ship);
+    if (shipIndex < 0) {
+      this.shipStates.set(nextState.id, nextState);
+      return;
+    }
+
+    this.clearShipTargetReferences(ship.id);
+    ship.root.destroy(true);
+    this.factionShips.splice(shipIndex, 1);
+    this.shipStates.set(nextState.id, nextState);
+    if (this.activeShipCellKeys.includes(nextState.cellKey)) {
+      this.factionShips.push(this.createFactionShip(nextState));
+    }
+  }
+
+  private removeInvalidForceShips(validShipIds: Set<string>): void {
+    for (let index = this.factionShips.length - 1; index >= 0; index -= 1) {
+      const ship = this.factionShips[index];
+      if (!ship.originPoolId || validShipIds.has(ship.id)) {
+        continue;
+      }
+
+      this.clearShipTargetReferences(ship.id);
+      ship.root.destroy(true);
+      this.factionShips.splice(index, 1);
+    }
+
+    [...this.shipStates.keys()].forEach((shipId) => {
+      const state = this.shipStates.get(shipId);
+      if (!state?.originPoolId || validShipIds.has(shipId)) {
+        return;
+      }
+      this.shipStates.delete(shipId);
+    });
+  }
+
+  private reconcileForceShips(): void {
+    const forceSeeds = createSpaceForceShipSeeds(
+      this.galaxyDefinition,
+      this.forceState,
+      this.warState,
+      SPACE_WORLD_CONFIG,
+    );
+    this.replaceForceSeeds(forceSeeds);
+    const seedLookup = new Map(forceSeeds.map((seed) => ([seed.id, seed] as const)));
+    this.removeInvalidForceShips(new Set(seedLookup.keys()));
+
+    seedLookup.forEach((seed, shipId) => {
+      const desiredState = this.createShipStateFromSeed(seed);
+      const activeShip = this.factionShips.find((candidate) => candidate.id === shipId && candidate.originPoolId);
+      const existingState = this.shipStates.get(shipId);
+      if (activeShip) {
+        const mergedState = this.mergeForceShipState(existingState, desiredState, true);
+        this.replaceActiveForceShip(activeShip, mergedState);
+        return;
+      }
+
+      const mergedState = this.mergeForceShipState(existingState, desiredState, false);
+      this.shipStates.set(shipId, mergedState);
+    });
+  }
+
   private spawnProducedForceShips(spawnedShipIds: string[]): void {
     if (spawnedShipIds.length <= 0) {
       return;
     }
 
     const seedLookup = new Map(
-      createSpaceForceShipSeeds(this.galaxyDefinition, this.forceState, SPACE_WORLD_CONFIG)
+      createSpaceForceShipSeeds(this.galaxyDefinition, this.forceState, this.warState, SPACE_WORLD_CONFIG)
         .filter((seed) => spawnedShipIds.includes(seed.id))
         .map((seed) => ([seed.id, seed] as const)),
     );
@@ -1526,6 +1676,30 @@ export class SpaceScene extends Phaser.Scene {
     });
   }
 
+  private updateFactionWar(deltaMs: number): void {
+    this.warStateUpdateTimerMs = Math.max(0, this.warStateUpdateTimerMs - deltaMs);
+    if (this.warStateUpdateTimerMs > 0) {
+      return;
+    }
+
+    const warUpdate = advanceFactionWarState(
+      this.warState,
+      this.galaxyDefinition,
+      this.forceState,
+      this.zoneAdjacency,
+      deltaMs,
+    );
+    this.warStateUpdateTimerMs = WAR_STATE_UPDATE_INTERVAL_MS;
+    if (!warUpdate.changed) {
+      return;
+    }
+
+    this.galaxyStateDirty = true;
+    this.warStateDirty = true;
+    this.forceStateDirty = true;
+    this.reconcileForceShips();
+  }
+
   private updateForceProduction(deltaMs: number): void {
     const productionUpdate = advanceFactionForceProduction(this.forceState, this.galaxyDefinition, deltaMs);
     if (!productionUpdate.changed) {
@@ -1538,7 +1712,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private syncDirtyForceState(deltaMs: number): void {
     this.forceStateSyncTimerMs = Math.max(0, this.forceStateSyncTimerMs - deltaMs);
-    if (!this.forceStateDirty || this.forceStateSyncTimerMs > 0) {
+    if ((!this.forceStateDirty && !this.galaxyStateDirty && !this.warStateDirty) || this.forceStateSyncTimerMs > 0) {
       return;
     }
 
@@ -1546,11 +1720,15 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private syncForceStateToSession(): void {
-    if (!this.forceStateDirty) {
+    if (!this.forceStateDirty && !this.galaxyStateDirty && !this.warStateDirty) {
       return;
     }
 
+    gameSession.setGalaxyDefinition(this.galaxyDefinition);
+    gameSession.setFactionWarState(this.warState);
     gameSession.setFactionForceState(this.forceState);
+    this.galaxyStateDirty = false;
+    this.warStateDirty = false;
     this.forceStateDirty = false;
     this.forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
   }
@@ -1584,6 +1762,8 @@ export class SpaceScene extends Phaser.Scene {
       factionId: ship.factionId,
       originRaceId: ship.originRaceId,
       shipRole: ship.shipRole,
+      assignmentKind: ship.assignmentKind,
+      assignmentZoneId: ship.assignmentZoneId,
       sectorId: ship.sectorId,
       groupId: ship.groupId,
       leaderId: ship.leaderId,
@@ -1841,6 +2021,8 @@ export class SpaceScene extends Phaser.Scene {
       factionId: state.factionId,
       originRaceId: state.originRaceId,
       shipRole: state.shipRole,
+      assignmentKind: state.assignmentKind,
+      assignmentZoneId: state.assignmentZoneId,
       sectorId: state.sectorId,
       groupId: state.groupId,
       leaderId: state.leaderId,
@@ -2818,17 +3000,15 @@ export class SpaceScene extends Phaser.Scene {
     };
   }
 
-  private getShipRaceProfile(ship: Pick<SpaceFactionShip | SpaceFactionShipState, "factionId" | "originRaceId">) {
-    return ship.factionId === "homeguard"
-      ? getSpaceRaceDefenseProfile(ship.originRaceId)
-      : getSpaceRaceDefenseProfile(null);
+  private getShipRaceProfile(ship: Pick<SpaceFactionShip | SpaceFactionShipState, "originRaceId">) {
+    return getSpaceRaceDefenseProfile(ship.originRaceId);
   }
 
-  private getHomeguardTargetAnchorDistanceScore(
-    ship: Pick<SpaceFactionShip, "factionId" | "originRaceId" | "guardAnchor" | "guardRadius">,
+  private getGuardTargetAnchorDistanceScore(
+    ship: Pick<SpaceFactionShip, "originRaceId" | "guardAnchor" | "guardRadius">,
     target: Pick<SpaceFactionShip, "root"> | { root: Phaser.GameObjects.Container },
   ): number {
-    if (ship.factionId !== "homeguard" || !ship.guardAnchor) {
+    if (!ship.guardAnchor) {
       return 0;
     }
 
@@ -2846,8 +3026,8 @@ export class SpaceScene extends Phaser.Scene {
     return (softLimit * raceProfile.anchorPriority) + ((distanceToAnchor - softLimit) * 4.8);
   }
 
-  private canHomeguardInterceptShip(ship: SpaceFactionShip, targetShip: SpaceFactionShip): boolean {
-    if (ship.factionId !== "homeguard" || !ship.guardAnchor) {
+  private canGuardShipInterceptTarget(ship: SpaceFactionShip, targetShip: SpaceFactionShip): boolean {
+    if (!ship.guardAnchor) {
       return true;
     }
 
@@ -2867,18 +3047,16 @@ export class SpaceScene extends Phaser.Scene {
 
   private getShipFireDamage(ship: SpaceFactionShip): number {
     let baseDamage = FACTION_DAMAGE;
-    if (ship.factionId === "homeguard") {
-      switch (ship.originRaceId) {
-        case "ashari":
-        case "rakkan":
-          baseDamage += 0.25;
-          break;
-        case "svarin":
-          baseDamage += 0.15;
-          break;
-        default:
-          break;
-      }
+    switch (ship.originRaceId) {
+      case "ashari":
+      case "rakkan":
+        baseDamage += 0.25;
+        break;
+      case "svarin":
+        baseDamage += 0.15;
+        break;
+      default:
+        break;
     }
     return baseDamage * getSpaceShipRoleCombatProfile(ship.shipRole).damageMultiplier;
   }
@@ -3223,7 +3401,7 @@ export class SpaceScene extends Phaser.Scene {
       if (!this.isShipHostileToShip(ship, targetShip)) {
         return;
       }
-      if (!this.canHomeguardInterceptShip(ship, targetShip)) {
+      if (!this.canGuardShipInterceptTarget(ship, targetShip)) {
         return;
       }
       const dx = targetShip.root.x - ship.root.x;
@@ -3233,7 +3411,7 @@ export class SpaceScene extends Phaser.Scene {
         return;
       }
 
-      const anchorScore = this.getHomeguardTargetAnchorDistanceScore(ship, targetShip);
+      const anchorScore = this.getGuardTargetAnchorDistanceScore(ship, targetShip);
       const damagedScore = (1 - (targetShip.hp / Math.max(1, targetShip.maxHp))) * 900 * raceProfile.damagedTargetBias;
       const targetScore = distanceSq + anchorScore - damagedScore;
       if (targetScore >= bestScore) {
@@ -3946,7 +4124,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private propagateGroupAggro(targetShip: SpaceFactionShip, source: SpaceDamageSource): void {
     const linkedGuardAnchor = targetShip.guardAnchor;
-    const allyAlertRadius = targetShip.factionId === "homeguard"
+    const allyAlertRadius = targetShip.originRaceId
       ? this.getShipRaceProfile(targetShip).allyAlertRadius
       : 820;
     this.factionShips.forEach((ally) => {
@@ -4179,7 +4357,7 @@ export class SpaceScene extends Phaser.Scene {
       ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
       : `Free roam launch  |  Region: ${regionLabel}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
-    const localContactSummary = `Local contacts  Guardians ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
+    const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guardians ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
     this.contactText?.setText(missionPlanet
       ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
       : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}\n${stationStatus}`);
@@ -4868,6 +5046,8 @@ export class SpaceScene extends Phaser.Scene {
         factionId: ship.factionId,
         originRaceId: ship.originRaceId,
         shipRole: ship.shipRole,
+        assignmentKind: ship.assignmentKind,
+        assignmentZoneId: ship.assignmentZoneId,
         sectorId: ship.sectorId,
         guardRadius: ship.guardRadius,
         x: Math.round(ship.root.x),
@@ -4911,6 +5091,29 @@ export class SpaceScene extends Phaser.Scene {
       region: this.getCurrentRegionLabel(),
       isDeepSpace: this.currentRegionIsDeepSpace,
       playerRaceId: gameSession.getPlayerRaceId(),
+      war: {
+        empireRaceId: this.warState.empireRaceId,
+        republicRaceIds: [...this.warState.republicRaceIds],
+        alignments: Object.fromEntries(
+          this.warState.raceStates.map((raceState) => [raceState.raceId, getRaceAllianceStatus(this.warState, raceState.raceId)]),
+        ),
+        raceTargets: this.warState.raceStates.map((raceState) => ({
+          raceId: raceState.raceId,
+          alignment: getRaceAllianceStatus(this.warState, raceState.raceId),
+          activeTargetZoneId: raceState.activeTargetZoneId,
+          retargetCooldownRemainingMs: Math.round(raceState.retargetCooldownRemainingMs),
+        })),
+        contestedZones: this.galaxyDefinition.zones
+          .filter((zone) => zone.zoneState !== "stable" || zone.captureAttackerRaceId)
+          .map((zone) => ({
+            id: zone.id,
+            systemId: zone.systemId,
+            currentControllerId: zone.currentControllerId,
+            zoneState: zone.zoneState,
+            zoneCaptureProgress: Number(zone.zoneCaptureProgress.toFixed(3)),
+            captureAttackerRaceId: zone.captureAttackerRaceId,
+          })),
+      },
       routeMissionId: this.routeMissionId,
       routeTitle: this.routeTitle,
       touchMode: this.touchMode,

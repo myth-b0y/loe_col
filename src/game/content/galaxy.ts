@@ -85,6 +85,7 @@ export type GalaxyZoneRecord = {
   currentControllerId: GalaxyZoneControllerId;
   zoneState: GalaxyZoneState;
   zoneCaptureProgress: number;
+  captureAttackerRaceId: RaceId | null;
 };
 
 export type GalaxySystemRecord = {
@@ -342,6 +343,10 @@ function wrapAngleDegrees(angleDeg: number): number {
     wrapped += 360;
   }
   return wrapped;
+}
+
+function isRaceId(value: unknown): value is RaceId {
+  return typeof value === "string" && GALAXY_SECTORS.some((sector) => sector.raceId === value);
 }
 
 function expandWrappedArc(startAngleDeg: number, endAngleDeg: number): { start: number; end: number } {
@@ -1707,6 +1712,7 @@ function createZonesForSystems(
       currentControllerId: sector.raceId,
       zoneState: "stable",
       zoneCaptureProgress: 0,
+      captureAttackerRaceId: null,
     };
   });
 }
@@ -1883,6 +1889,7 @@ export function normalizeGalaxyDefinition(
         currentControllerId: (getGalaxySectorById(system.sectorId) ?? GALAXY_SECTORS[0]).raceId,
         zoneState: "stable" as const,
         zoneCaptureProgress: 0,
+        captureAttackerRaceId: null,
       };
       const sourceZone = sourceZones.find((zone) => zone.systemId === system.id || zone.id === system.zoneId);
       return {
@@ -1909,6 +1916,9 @@ export function normalizeGalaxyDefinition(
         zoneCaptureProgress: typeof sourceZone?.zoneCaptureProgress === "number" && Number.isFinite(sourceZone.zoneCaptureProgress)
           ? Math.max(0, Math.min(1, sourceZone.zoneCaptureProgress))
           : 0,
+        captureAttackerRaceId: isRaceId(sourceZone?.captureAttackerRaceId)
+          ? sourceZone.captureAttackerRaceId
+          : fallbackZone.captureAttackerRaceId,
       };
     });
     return {

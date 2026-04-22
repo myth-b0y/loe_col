@@ -27,6 +27,11 @@ import {
   type FactionForceState,
 } from "../content/factionForces";
 import {
+  createFactionWarState,
+  normalizeFactionWarState,
+  type FactionWarState,
+} from "../content/factionWar";
+import {
   DEFAULT_SQUAD_ASSIGNMENTS,
   canCompanionOccupySlot,
   getCompanionDefinition,
@@ -324,7 +329,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 10;
+  version: 11;
   meta: {
     lastSavedAt: string | null;
   };
@@ -355,6 +360,7 @@ export type SaveData = {
     unlockedMissionIds: string[];
   };
   galaxy: GalaxyDefinition;
+  war: FactionWarState;
   forces: FactionForceState;
   ship: ShipState;
 };
@@ -433,8 +439,9 @@ function deriveLegacyGalaxySeed(parsed: Partial<SaveData>, raceId: RaceId): numb
 function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
   const profileRaceId: RaceId = "olydran";
   const galaxy = createGalaxyDefinition(galaxySeed);
+  const war = createFactionWarState(galaxy);
   return {
-    version: 10,
+    version: 11,
     meta: {
       lastSavedAt: null,
     },
@@ -465,6 +472,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
       unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
     },
     galaxy,
+    war,
     forces: createFactionForceState(galaxy),
     ship: createDefaultShipState(profileRaceId, galaxy),
   };
@@ -549,10 +557,11 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
     parsed.galaxy as Partial<GalaxyDefinition> | undefined,
     deriveLegacyGalaxySeed(parsed, profile.raceId),
   );
+  const normalizedWar = normalizeFactionWarState(parsed.war as Partial<FactionWarState> | undefined, normalizedGalaxy);
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 10 as const,
+    version: 11 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -568,6 +577,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...parsed.progression,
     },
     galaxy: normalizedGalaxy,
+    war: normalizedWar,
     forces: normalizeFactionForceState(parsed.forces as Partial<FactionForceState> | undefined, normalizedGalaxy),
     ship: {
       ...createDefaultShipState(profile.raceId, normalizedGalaxy),
@@ -805,6 +815,26 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getGalaxyDefinition(): GalaxyDefinition {
     return clone(this.saveData.galaxy);
+  }
+
+  setGalaxyDefinition(galaxy: GalaxyDefinition, emit = false): void {
+    this.saveData.galaxy = normalizeGalaxyDefinition(galaxy, galaxy.seed);
+    this.saveData.war = normalizeFactionWarState(this.saveData.war, this.saveData.galaxy);
+    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy);
+    if (emit) {
+      this.emit("save-changed", this.saveData);
+    }
+  }
+
+  getFactionWarState(): FactionWarState {
+    return clone(this.saveData.war);
+  }
+
+  setFactionWarState(warState: FactionWarState, emit = false): void {
+    this.saveData.war = normalizeFactionWarState(warState, this.saveData.galaxy);
+    if (emit) {
+      this.emit("save-changed", this.saveData);
+    }
   }
 
   getFactionForceState(): FactionForceState {

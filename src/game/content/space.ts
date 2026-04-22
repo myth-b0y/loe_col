@@ -5,6 +5,7 @@ import {
   getGalaxySectorById,
   getGalaxySpawnPointForRace,
   getGalaxySystemById,
+  getGalaxyZoneById,
   pointFromDegrees,
   type GalaxyDefinition,
   type GalaxyPoint,
@@ -13,9 +14,14 @@ import {
 import {
   getActiveFactionForceShips,
   type FactionForceActiveShipRecord,
+  type FactionForceAssignmentKind,
   type FactionForceShipRole,
   type FactionForceState,
 } from "./factionForces";
+import {
+  getSpaceFactionIdForRace,
+  type FactionWarState,
+} from "./factionWar";
 import { type RaceId } from "./items";
 
 export type SpaceFieldObjectKind = "asteroid" | "debris";
@@ -140,6 +146,8 @@ export type SpaceFactionShipSeed = {
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
   shipRole?: FactionForceShipRole | null;
+  assignmentKind?: FactionForceAssignmentKind | null;
+  assignmentZoneId?: string | null;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -613,8 +621,22 @@ export function getSpaceFactionConfig(
   factionId: SpaceFactionId,
   raceId: RaceId | null | undefined = null,
 ): SpaceFactionConfig {
-  if (factionId === "homeguard" && raceId) {
-    return HOMEGUARD_RACE_CONFIGS[raceId] ?? SPACE_FACTIONS.homeguard;
+  if ((factionId === "homeguard" || factionId === "empire" || factionId === "republic") && raceId) {
+    const profile = getSpaceRaceDefenseProfile(raceId);
+    const baseFaction = factionId === "homeguard"
+      ? HOMEGUARD_RACE_CONFIGS[raceId] ?? SPACE_FACTIONS.homeguard
+      : SPACE_FACTIONS[factionId];
+    return {
+      ...baseFaction,
+      maxHull: Math.max(4, baseFaction.maxHull + profile.hullBonus),
+      acceleration: baseFaction.acceleration * profile.accelerationMultiplier,
+      maxSpeed: baseFaction.maxSpeed * profile.maxSpeedMultiplier,
+      detectRange: baseFaction.detectRange * profile.detectRangeMultiplier,
+      fireRange: baseFaction.fireRange * profile.fireRangeMultiplier,
+      preferredRange: baseFaction.preferredRange * profile.preferredRangeMultiplier,
+      fireCooldown: baseFaction.fireCooldown * profile.fireCooldownMultiplier,
+      bulletSpeed: baseFaction.bulletSpeed * profile.bulletSpeedMultiplier,
+    };
   }
   return SPACE_FACTIONS[factionId];
 }
@@ -1406,6 +1428,7 @@ function getForcePatrolHeading(anchor: GalaxyPoint, patrolAnchor: GalaxyPoint, f
 function createSeededGuardFormation(
   groupShips: FactionForceActiveShipRecord[],
   galaxyDefinition: GalaxyDefinition,
+  warState: FactionWarState | null,
   config: SpaceWorldConfig,
   existingSeeds: SpaceFactionShipSeed[],
   groupSalt = 0,
@@ -1415,16 +1438,23 @@ function createSeededGuardFormation(
   }
 
   const leader = groupShips[0];
-  const system = getGalaxySystemById(galaxyDefinition, leader.originSystemId);
-  const sector = getGalaxySectorById(leader.sectorId);
-  if (!system || !sector) {
+  const assignmentZone = leader.assignmentZoneId
+    ? getGalaxyZoneById(galaxyDefinition, leader.assignmentZoneId)
+    : null;
+  const anchorSystem = getGalaxySystemById(galaxyDefinition, assignmentZone?.systemId ?? leader.originSystemId);
+  const targetSector = anchorSystem ? getGalaxySectorById(anchorSystem.sectorId) : null;
+  const originSector = getGalaxySectorById(leader.sectorId) ?? targetSector;
+  if (!anchorSystem || !targetSector || !originSector) {
     return [];
   }
 
   const rng = new SeededRandom((hashStringToSeed(`${leader.poolId}:${leader.shipId}`) ^ groupSalt) >>> 0);
   const raceProfile = getSpaceRaceDefenseProfile(leader.raceId);
-  const formationOffsets = createFormationOffsets("homeguard", groupShips.length, leader.raceId);
-  const faction = getSpaceFactionConfig("homeguard", leader.raceId);
+  const factionId = warState
+    ? getSpaceFactionIdForRace(warState, leader.raceId)
+    : "homeguard";
+  const formationOffsets = createFormationOffsets(factionId, groupShips.length, leader.raceId);
+  const faction = getSpaceFactionConfig(factionId, leader.raceId);
   const largestMemberRadius = groupShips.reduce((largest, ship) => {
     const roleProfile = getSpaceShipRoleCombatProfile(ship.role);
     return Math.max(largest, faction.radius * roleProfile.radiusMultiplier);
@@ -1437,18 +1467,18 @@ function createSeededGuardFormation(
       : 320 + (attempt * 16) + rng.range(0, 96);
     const orbitRadius = baseOrbitRadius * raceProfile.guardRadiusMultiplier;
     const anchor = {
-      x: system.x + (Math.cos(orbitAngle) * orbitRadius),
-      y: system.y + (Math.sin(orbitAngle) * orbitRadius),
+      x: anchorSystem.x + (Math.cos(orbitAngle) * orbitRadius),
+      y: anchorSystem.y + (Math.sin(orbitAngle) * orbitRadius),
     };
     const patrolAngle = orbitAngle + rng.range(0.86, 1.34);
     const patrolRadius = orbitRadius + (rng.range(80, 170) * raceProfile.formationSpacingMultiplier);
     const patrolAnchor = {
-      x: system.x + (Math.cos(patrolAngle) * patrolRadius),
-      y: system.y + (Math.sin(patrolAngle) * patrolRadius),
+      x: anchorSystem.x + (Math.cos(patrolAngle) * patrolRadius),
+      y: anchorSystem.y + (Math.sin(patrolAngle) * patrolRadius),
     };
     const heading = getForcePatrolHeading(anchor, patrolAnchor, orbitAngle);
     const formationPoints = formationOffsets.map((offset) => rotateFormationOffset(anchor, heading, offset.x, offset.y));
-    if (!canPlaceGuardFormation(existingSeeds, formationPoints, sector, config, largestMemberRadius)) {
+    if (!canPlaceGuardFormation(existingSeeds, formationPoints, targetSector, config, largestMemberRadius)) {
       continue;
     }
 
@@ -1461,10 +1491,12 @@ function createSeededGuardFormation(
       return {
         id: ship.shipId,
         cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
-        factionId: "homeguard" as const,
+        factionId,
         shipRole: ship.role,
-        sectorId: leader.sectorId,
-        groupId: `force-group:${leader.shipId}`,
+        assignmentKind: ship.assignmentKind,
+        assignmentZoneId: ship.assignmentZoneId,
+        sectorId: anchorSystem.sectorId,
+        groupId: `force-group:${leader.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? leader.originZoneId}`,
         leaderId: memberIndex === 0 ? null : leader.shipId,
         formationOffsetX: offset.x,
         formationOffsetY: offset.y,
@@ -1475,11 +1507,11 @@ function createSeededGuardFormation(
         rotation: heading + Math.PI * 0.5,
         patrolX: patrolPoint.x,
         patrolY: patrolPoint.y,
-        customColor: sector.color,
-        customTrimColor: sector.borderColor,
-        customGlowColor: sector.borderColor,
-        guardAnchorX: system.x,
-        guardAnchorY: system.y,
+        customColor: originSector.color,
+        customTrimColor: originSector.borderColor,
+        customGlowColor: originSector.borderColor,
+        guardAnchorX: anchorSystem.x,
+        guardAnchorY: anchorSystem.y,
         guardRadius: orbitRadius + (leader.kind === "prime-world" ? 260 : 190) + raceProfile.interceptPadding,
         originPoolId: ship.poolId,
         originPoolKind: ship.kind,
@@ -1491,8 +1523,8 @@ function createSeededGuardFormation(
   }
 
   const fallbackPoint = {
-    x: system.x + 360,
-    y: system.y,
+    x: anchorSystem.x + 360,
+    y: anchorSystem.y,
   };
   return groupShips.map((ship, memberIndex) => {
     const offset = formationOffsets[memberIndex] ?? { x: 0, y: 0 };
@@ -1503,10 +1535,12 @@ function createSeededGuardFormation(
     return {
       id: ship.shipId,
       cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
-      factionId: "homeguard" as const,
+      factionId,
       shipRole: ship.role,
-      sectorId: leader.sectorId,
-      groupId: `force-group:${leader.shipId}:fallback`,
+      assignmentKind: ship.assignmentKind,
+      assignmentZoneId: ship.assignmentZoneId,
+      sectorId: anchorSystem.sectorId,
+      groupId: `force-group:${leader.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? leader.originZoneId}:fallback`,
       leaderId: memberIndex === 0 ? null : leader.shipId,
       formationOffsetX: offset.x,
       formationOffsetY: offset.y,
@@ -1517,11 +1551,11 @@ function createSeededGuardFormation(
       rotation: Math.PI * 0.5,
       patrolX: point.x,
       patrolY: point.y,
-      customColor: sector.color,
-      customTrimColor: sector.borderColor,
-      customGlowColor: sector.borderColor,
-      guardAnchorX: system.x,
-      guardAnchorY: system.y,
+      customColor: originSector.color,
+      customTrimColor: originSector.borderColor,
+      customGlowColor: originSector.borderColor,
+      guardAnchorX: anchorSystem.x,
+      guardAnchorY: anchorSystem.y,
       guardRadius: ((leader.kind === "prime-world" ? 560 : 420) * raceProfile.guardRadiusMultiplier) + raceProfile.interceptPadding,
       originPoolId: ship.poolId,
       originPoolKind: ship.kind,
@@ -1535,6 +1569,7 @@ function createSeededGuardFormation(
 export function createSpaceForceShipSeeds(
   galaxyDefinition: GalaxyDefinition | null,
   forceState: FactionForceState | null,
+  warState: FactionWarState | null,
   config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
   groupSalt = 0,
 ): SpaceFactionShipSeed[] {
@@ -1544,12 +1579,13 @@ export function createSpaceForceShipSeeds(
 
   const activeForceShips = getActiveFactionForceShips(forceState);
   const groupedShips = activeForceShips.reduce<Map<string, FactionForceActiveShipRecord[]>>((lookup, ship) => {
-    const bucket = lookup.get(ship.poolId);
+    const groupKey = `${ship.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? ship.originZoneId}`;
+    const bucket = lookup.get(groupKey);
     if (bucket) {
       bucket.push(ship);
       return lookup;
     }
-    lookup.set(ship.poolId, [ship]);
+    lookup.set(groupKey, [ship]);
     return lookup;
   }, new Map());
 
@@ -1564,7 +1600,7 @@ export function createSpaceForceShipSeeds(
     });
     for (let groupStart = 0; groupStart < sortedShips.length; groupStart += 4) {
       const groupShips = sortedShips.slice(groupStart, groupStart + 4);
-      const groupSeeds = createSeededGuardFormation(groupShips, galaxyDefinition, config, seeds, groupSalt ^ hashStringToSeed(`${poolId}:${groupStart}`));
+      const groupSeeds = createSeededGuardFormation(groupShips, galaxyDefinition, warState, config, seeds, groupSalt ^ hashStringToSeed(`${poolId}:${groupStart}`));
       seeds.push(...groupSeeds);
     }
   });
@@ -1577,6 +1613,7 @@ function createSpaceFactionShipSeedsInternal(
   sectors: SpaceSectorConfig[] = SPACE_SECTORS,
   galaxyDefinition: GalaxyDefinition | null = null,
   forceState: FactionForceState | null = null,
+  warState: FactionWarState | null = null,
 ): SpaceFactionShipSeed[] {
   const rng = new SeededRandom((SHIP_WORLD_SEED ^ (galaxyDefinition?.seed ?? 0)) >>> 0);
   const seeds: SpaceFactionShipSeed[] = [];
@@ -1659,7 +1696,7 @@ function createSpaceFactionShipSeedsInternal(
   });
 
   if (galaxyDefinition && forceState) {
-    const forceSeeds = createSpaceForceShipSeeds(galaxyDefinition, forceState, config);
+    const forceSeeds = createSpaceForceShipSeeds(galaxyDefinition, forceState, warState, config);
     seeds.push(...forceSeeds);
   }
 
@@ -1787,12 +1824,13 @@ export function createSpaceFactionShipSeeds(
   sectors: SpaceSectorConfig[] = SPACE_SECTORS,
   galaxyDefinition: GalaxyDefinition | null = null,
   forceState: FactionForceState | null = null,
+  warState: FactionWarState | null = null,
 ): SpaceFactionShipSeed[] {
-  if (config === SPACE_WORLD_CONFIG && sectors === SPACE_SECTORS && !galaxyDefinition && !forceState) {
+  if (config === SPACE_WORLD_CONFIG && sectors === SPACE_SECTORS && !galaxyDefinition && !forceState && !warState) {
     return createSpaceWorldDefinition(config).factionSeeds;
   }
 
-  return createSpaceFactionShipSeedsInternal(config, sectors, galaxyDefinition, forceState);
+  return createSpaceFactionShipSeedsInternal(config, sectors, galaxyDefinition, forceState, warState);
 }
 
 export function createSpaceWorldDefinition(
@@ -1800,13 +1838,14 @@ export function createSpaceWorldDefinition(
   galaxyDefinition: GalaxyDefinition | null = null,
   fieldSeedSalt = 0,
   forceState: FactionForceState | null = null,
+  warState: FactionWarState | null = null,
 ): SpaceWorldDefinition {
-  if (config === SPACE_WORLD_CONFIG && !galaxyDefinition && !forceState && fieldSeedSalt === 0 && cachedSpaceWorldDefinition) {
+  if (config === SPACE_WORLD_CONFIG && !galaxyDefinition && !forceState && !warState && fieldSeedSalt === 0 && cachedSpaceWorldDefinition) {
     return cachedSpaceWorldDefinition;
   }
 
   const fieldSeeds = createSpaceFieldSeedsInternal(config, galaxyDefinition, fieldSeedSalt);
-  const factionSeeds = createSpaceFactionShipSeedsInternal(config, SPACE_SECTORS, galaxyDefinition, forceState);
+  const factionSeeds = createSpaceFactionShipSeedsInternal(config, SPACE_SECTORS, galaxyDefinition, forceState, warState);
   const definition: SpaceWorldDefinition = {
     fieldSeeds,
     factionSeeds,
@@ -1817,7 +1856,7 @@ export function createSpaceWorldDefinition(
     factionCounts: countFactionSeeds(factionSeeds),
   };
 
-  if (config === SPACE_WORLD_CONFIG && !galaxyDefinition && !forceState && fieldSeedSalt === 0) {
+  if (config === SPACE_WORLD_CONFIG && !galaxyDefinition && !forceState && !warState && fieldSeedSalt === 0) {
     cachedSpaceWorldDefinition = definition;
   }
 
