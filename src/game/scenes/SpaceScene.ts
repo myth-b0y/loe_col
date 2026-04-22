@@ -1576,6 +1576,8 @@ export class SpaceScene extends Phaser.Scene {
       rotation: preserveKinematics ? existingState.rotation : desiredState.rotation,
       aimX: preserveKinematics ? existingState.aimX : desiredState.aimX,
       aimY: preserveKinematics ? existingState.aimY : desiredState.aimY,
+      patrolX: preserveKinematics ? existingState.patrolX : desiredState.patrolX,
+      patrolY: preserveKinematics ? existingState.patrolY : desiredState.patrolY,
       hp: Math.min(desiredState.maxHp, desiredState.maxHp * hpRatio),
       flash: existingState.flash,
       fireCooldown: existingState.fireCooldown,
@@ -1583,9 +1585,76 @@ export class SpaceScene extends Phaser.Scene {
       provokedByShips: [...existingState.provokedByShips],
       aggressionTimer: existingState.aggressionTimer,
       strafeSign: existingState.strafeSign,
+      routeTargetKind: preserveKinematics ? existingState.routeTargetKind : desiredState.routeTargetKind,
+      routeTargetId: preserveKinematics ? existingState.routeTargetId : desiredState.routeTargetId,
+      routeWaitRemainingMs: preserveKinematics ? existingState.routeWaitRemainingMs : desiredState.routeWaitRemainingMs,
       supportRepairCooldown: existingState.supportRepairCooldown,
       destroyed: false,
     };
+  }
+
+  private shouldReplaceActiveForceShipVisual(
+    ship: SpaceFactionShip,
+    nextState: SpaceFactionShipState,
+  ): boolean {
+    return ship.factionId !== nextState.factionId
+      || ship.originRaceId !== nextState.originRaceId
+      || ship.shipRole !== nextState.shipRole
+      || ship.radius !== nextState.radius
+      || ship.customColor !== nextState.customColor
+      || ship.customTrimColor !== nextState.customTrimColor
+      || ship.customGlowColor !== nextState.customGlowColor;
+  }
+
+  private applyActiveForceShipState(
+    ship: SpaceFactionShip,
+    nextState: SpaceFactionShipState,
+  ): void {
+    ship.factionId = nextState.factionId;
+    ship.originRaceId = nextState.originRaceId;
+    ship.shipRole = nextState.shipRole;
+    ship.assignmentKind = nextState.assignmentKind;
+    ship.assignmentZoneId = nextState.assignmentZoneId;
+    ship.sectorId = nextState.sectorId;
+    ship.groupId = nextState.groupId;
+    ship.leaderId = nextState.leaderId;
+    ship.formationOffsetX = nextState.formationOffsetX;
+    ship.formationOffsetY = nextState.formationOffsetY;
+    ship.root.setPosition(nextState.x, nextState.y);
+    ship.velocity.set(nextState.velocityX, nextState.velocityY);
+    ship.root.rotation = nextState.rotation;
+    ship.aimDirection.set(nextState.aimX, nextState.aimY);
+    ship.patrolTarget.set(nextState.patrolX, nextState.patrolY);
+    ship.customColor = nextState.customColor;
+    ship.customTrimColor = nextState.customTrimColor;
+    ship.customGlowColor = nextState.customGlowColor;
+    if (nextState.guardAnchorX !== null && nextState.guardAnchorY !== null) {
+      if (!ship.guardAnchor) {
+        ship.guardAnchor = new Phaser.Math.Vector2(nextState.guardAnchorX, nextState.guardAnchorY);
+      } else {
+        ship.guardAnchor.set(nextState.guardAnchorX, nextState.guardAnchorY);
+      }
+    } else {
+      ship.guardAnchor = null;
+    }
+    ship.guardRadius = nextState.guardRadius ?? 0;
+    ship.originPoolId = nextState.originPoolId;
+    ship.originPoolKind = nextState.originPoolKind;
+    ship.originZoneId = nextState.originZoneId;
+    ship.originSystemId = nextState.originSystemId;
+    ship.radius = nextState.radius;
+    ship.hp = nextState.hp;
+    ship.maxHp = nextState.maxHp;
+    ship.flash = nextState.flash;
+    ship.fireCooldown = nextState.fireCooldown;
+    ship.provokedByPlayer = nextState.provokedByPlayer;
+    ship.provokedByShips = new Set(nextState.provokedByShips);
+    ship.aggressionTimer = nextState.aggressionTimer;
+    ship.strafeSign = nextState.strafeSign;
+    ship.routeTargetKind = nextState.routeTargetKind;
+    ship.routeTargetId = nextState.routeTargetId;
+    ship.routeWaitRemainingMs = nextState.routeWaitRemainingMs;
+    ship.supportRepairCooldown = nextState.supportRepairCooldown;
   }
 
   private replaceActiveForceShip(ship: SpaceFactionShip, nextState: SpaceFactionShipState): void {
@@ -1639,10 +1708,17 @@ export class SpaceScene extends Phaser.Scene {
     seedLookup.forEach((seed, shipId) => {
       const desiredState = this.createShipStateFromSeed(seed);
       const activeShip = this.factionShips.find((candidate) => candidate.id === shipId && candidate.originPoolId);
-      const existingState = this.shipStates.get(shipId);
+      const existingState = activeShip
+        ? this.captureFactionShipState(activeShip)
+        : this.shipStates.get(shipId);
       if (activeShip) {
         const mergedState = this.mergeForceShipState(existingState, desiredState, true);
-        this.replaceActiveForceShip(activeShip, mergedState);
+        if (this.shouldReplaceActiveForceShipVisual(activeShip, mergedState)) {
+          this.replaceActiveForceShip(activeShip, mergedState);
+        } else {
+          this.applyActiveForceShipState(activeShip, mergedState);
+          this.shipStates.set(shipId, mergedState);
+        }
         return;
       }
 
