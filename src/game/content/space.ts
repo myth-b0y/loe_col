@@ -13,6 +13,7 @@ import {
 import {
   getActiveFactionForceShips,
   type FactionForceActiveShipRecord,
+  type FactionForceShipRole,
   type FactionForceState,
 } from "./factionForces";
 import { type RaceId } from "./items";
@@ -79,6 +80,44 @@ export type SpaceFactionConfig = {
   bulletSpeed: number;
 };
 
+export type SpaceRaceDefenseProfile = {
+  hullBonus: number;
+  accelerationMultiplier: number;
+  maxSpeedMultiplier: number;
+  detectRangeMultiplier: number;
+  fireRangeMultiplier: number;
+  preferredRangeMultiplier: number;
+  fireCooldownMultiplier: number;
+  bulletSpeedMultiplier: number;
+  formationSpacingMultiplier: number;
+  guardRadiusMultiplier: number;
+  patrolRadiusMin: number;
+  patrolRadiusMax: number;
+  interceptPadding: number;
+  anchorPriority: number;
+  damagedTargetBias: number;
+  strafeStrength: number;
+  combatAdvanceBias: number;
+  allyAlertRadius: number;
+};
+
+export type SpaceShipRoleCombatProfile = {
+  radiusMultiplier: number;
+  hullMultiplier: number;
+  accelerationMultiplier: number;
+  maxSpeedMultiplier: number;
+  detectRangeMultiplier: number;
+  fireRangeMultiplier: number;
+  preferredRangeMultiplier: number;
+  fireCooldownMultiplier: number;
+  bulletSpeedMultiplier: number;
+  damageMultiplier: number;
+  leadPriority: number;
+  supportRepairAmount: number;
+  supportRepairCooldownMs: number;
+  supportRepairRange: number;
+};
+
 export type SpaceFieldObjectSeed = {
   id: string;
   cellKey: SpaceWorldCellKey;
@@ -100,6 +139,7 @@ export type SpaceFactionShipSeed = {
   id: string;
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
+  shipRole?: FactionForceShipRole | null;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -312,6 +352,281 @@ export const SPACE_FACTIONS: Record<SpaceFactionId, SpaceFactionConfig> = {
     bulletSpeed: 580,
   },
 };
+
+const DEFAULT_HOMEGUARD_RACE_PROFILE: SpaceRaceDefenseProfile = {
+  hullBonus: 0,
+  accelerationMultiplier: 1,
+  maxSpeedMultiplier: 1,
+  detectRangeMultiplier: 1,
+  fireRangeMultiplier: 1,
+  preferredRangeMultiplier: 1,
+  fireCooldownMultiplier: 1,
+  bulletSpeedMultiplier: 1,
+  formationSpacingMultiplier: 1,
+  guardRadiusMultiplier: 1,
+  patrolRadiusMin: 0.48,
+  patrolRadiusMax: 0.82,
+  interceptPadding: 260,
+  anchorPriority: 0.72,
+  damagedTargetBias: 0,
+  strafeStrength: 1,
+  combatAdvanceBias: 0,
+  allyAlertRadius: 1700,
+};
+
+const DEFAULT_SHIP_ROLE_COMBAT_PROFILE: SpaceShipRoleCombatProfile = {
+  radiusMultiplier: 1,
+  hullMultiplier: 1,
+  accelerationMultiplier: 1,
+  maxSpeedMultiplier: 1,
+  detectRangeMultiplier: 1,
+  fireRangeMultiplier: 1,
+  preferredRangeMultiplier: 1,
+  fireCooldownMultiplier: 1,
+  bulletSpeedMultiplier: 1,
+  damageMultiplier: 1,
+  leadPriority: 2,
+  supportRepairAmount: 0,
+  supportRepairCooldownMs: 0,
+  supportRepairRange: 0,
+};
+
+const HOMEGUARD_SHIP_ROLE_PROFILES: Record<FactionForceShipRole, SpaceShipRoleCombatProfile> = {
+  "base-fighter": {
+    ...DEFAULT_SHIP_ROLE_COMBAT_PROFILE,
+    leadPriority: 3,
+  },
+  "support-fighter": {
+    ...DEFAULT_SHIP_ROLE_COMBAT_PROFILE,
+    hullMultiplier: 0.96,
+    accelerationMultiplier: 0.96,
+    maxSpeedMultiplier: 0.95,
+    detectRangeMultiplier: 1.06,
+    fireRangeMultiplier: 0.94,
+    preferredRangeMultiplier: 1.08,
+    fireCooldownMultiplier: 1.12,
+    damageMultiplier: 0.72,
+    leadPriority: 2,
+    supportRepairAmount: 1,
+    supportRepairCooldownMs: 3200,
+    supportRepairRange: 270,
+  },
+  "attack-warship": {
+    ...DEFAULT_SHIP_ROLE_COMBAT_PROFILE,
+    radiusMultiplier: 1.42,
+    hullMultiplier: 1.72,
+    accelerationMultiplier: 0.76,
+    maxSpeedMultiplier: 0.8,
+    detectRangeMultiplier: 1.08,
+    fireRangeMultiplier: 1.14,
+    preferredRangeMultiplier: 1.08,
+    fireCooldownMultiplier: 0.84,
+    bulletSpeedMultiplier: 1.08,
+    damageMultiplier: 1.82,
+    leadPriority: 0,
+  },
+  "defense-warship": {
+    ...DEFAULT_SHIP_ROLE_COMBAT_PROFILE,
+    radiusMultiplier: 1.56,
+    hullMultiplier: 2.05,
+    accelerationMultiplier: 0.68,
+    maxSpeedMultiplier: 0.7,
+    detectRangeMultiplier: 1.1,
+    preferredRangeMultiplier: 0.92,
+    fireCooldownMultiplier: 0.92,
+    damageMultiplier: 1.34,
+    leadPriority: 1,
+  },
+};
+
+const HOMEGUARD_RACE_PROFILES: Record<RaceId, SpaceRaceDefenseProfile> = {
+  nevari: {
+    hullBonus: 2,
+    accelerationMultiplier: 0.94,
+    maxSpeedMultiplier: 0.91,
+    detectRangeMultiplier: 1.04,
+    fireRangeMultiplier: 1.08,
+    preferredRangeMultiplier: 1.08,
+    fireCooldownMultiplier: 1.08,
+    bulletSpeedMultiplier: 0.98,
+    formationSpacingMultiplier: 0.94,
+    guardRadiusMultiplier: 0.92,
+    patrolRadiusMin: 0.34,
+    patrolRadiusMax: 0.6,
+    interceptPadding: 180,
+    anchorPriority: 0.95,
+    damagedTargetBias: 0.14,
+    strafeStrength: 0.52,
+    combatAdvanceBias: -0.08,
+    allyAlertRadius: 2200,
+  },
+  olydran: {
+    hullBonus: 0,
+    accelerationMultiplier: 1,
+    maxSpeedMultiplier: 0.98,
+    detectRangeMultiplier: 1.18,
+    fireRangeMultiplier: 1.14,
+    preferredRangeMultiplier: 1.12,
+    fireCooldownMultiplier: 0.94,
+    bulletSpeedMultiplier: 1.12,
+    formationSpacingMultiplier: 0.92,
+    guardRadiusMultiplier: 1,
+    patrolRadiusMin: 0.4,
+    patrolRadiusMax: 0.68,
+    interceptPadding: 240,
+    anchorPriority: 0.78,
+    damagedTargetBias: 0.55,
+    strafeStrength: 0.46,
+    combatAdvanceBias: -0.02,
+    allyAlertRadius: 1540,
+  },
+  aaruian: {
+    hullBonus: 1,
+    accelerationMultiplier: 0.96,
+    maxSpeedMultiplier: 0.95,
+    detectRangeMultiplier: 1.06,
+    fireRangeMultiplier: 1.01,
+    preferredRangeMultiplier: 1.02,
+    fireCooldownMultiplier: 0.98,
+    bulletSpeedMultiplier: 1.02,
+    formationSpacingMultiplier: 0.82,
+    guardRadiusMultiplier: 0.9,
+    patrolRadiusMin: 0.32,
+    patrolRadiusMax: 0.56,
+    interceptPadding: 220,
+    anchorPriority: 0.96,
+    damagedTargetBias: 0.18,
+    strafeStrength: 0.38,
+    combatAdvanceBias: -0.04,
+    allyAlertRadius: 2320,
+  },
+  elsari: {
+    hullBonus: 0,
+    accelerationMultiplier: 1.02,
+    maxSpeedMultiplier: 1,
+    detectRangeMultiplier: 1.1,
+    fireRangeMultiplier: 1.06,
+    preferredRangeMultiplier: 1.05,
+    fireCooldownMultiplier: 0.96,
+    bulletSpeedMultiplier: 1.06,
+    formationSpacingMultiplier: 0.9,
+    guardRadiusMultiplier: 1.04,
+    patrolRadiusMin: 0.38,
+    patrolRadiusMax: 0.72,
+    interceptPadding: 300,
+    anchorPriority: 0.72,
+    damagedTargetBias: 0.4,
+    strafeStrength: 0.78,
+    combatAdvanceBias: 0.08,
+    allyAlertRadius: 1820,
+  },
+  rakkan: {
+    hullBonus: 1,
+    accelerationMultiplier: 1.04,
+    maxSpeedMultiplier: 0.98,
+    detectRangeMultiplier: 0.97,
+    fireRangeMultiplier: 0.95,
+    preferredRangeMultiplier: 0.84,
+    fireCooldownMultiplier: 0.92,
+    bulletSpeedMultiplier: 1,
+    formationSpacingMultiplier: 1,
+    guardRadiusMultiplier: 0.94,
+    patrolRadiusMin: 0.38,
+    patrolRadiusMax: 0.64,
+    interceptPadding: 270,
+    anchorPriority: 0.84,
+    damagedTargetBias: 0.28,
+    strafeStrength: 0.44,
+    combatAdvanceBias: 0.2,
+    allyAlertRadius: 1660,
+  },
+  ashari: {
+    hullBonus: 1,
+    accelerationMultiplier: 1.12,
+    maxSpeedMultiplier: 1.08,
+    detectRangeMultiplier: 0.95,
+    fireRangeMultiplier: 0.92,
+    preferredRangeMultiplier: 0.78,
+    fireCooldownMultiplier: 0.86,
+    bulletSpeedMultiplier: 1.04,
+    formationSpacingMultiplier: 1.08,
+    guardRadiusMultiplier: 1.08,
+    patrolRadiusMin: 0.46,
+    patrolRadiusMax: 0.8,
+    interceptPadding: 360,
+    anchorPriority: 0.66,
+    damagedTargetBias: 0.18,
+    strafeStrength: 0.34,
+    combatAdvanceBias: 0.34,
+    allyAlertRadius: 1540,
+  },
+  svarin: {
+    hullBonus: -1,
+    accelerationMultiplier: 1.12,
+    maxSpeedMultiplier: 1.14,
+    detectRangeMultiplier: 1.02,
+    fireRangeMultiplier: 0.98,
+    preferredRangeMultiplier: 0.9,
+    fireCooldownMultiplier: 0.9,
+    bulletSpeedMultiplier: 1.08,
+    formationSpacingMultiplier: 1.18,
+    guardRadiusMultiplier: 1.1,
+    patrolRadiusMin: 0.44,
+    patrolRadiusMax: 0.84,
+    interceptPadding: 330,
+    anchorPriority: 0.62,
+    damagedTargetBias: 0.42,
+    strafeStrength: 0.94,
+    combatAdvanceBias: 0.12,
+    allyAlertRadius: 1480,
+  },
+};
+
+const HOMEGUARD_RACE_CONFIGS: Record<RaceId, SpaceFactionConfig> = Object.fromEntries(
+  (Object.keys(HOMEGUARD_RACE_PROFILES) as RaceId[]).map((raceId) => {
+    const profile = HOMEGUARD_RACE_PROFILES[raceId];
+    return [
+      raceId,
+      {
+        ...SPACE_FACTIONS.homeguard,
+        maxHull: Math.max(4, SPACE_FACTIONS.homeguard.maxHull + profile.hullBonus),
+        acceleration: SPACE_FACTIONS.homeguard.acceleration * profile.accelerationMultiplier,
+        maxSpeed: SPACE_FACTIONS.homeguard.maxSpeed * profile.maxSpeedMultiplier,
+        detectRange: SPACE_FACTIONS.homeguard.detectRange * profile.detectRangeMultiplier,
+        fireRange: SPACE_FACTIONS.homeguard.fireRange * profile.fireRangeMultiplier,
+        preferredRange: SPACE_FACTIONS.homeguard.preferredRange * profile.preferredRangeMultiplier,
+        fireCooldown: SPACE_FACTIONS.homeguard.fireCooldown * profile.fireCooldownMultiplier,
+        bulletSpeed: SPACE_FACTIONS.homeguard.bulletSpeed * profile.bulletSpeedMultiplier,
+      } satisfies SpaceFactionConfig,
+    ] as const;
+  }),
+) as Record<RaceId, SpaceFactionConfig>;
+
+export function getSpaceRaceDefenseProfile(raceId: RaceId | null | undefined): SpaceRaceDefenseProfile {
+  if (!raceId) {
+    return DEFAULT_HOMEGUARD_RACE_PROFILE;
+  }
+  return HOMEGUARD_RACE_PROFILES[raceId] ?? DEFAULT_HOMEGUARD_RACE_PROFILE;
+}
+
+export function getSpaceFactionConfig(
+  factionId: SpaceFactionId,
+  raceId: RaceId | null | undefined = null,
+): SpaceFactionConfig {
+  if (factionId === "homeguard" && raceId) {
+    return HOMEGUARD_RACE_CONFIGS[raceId] ?? SPACE_FACTIONS.homeguard;
+  }
+  return SPACE_FACTIONS[factionId];
+}
+
+export function getSpaceShipRoleCombatProfile(
+  role: FactionForceShipRole | null | undefined,
+): SpaceShipRoleCombatProfile {
+  if (!role) {
+    return DEFAULT_SHIP_ROLE_COMBAT_PROFILE;
+  }
+  return HOMEGUARD_SHIP_ROLE_PROFILES[role] ?? DEFAULT_SHIP_ROLE_COMBAT_PROFILE;
+}
 
 export const SHIP_HYPERDRIVE_CONFIG: ShipHyperdriveConfig = {
   chargeDurationMs: 3000,
@@ -565,7 +880,8 @@ function canPlaceShipSeed(
   buffer: number,
 ): boolean {
   return seeds.every((seed) => {
-    const otherRadius = SPACE_FACTIONS[seed.factionId].radius;
+    const otherRadius = SPACE_FACTIONS[seed.factionId].radius
+      * getSpaceShipRoleCombatProfile(seed.shipRole ?? null).radiusMultiplier;
     const minimumDistance = otherRadius + radius + buffer;
     const dx = seed.x - x;
     const dy = seed.y - y;
@@ -607,9 +923,23 @@ function getFactionGroupSize(
   return remaining;
 }
 
+function scaleFormationOffsets(
+  offsets: Array<{ x: number; y: number }>,
+  spacingMultiplier: number,
+): Array<{ x: number; y: number }> {
+  if (Math.abs(spacingMultiplier - 1) <= 0.001) {
+    return offsets;
+  }
+  return offsets.map((offset) => ({
+    x: offset.x * spacingMultiplier,
+    y: offset.y * spacingMultiplier,
+  }));
+}
+
 function createFormationOffsets(
   factionId: SpaceFactionId,
   groupSize: number,
+  raceId: RaceId | null = null,
 ): Array<{ x: number; y: number }> {
   if (groupSize <= 1) {
     return [{ x: 0, y: 0 }];
@@ -631,12 +961,13 @@ function createFormationOffsets(
   }
 
   if (factionId === "homeguard") {
-    return [
+    const baseOffsets = [
       { x: 0, y: 0 },
       { x: -64, y: 72 },
       { x: 64, y: 72 },
       { x: 0, y: 152 },
     ].slice(0, groupSize);
+    return scaleFormationOffsets(baseOffsets, getSpaceRaceDefenseProfile(raceId).formationSpacingMultiplier);
   }
 
   const offsets: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
@@ -1091,27 +1422,33 @@ function createSeededGuardFormation(
   }
 
   const rng = new SeededRandom((hashStringToSeed(`${leader.poolId}:${leader.shipId}`) ^ groupSalt) >>> 0);
-  const formationOffsets = createFormationOffsets("homeguard", groupShips.length);
-  const faction = SPACE_FACTIONS.homeguard;
+  const raceProfile = getSpaceRaceDefenseProfile(leader.raceId);
+  const formationOffsets = createFormationOffsets("homeguard", groupShips.length, leader.raceId);
+  const faction = getSpaceFactionConfig("homeguard", leader.raceId);
+  const largestMemberRadius = groupShips.reduce((largest, ship) => {
+    const roleProfile = getSpaceShipRoleCombatProfile(ship.role);
+    return Math.max(largest, faction.radius * roleProfile.radiusMultiplier);
+  }, faction.radius);
 
   for (let attempt = 0; attempt < 16; attempt += 1) {
     const orbitAngle = rng.range(0, Math.PI * 2);
-    const orbitRadius = leader.kind === "prime-world"
-      ? 460 + (attempt * 18) + rng.range(0, 110)
-      : 340 + (attempt * 14) + rng.range(0, 90);
+    const baseOrbitRadius = leader.kind === "prime-world"
+      ? 440 + (attempt * 18) + rng.range(0, 120)
+      : 320 + (attempt * 16) + rng.range(0, 96);
+    const orbitRadius = baseOrbitRadius * raceProfile.guardRadiusMultiplier;
     const anchor = {
       x: system.x + (Math.cos(orbitAngle) * orbitRadius),
       y: system.y + (Math.sin(orbitAngle) * orbitRadius),
     };
     const patrolAngle = orbitAngle + rng.range(0.86, 1.34);
-    const patrolRadius = orbitRadius + rng.range(80, 170);
+    const patrolRadius = orbitRadius + (rng.range(80, 170) * raceProfile.formationSpacingMultiplier);
     const patrolAnchor = {
       x: system.x + (Math.cos(patrolAngle) * patrolRadius),
       y: system.y + (Math.sin(patrolAngle) * patrolRadius),
     };
     const heading = getForcePatrolHeading(anchor, patrolAnchor, orbitAngle);
     const formationPoints = formationOffsets.map((offset) => rotateFormationOffset(anchor, heading, offset.x, offset.y));
-    if (!canPlaceGuardFormation(existingSeeds, formationPoints, sector, config, faction.radius)) {
+    if (!canPlaceGuardFormation(existingSeeds, formationPoints, sector, config, largestMemberRadius)) {
       continue;
     }
 
@@ -1119,11 +1456,13 @@ function createSeededGuardFormation(
       const offset = formationOffsets[memberIndex] ?? { x: 0, y: 0 };
       const point = formationPoints[memberIndex] ?? anchor;
       const patrolPoint = rotateFormationOffset(patrolAnchor, heading, offset.x, offset.y);
-      const speed = (14 + rng.range(0, faction.maxSpeed * 0.14)) * rng.range(0.92, 1.04);
+      const roleProfile = getSpaceShipRoleCombatProfile(ship.role);
+      const speed = (14 + rng.range(0, faction.maxSpeed * 0.14)) * roleProfile.maxSpeedMultiplier * rng.range(0.92, 1.04);
       return {
         id: ship.shipId,
         cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
         factionId: "homeguard" as const,
+        shipRole: ship.role,
         sectorId: leader.sectorId,
         groupId: `force-group:${leader.shipId}`,
         leaderId: memberIndex === 0 ? null : leader.shipId,
@@ -1141,7 +1480,7 @@ function createSeededGuardFormation(
         customGlowColor: sector.borderColor,
         guardAnchorX: system.x,
         guardAnchorY: system.y,
-        guardRadius: orbitRadius + 220,
+        guardRadius: orbitRadius + (leader.kind === "prime-world" ? 260 : 190) + raceProfile.interceptPadding,
         originPoolId: ship.poolId,
         originPoolKind: ship.kind,
         originZoneId: ship.originZoneId,
@@ -1165,6 +1504,7 @@ function createSeededGuardFormation(
       id: ship.shipId,
       cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
       factionId: "homeguard" as const,
+      shipRole: ship.role,
       sectorId: leader.sectorId,
       groupId: `force-group:${leader.shipId}:fallback`,
       leaderId: memberIndex === 0 ? null : leader.shipId,
@@ -1182,7 +1522,7 @@ function createSeededGuardFormation(
       customGlowColor: sector.borderColor,
       guardAnchorX: system.x,
       guardAnchorY: system.y,
-      guardRadius: leader.kind === "prime-world" ? 560 : 420,
+      guardRadius: ((leader.kind === "prime-world" ? 560 : 420) * raceProfile.guardRadiusMultiplier) + raceProfile.interceptPadding,
       originPoolId: ship.poolId,
       originPoolKind: ship.kind,
       originZoneId: ship.originZoneId,
@@ -1215,7 +1555,13 @@ export function createSpaceForceShipSeeds(
 
   const seeds: SpaceFactionShipSeed[] = [];
   groupedShips.forEach((poolShips, poolId) => {
-    const sortedShips = [...poolShips].sort((left, right) => left.shipId.localeCompare(right.shipId));
+    const sortedShips = [...poolShips].sort((left, right) => {
+      const priorityDelta = getSpaceShipRoleCombatProfile(left.role).leadPriority - getSpaceShipRoleCombatProfile(right.role).leadPriority;
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+      return left.shipId.localeCompare(right.shipId);
+    });
     for (let groupStart = 0; groupStart < sortedShips.length; groupStart += 4) {
       const groupShips = sortedShips.slice(groupStart, groupStart + 4);
       const groupSeeds = createSeededGuardFormation(groupShips, galaxyDefinition, config, seeds, groupSalt ^ hashStringToSeed(`${poolId}:${groupStart}`));

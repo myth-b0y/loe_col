@@ -94,12 +94,38 @@ try {
       acc[ship.sectorId][ship.factionId] += 1;
       return acc;
     }, {});
+    const homeguardStates = [...space.shipStates.values()].filter((state) => state.factionId === "homeguard" && state.originRaceId && !state.destroyed);
+    const homeguardRaceCounts = homeguardStates.reduce((acc, state) => {
+      acc[state.originRaceId] = (acc[state.originRaceId] ?? 0) + 1;
+      return acc;
+    }, {});
+    const homeguardRoleCounts = homeguardStates.reduce((acc, state) => {
+      const roleKey = state.shipRole ?? "unknown";
+      acc[roleKey] = (acc[roleKey] ?? 0) + 1;
+      return acc;
+    }, {});
+    const homeguardRaceSamples = homeguardStates.reduce((acc, state) => {
+      if (!acc[state.originRaceId]) {
+        acc[state.originRaceId] = { count: 0, maxHp: state.maxHp, guardRadiusTotal: 0 };
+      }
+      acc[state.originRaceId].count += 1;
+      acc[state.originRaceId].maxHp = Math.max(acc[state.originRaceId].maxHp, state.maxHp);
+      acc[state.originRaceId].guardRadiusTotal += state.guardRadius ?? 0;
+      return acc;
+    }, {});
+    Object.values(homeguardRaceSamples).forEach((sample) => {
+      sample.averageGuardRadius = sample.count > 0 ? Math.round(sample.guardRadiusTotal / sample.count) : 0;
+      delete sample.guardRadiusTotal;
+    });
     return {
       factionCounts: debugSnapshot.factionCounts,
       sectorCounts,
       shipCount: ships.length,
       groupSizes: Object.values(groupSizes),
       production: debugSnapshot.production,
+      homeguardRaceCounts,
+      homeguardRoleCounts,
+      homeguardRaceSamples,
     };
   });
 
@@ -108,7 +134,7 @@ try {
   assert(spawnSummary.factionCounts.pirate > 0, "Pirate nuisance fleets did not spawn");
   assert(spawnSummary.factionCounts.smuggler > 0, "Smugglers did not spawn");
   assert(spawnSummary.factionCounts.homeguard > 0, "Prime world guardian fleets did not spawn");
-  assert(spawnSummary.shipCount >= 80, `Neutral baseline ship population is unexpectedly low: ${spawnSummary.shipCount}`);
+  assert(spawnSummary.shipCount >= 180, `Neutral defensive baseline ship population is unexpectedly low: ${spawnSummary.shipCount}`);
   assert(Object.keys(spawnSummary.sectorCounts).length >= 7, `Expected faction seeds across all sectors: ${JSON.stringify(spawnSummary.sectorCounts)}`);
   assert(spawnSummary.groupSizes.every((group) => group.leaders === 1), "Every faction group should still have exactly one leader");
   assert(spawnSummary.groupSizes.filter((group) => group.factionId === "pirate").every((group) => group.size >= 2 && group.size <= 3),
@@ -128,7 +154,28 @@ try {
   assert(zonePools.every((pool) => pool.capacity === 5), `Every controlled zone should expose a local 5-ship pool: ${JSON.stringify(zonePools)}`);
   assert(primePools.every((pool) => pool.capacity === 10 + pool.controlledZoneCount), `Prime world capacity should equal 10 plus controlled zones: ${JSON.stringify(primePools)}`);
   assert(primePools.every((pool) => pool.activeShipCount === 3 && pool.desiredDefenseShips === 3), `Prime world defense should be filled first to 3 ships in this baseline: ${JSON.stringify(primePools)}`);
-  assert(zonePools.every((pool) => pool.activeShipCount === 0), `Zone defense pools should remain reserved until the defense-AI phase: ${JSON.stringify(zonePools.slice(0, 8))}`);
+  assert(zonePools.every((pool) => pool.desiredDefenseShips === 3), `Zone defense target should now be 3 ships per controlled zone: ${JSON.stringify(zonePools.slice(0, 8))}`);
+  assert(zonePools.every((pool) => pool.activeShipCount >= 1 && pool.activeShipCount <= 3), `Zone defense pools should actively begin filling toward 3 ships: ${JSON.stringify(zonePools.slice(0, 8))}`);
+  assert(Object.keys(spawnSummary.homeguardRaceCounts).length === 7, `Home guard defenders should exist for all seven races: ${JSON.stringify(spawnSummary.homeguardRaceCounts)}`);
+  assert(Object.values(spawnSummary.homeguardRaceCounts).every((count) => count >= 3), `Each race should have multiple defender ships active in the force state: ${JSON.stringify(spawnSummary.homeguardRaceCounts)}`);
+  assert(spawnSummary.homeguardRoleCounts["base-fighter"] > 0, `Base fighters should be present in defensive fleets: ${JSON.stringify(spawnSummary.homeguardRoleCounts)}`);
+  assert(spawnSummary.homeguardRoleCounts["support-fighter"] > 0, `Support fighters should be present in defensive fleets: ${JSON.stringify(spawnSummary.homeguardRoleCounts)}`);
+  assert(spawnSummary.homeguardRoleCounts["attack-warship"] > 0, `Attack warships should be present in defensive fleets: ${JSON.stringify(spawnSummary.homeguardRoleCounts)}`);
+  assert(spawnSummary.homeguardRoleCounts["defense-warship"] > 0, `Defense warships should be present in defensive fleets: ${JSON.stringify(spawnSummary.homeguardRoleCounts)}`);
+  assert(spawnSummary.homeguardRaceSamples.nevari.maxHp > spawnSummary.homeguardRaceSamples.svarin.maxHp,
+    `Nevari defenders should be tougher than Svarin defenders: ${JSON.stringify(spawnSummary.homeguardRaceSamples)}`);
+  assert(spawnSummary.homeguardRaceSamples.aaruian.averageGuardRadius < spawnSummary.homeguardRaceSamples.svarin.averageGuardRadius,
+    `Aaruian defenders should hold tighter guard space than Svarin defenders: ${JSON.stringify(spawnSummary.homeguardRaceSamples)}`);
+  assert(spawnSummary.production.respawnCooldownsMs.zone["base-fighter"] < spawnSummary.production.respawnCooldownsMs.zone["support-fighter"],
+    `Zone base fighters should respawn faster than support fighters: ${JSON.stringify(spawnSummary.production.respawnCooldownsMs)}`);
+  assert(spawnSummary.production.respawnCooldownsMs.zone["support-fighter"] < spawnSummary.production.respawnCooldownsMs.zone["defense-warship"],
+    `Zone support fighters should respawn faster than defense warships: ${JSON.stringify(spawnSummary.production.respawnCooldownsMs)}`);
+  assert(spawnSummary.production.respawnCooldownsMs.zone["defense-warship"] < spawnSummary.production.respawnCooldownsMs.zone["attack-warship"],
+    `Zone defense warships should respawn faster than attack warships: ${JSON.stringify(spawnSummary.production.respawnCooldownsMs)}`);
+  assert(spawnSummary.production.respawnCooldownsMs.primeWorld["base-fighter"] < spawnSummary.production.respawnCooldownsMs.zone["base-fighter"],
+    `Prime World production should be faster than zone production for base fighters: ${JSON.stringify(spawnSummary.production.respawnCooldownsMs)}`);
+  assert(spawnSummary.production.respawnCooldownsMs.primeWorld["attack-warship"] < spawnSummary.production.respawnCooldownsMs.zone["attack-warship"],
+    `Prime World production should be faster than zone production for attack warships: ${JSON.stringify(spawnSummary.production.respawnCooldownsMs)}`);
 
   const behaviorCheck = await page.evaluate((cellSize) => {
     const space = window.__loeGame?.scene.keys.space;
@@ -206,6 +253,42 @@ try {
     const homeguardThreatensPlayer = space.isShipHostileToPlayer?.(homeguard) ?? false;
     const pirateVsSmuggler = space.isShipHostileToShip(pirate, smuggler);
     const homeguardVsPirate = space.isShipHostileToShip(homeguard, pirate);
+    const homeguardStates = [...space.shipStates.values()].filter((state) => state.factionId === "homeguard" && state.originRaceId && !state.destroyed);
+    const aggroTargetState = homeguardStates[0] ?? null;
+    const sameRaceAllyState = aggroTargetState
+      ? homeguardStates.find((state) => state.originRaceId === aggroTargetState.originRaceId && state.id !== aggroTargetState.id) ?? null
+      : null;
+    const differentRaceAllyState = aggroTargetState
+      ? homeguardStates.find((state) => state.originRaceId !== aggroTargetState.originRaceId) ?? null
+      : null;
+
+    if (aggroTargetState && sameRaceAllyState && differentRaceAllyState) {
+      const stagedHomeguards = [
+        { state: aggroTargetState, x: playerX + 620, y: playerY - 40 },
+        { state: sameRaceAllyState, x: playerX + 700, y: playerY + 10 },
+        { state: differentRaceAllyState, x: playerX + 680, y: playerY - 110 },
+      ];
+      stagedHomeguards.forEach(({ state, x, y }) => {
+        state.x = x;
+        state.y = y;
+        state.velocityX = 0;
+        state.velocityY = 0;
+        state.patrolX = x;
+        state.patrolY = y;
+        state.provokedByPlayer = false;
+        state.provokedByShips = [];
+        state.aggressionTimer = 0;
+        state.cellKey = `${Math.max(0, Math.floor(x / cellSize))},${Math.max(0, Math.floor(y / cellSize))}`;
+      });
+      space.syncActiveWorld?.(true);
+    }
+
+    const aggroTarget = aggroTargetState ? space.factionShips.find((ship) => ship.id === aggroTargetState.id) ?? null : null;
+    const sameRaceAlly = sameRaceAllyState ? space.factionShips.find((ship) => ship.id === sameRaceAllyState.id) ?? null : null;
+    const differentRaceAlly = differentRaceAllyState ? space.factionShips.find((ship) => ship.id === differentRaceAllyState.id) ?? null : null;
+    if (aggroTarget && sameRaceAlly && differentRaceAlly) {
+      space.damageFactionShip(aggroTarget, 1, { kind: "player" });
+    }
 
     const smugglerHullBefore = smuggler.hp;
     space.damageFactionShip(smuggler, 1, { kind: "player" }, smuggler.root.x);
@@ -218,6 +301,9 @@ try {
       homeguardThreatensPlayer,
       pirateVsSmuggler,
       homeguardVsPirate,
+      aggroTargetRace: aggroTarget?.originRaceId ?? null,
+      sameRaceAggro: sameRaceAlly?.provokedByPlayer ?? false,
+      differentRaceAggro: differentRaceAlly?.provokedByPlayer ?? false,
       smugglerHullBefore,
       smugglerHullAfter: smuggler.hp,
       smugglerProvoked: smuggler.provokedByPlayer,
@@ -232,6 +318,8 @@ try {
     `Prime world guardians should not attack the player by default: ${JSON.stringify(behaviorCheck)}`);
   assert(behaviorCheck.pirateVsSmuggler, "Pirates should still threaten smugglers");
   assert(behaviorCheck.homeguardVsPirate, "Prime world guardians should still respond to pirate pressure");
+  assert(behaviorCheck.sameRaceAggro && !behaviorCheck.differentRaceAggro,
+    `Guardian aggro should stay inside the attacked race's defensive group: ${JSON.stringify(behaviorCheck)}`);
   assert(behaviorCheck.smugglerHullAfter <= behaviorCheck.smugglerHullBefore, "Smuggler damage application failed during provocation check");
   assert(behaviorCheck.smugglerProvoked && behaviorCheck.smugglerAfter === "player",
     `Smuggler should retaliate after being attacked: ${JSON.stringify(behaviorCheck)}`);

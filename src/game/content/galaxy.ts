@@ -1559,6 +1559,21 @@ function isPointInsideZonePolygon(point: GalaxyPoint, polygon: GalaxyPoint[]): b
   return inside;
 }
 
+function getZonePolygonArea(points: GalaxyPoint[]): number {
+  if (points.length < 3) {
+    return 0;
+  }
+
+  let area = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    area += (current.x * next.y) - (next.x * current.y);
+  }
+
+  return Math.abs(area) * 0.5;
+}
+
 function buildZoneTerritoryPolygon(
   system: GalaxySystemRecord,
   sectorSystems: GalaxySystemRecord[],
@@ -1615,9 +1630,10 @@ function createZonesForSystems(
     const sectorPolygon = getSectorPolygonPointObjects(sector);
     const zoneAnchorWeights = new Map<string, number>();
     const sectorZoneGeometry = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
+    let bestValidGeometry = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
     let weightFactor = GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR;
 
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
       zoneAnchorWeights.clear();
       sectorZoneGeometry.clear();
       sectorSystems.forEach((system) => {
@@ -1638,10 +1654,37 @@ function createZonesForSystems(
       });
 
       if (allAnchorsContained) {
-        break;
+        bestValidGeometry = new Map(
+          [...sectorZoneGeometry.entries()].map(([systemId, geometry]) => ([systemId, {
+            territoryPoints: geometry.territoryPoints.map((point) => ({ ...point })),
+            anchorWeight: geometry.anchorWeight,
+            isPrimeWorldZone: geometry.isPrimeWorldZone,
+          }] as const)),
+        );
+
+        const averageZoneArea = sectorSystems.length > 0
+          ? sectorSystems.reduce((sum, system) => sum + getZonePolygonArea(sectorZoneGeometry.get(system.id)?.territoryPoints ?? []), 0) / sectorSystems.length
+          : 0;
+        const primeZonesLargeEnough = sectorSystems
+          .filter((system) => homeworldSystemIds.has(system.id))
+          .every((system) => getZonePolygonArea(sectorZoneGeometry.get(system.id)?.territoryPoints ?? []) > averageZoneArea * 1.02);
+
+        if (primeZonesLargeEnough) {
+          break;
+        }
+
+        weightFactor *= 1.18;
+        continue;
       }
 
       weightFactor *= 0.72;
+    }
+
+    if (bestValidGeometry.size > 0) {
+      sectorZoneGeometry.clear();
+      bestValidGeometry.forEach((geometry, systemId) => {
+        sectorZoneGeometry.set(systemId, geometry);
+      });
     }
 
     sectorZoneGeometry.forEach((geometry, systemId) => {

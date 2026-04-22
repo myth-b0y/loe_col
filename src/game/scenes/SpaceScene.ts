@@ -25,6 +25,7 @@ import {
   advanceFactionForceProduction,
   getFactionForceDebugSnapshot,
   markFactionForceShipDestroyed,
+  type FactionForceShipRole,
   type FactionForceState,
 } from "../content/factionForces";
 import { getMissionContract } from "../content/missions";
@@ -34,6 +35,9 @@ import {
   SHIP_RADAR_CONFIG,
   SPACE_WORLD_CONFIG,
   createShipHyperdriveSystemState,
+  getSpaceFactionConfig,
+  getSpaceRaceDefenseProfile,
+  getSpaceShipRoleCombatProfile,
   createSpaceForceShipSeeds,
   createSpaceWorldDefinition,
   createSpacePatrolTarget,
@@ -50,6 +54,7 @@ import {
   type SpaceWorldCellKey,
   type SpaceWorldDefinition,
 } from "../content/space";
+import { type RaceId } from "../content/items";
 import { gameSession } from "../core/session";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -105,6 +110,8 @@ type SpaceFieldObjectState = {
 type SpaceFactionShip = {
   id: string;
   factionId: SpaceFactionId;
+  originRaceId: RaceId | null;
+  shipRole: FactionForceShipRole | null;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -137,12 +144,15 @@ type SpaceFactionShip = {
   routeTargetKind: SmugglerRouteTargetKind | null;
   routeTargetId: string | null;
   routeWaitRemainingMs: number;
+  supportRepairCooldown: number;
 };
 
 type SpaceFactionShipState = {
   id: string;
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
+  originRaceId: RaceId | null;
+  shipRole: FactionForceShipRole | null;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -179,6 +189,7 @@ type SpaceFactionShipState = {
   routeTargetKind: SmugglerRouteTargetKind | null;
   routeTargetId: string | null;
   routeWaitRemainingMs: number;
+  supportRepairCooldown: number;
   destroyed: boolean;
 };
 
@@ -1259,12 +1270,15 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createShipStateFromSeed(seed: SpaceWorldDefinition["factionSeeds"][number]): SpaceFactionShipState {
-    const faction = SPACE_FACTIONS[seed.factionId];
+    const faction = getSpaceFactionConfig(seed.factionId, seed.originRaceId ?? null);
+    const roleProfile = getSpaceShipRoleCombatProfile(seed.shipRole ?? null);
     const aimDirection = angleToDirection(seed.rotation);
     return {
       id: seed.id,
       cellKey: seed.cellKey,
       factionId: seed.factionId,
+      originRaceId: seed.originRaceId ?? null,
+      shipRole: seed.shipRole ?? null,
       sectorId: seed.sectorId,
       groupId: seed.groupId,
       leaderId: seed.leaderId,
@@ -1289,11 +1303,11 @@ export class SpaceScene extends Phaser.Scene {
       originSystemId: seed.originSystemId ?? null,
       aimX: aimDirection.x,
       aimY: aimDirection.y,
-      radius: faction.radius,
-      hp: faction.maxHull,
-      maxHp: faction.maxHull,
+      radius: faction.radius * roleProfile.radiusMultiplier,
+      hp: faction.maxHull * roleProfile.hullMultiplier,
+      maxHp: faction.maxHull * roleProfile.hullMultiplier,
       flash: 0,
-      fireCooldown: createInitialFactionFireCooldown(seed.id, faction.fireCooldown),
+      fireCooldown: createInitialFactionFireCooldown(seed.id, faction.fireCooldown * roleProfile.fireCooldownMultiplier),
       provokedByPlayer: false,
       provokedByShips: [],
       aggressionTimer: 0,
@@ -1301,6 +1315,7 @@ export class SpaceScene extends Phaser.Scene {
       routeTargetKind: null,
       routeTargetId: null,
       routeWaitRemainingMs: 0,
+      supportRepairCooldown: 0,
       destroyed: false,
     };
   }
@@ -1567,6 +1582,8 @@ export class SpaceScene extends Phaser.Scene {
       id: ship.id,
       cellKey: getSpaceCellKeyAtPosition(ship.root.x, ship.root.y, SPACE_WORLD_CONFIG),
       factionId: ship.factionId,
+      originRaceId: ship.originRaceId,
+      shipRole: ship.shipRole,
       sectorId: ship.sectorId,
       groupId: ship.groupId,
       leaderId: ship.leaderId,
@@ -1603,6 +1620,7 @@ export class SpaceScene extends Phaser.Scene {
       routeTargetKind: ship.routeTargetKind,
       routeTargetId: ship.routeTargetId,
       routeWaitRemainingMs: ship.routeWaitRemainingMs,
+      supportRepairCooldown: ship.supportRepairCooldown,
       destroyed,
     };
   }
@@ -1709,15 +1727,54 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createFactionShip(state: SpaceFactionShipState): SpaceFactionShip {
-    const faction = SPACE_FACTIONS[state.factionId];
+    const faction = this.getShipCombatConfig(state);
     const palette = this.getShipPalette(state);
+    const roleProfile = getSpaceShipRoleCombatProfile(state.shipRole);
+    const bodyRadius = state.radius;
     const children: Phaser.GameObjects.GameObject[] = [];
-    const shadow = this.add.ellipse(3, 7, faction.radius * 1.9, faction.radius, 0x000000, 0.2);
-    const damageRing = this.add.circle(0, 0, faction.radius * 0.92, palette.glowColor, 0).setStrokeStyle(2, 0xf8fbff, 0);
-    const thruster = this.add.ellipse(0, faction.radius - 1, 12, 20, palette.glowColor, 0.2).setStrokeStyle(1, palette.trimColor, 0.28);
+    const shadow = this.add.ellipse(3, 7, bodyRadius * 2.1, bodyRadius * 1.05, 0x000000, 0.2);
+    const damageRing = this.add.circle(0, 0, bodyRadius * 0.94, palette.glowColor, 0).setStrokeStyle(2, 0xf8fbff, 0);
+    const thruster = this.add.ellipse(0, bodyRadius - 1, 12 + (bodyRadius * 0.16), 18 + (bodyRadius * 0.28), palette.glowColor, 0.2).setStrokeStyle(1, palette.trimColor, 0.28);
     children.push(shadow, damageRing, thruster);
 
-    if (state.factionId === "empire") {
+    if (state.shipRole) {
+      if (state.shipRole === "base-fighter" || state.shipRole === "support-fighter") {
+        children.push(
+          this.add.rectangle(-bodyRadius * 0.72, bodyRadius * 0.28, bodyRadius * 0.42, bodyRadius * 1.02, palette.color, 0.96).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.rectangle(bodyRadius * 0.72, bodyRadius * 0.28, bodyRadius * 0.42, bodyRadius * 1.02, palette.color, 0.96).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.rectangle(0, bodyRadius * 0.22, bodyRadius * 1.04, bodyRadius * 1.24, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.8),
+          this.add.triangle(0, -bodyRadius * 0.78, 0, -bodyRadius * 1.12, -bodyRadius * 0.46, -bodyRadius * 0.08, bodyRadius * 0.46, -bodyRadius * 0.08, palette.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.42),
+          this.add.rectangle(0, bodyRadius * 0.98, bodyRadius * 0.64, bodyRadius * 0.34, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
+        );
+        if (state.shipRole === "support-fighter") {
+          children.push(
+            this.add.ellipse(0, bodyRadius * 0.1, bodyRadius * 1.42, bodyRadius * 0.7, palette.glowColor, 0.12).setStrokeStyle(1, palette.trimColor, 0.3),
+            this.add.rectangle(-bodyRadius * 1.02, bodyRadius * 0.2, bodyRadius * 0.2, bodyRadius * 0.8, palette.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.34),
+            this.add.rectangle(bodyRadius * 1.02, bodyRadius * 0.2, bodyRadius * 0.2, bodyRadius * 0.8, palette.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.34),
+            this.add.circle(0, -bodyRadius * 0.1, bodyRadius * 0.18, 0xf7fbff, 0.5),
+          );
+        }
+      } else if (state.shipRole === "attack-warship") {
+        children.push(
+          this.add.rectangle(-bodyRadius * 0.98, bodyRadius * 0.26, bodyRadius * 0.46, bodyRadius * 1.18, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
+          this.add.rectangle(bodyRadius * 0.98, bodyRadius * 0.26, bodyRadius * 0.46, bodyRadius * 1.18, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
+          this.add.rectangle(0, bodyRadius * 0.24, bodyRadius * 1.22, bodyRadius * 1.54, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.82),
+          this.add.triangle(0, -bodyRadius * 1.08, 0, -bodyRadius * 1.52, -bodyRadius * 0.54, -bodyRadius * 0.1, bodyRadius * 0.54, -bodyRadius * 0.1, palette.trimColor, 0.96).setStrokeStyle(1, 0xf7fbff, 0.42),
+          this.add.rectangle(0, bodyRadius * 1.12, bodyRadius * 0.92, bodyRadius * 0.44, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.rectangle(-bodyRadius * 0.7, -bodyRadius * 0.2, bodyRadius * 0.18, bodyRadius * 0.92, palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.28),
+          this.add.rectangle(bodyRadius * 0.7, -bodyRadius * 0.2, bodyRadius * 0.18, bodyRadius * 0.92, palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.28),
+        );
+      } else {
+        children.push(
+          this.add.rectangle(-bodyRadius * 1.08, bodyRadius * 0.3, bodyRadius * 0.56, bodyRadius * 1.16, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.38),
+          this.add.rectangle(bodyRadius * 1.08, bodyRadius * 0.3, bodyRadius * 0.56, bodyRadius * 1.16, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.38),
+          this.add.rectangle(0, bodyRadius * 0.34, bodyRadius * 1.36, bodyRadius * 1.62, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.84),
+          this.add.polygon(0, -bodyRadius * 0.84, createStarPoints(bodyRadius * 0.34, bodyRadius * 0.16, 4), palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.32),
+          this.add.rectangle(0, bodyRadius * 1.18, bodyRadius * 0.98, bodyRadius * 0.46, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.ellipse(0, bodyRadius * 0.16, bodyRadius * 1.76, bodyRadius * 0.96, palette.glowColor, 0.12).setStrokeStyle(1, palette.trimColor, 0.22),
+        );
+      }
+    } else if (state.factionId === "empire") {
       children.push(
         this.add.rectangle(-14, 4, 10, 24, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
         this.add.rectangle(14, 4, 10, 24, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
@@ -1763,9 +1820,15 @@ export class SpaceScene extends Phaser.Scene {
       );
     }
 
+    if (state.shipRole && roleProfile.radiusMultiplier > 1.15) {
+      children.push(
+        this.add.ellipse(0, bodyRadius * 0.18, bodyRadius * 2.1, bodyRadius * 1.12, palette.glowColor, 0.08).setStrokeStyle(1, palette.trimColor, 0.18),
+      );
+    }
+
     const root = this.add.container(state.x, state.y, children).setDepth(13);
     root.rotation = state.rotation;
-    root.setSize(faction.radius * 2.4, faction.radius * 2.4);
+    root.setSize(bodyRadius * 2.6, bodyRadius * 2.6);
     const aimDirection = new Phaser.Math.Vector2(state.aimX, state.aimY);
     if (aimDirection.lengthSq() <= 0.0001) {
       aimDirection.copy(angleToDirection(state.rotation));
@@ -1776,6 +1839,8 @@ export class SpaceScene extends Phaser.Scene {
     return {
       id: state.id,
       factionId: state.factionId,
+      originRaceId: state.originRaceId,
+      shipRole: state.shipRole,
       sectorId: state.sectorId,
       groupId: state.groupId,
       leaderId: state.leaderId,
@@ -1810,6 +1875,7 @@ export class SpaceScene extends Phaser.Scene {
       routeTargetKind: state.routeTargetKind ?? null,
       routeTargetId: state.routeTargetId ?? null,
       routeWaitRemainingMs: state.routeWaitRemainingMs ?? 0,
+      supportRepairCooldown: state.supportRepairCooldown ?? 0,
     };
   }
 
@@ -2729,8 +2795,119 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private canShipAttackPlayer(ship: SpaceFactionShip): boolean {
-    const faction = SPACE_FACTIONS[ship.factionId];
+    const faction = this.getShipCombatConfig(ship);
     return faction.attackPlayerByDefault || ship.provokedByPlayer;
+  }
+
+  private getShipCombatConfig(
+    ship: Pick<SpaceFactionShip | SpaceFactionShipState, "factionId" | "originRaceId" | "shipRole">,
+  ): (typeof SPACE_FACTIONS)[SpaceFactionId] {
+    const baseFaction = getSpaceFactionConfig(ship.factionId, ship.originRaceId);
+    const roleProfile = getSpaceShipRoleCombatProfile(ship.shipRole);
+    return {
+      ...baseFaction,
+      maxHull: baseFaction.maxHull * roleProfile.hullMultiplier,
+      radius: baseFaction.radius * roleProfile.radiusMultiplier,
+      acceleration: baseFaction.acceleration * roleProfile.accelerationMultiplier,
+      maxSpeed: baseFaction.maxSpeed * roleProfile.maxSpeedMultiplier,
+      detectRange: baseFaction.detectRange * roleProfile.detectRangeMultiplier,
+      fireRange: baseFaction.fireRange * roleProfile.fireRangeMultiplier,
+      preferredRange: baseFaction.preferredRange * roleProfile.preferredRangeMultiplier,
+      fireCooldown: baseFaction.fireCooldown * roleProfile.fireCooldownMultiplier,
+      bulletSpeed: baseFaction.bulletSpeed * roleProfile.bulletSpeedMultiplier,
+    };
+  }
+
+  private getShipRaceProfile(ship: Pick<SpaceFactionShip | SpaceFactionShipState, "factionId" | "originRaceId">) {
+    return ship.factionId === "homeguard"
+      ? getSpaceRaceDefenseProfile(ship.originRaceId)
+      : getSpaceRaceDefenseProfile(null);
+  }
+
+  private getHomeguardTargetAnchorDistanceScore(
+    ship: Pick<SpaceFactionShip, "factionId" | "originRaceId" | "guardAnchor" | "guardRadius">,
+    target: Pick<SpaceFactionShip, "root"> | { root: Phaser.GameObjects.Container },
+  ): number {
+    if (ship.factionId !== "homeguard" || !ship.guardAnchor) {
+      return 0;
+    }
+
+    const raceProfile = this.getShipRaceProfile(ship);
+    const distanceToAnchor = Phaser.Math.Distance.Between(
+      target.root.x,
+      target.root.y,
+      ship.guardAnchor.x,
+      ship.guardAnchor.y,
+    );
+    const softLimit = ship.guardRadius + raceProfile.interceptPadding;
+    if (distanceToAnchor <= softLimit) {
+      return distanceToAnchor * raceProfile.anchorPriority;
+    }
+    return (softLimit * raceProfile.anchorPriority) + ((distanceToAnchor - softLimit) * 4.8);
+  }
+
+  private canHomeguardInterceptShip(ship: SpaceFactionShip, targetShip: SpaceFactionShip): boolean {
+    if (ship.factionId !== "homeguard" || !ship.guardAnchor) {
+      return true;
+    }
+
+    if (ship.provokedByShips.has(targetShip.id)) {
+      return true;
+    }
+
+    const raceProfile = this.getShipRaceProfile(ship);
+    const distanceToAnchor = Phaser.Math.Distance.Between(
+      targetShip.root.x,
+      targetShip.root.y,
+      ship.guardAnchor.x,
+      ship.guardAnchor.y,
+    );
+    return distanceToAnchor <= ship.guardRadius + raceProfile.interceptPadding;
+  }
+
+  private getShipFireDamage(ship: SpaceFactionShip): number {
+    let baseDamage = FACTION_DAMAGE;
+    if (ship.factionId === "homeguard") {
+      switch (ship.originRaceId) {
+        case "ashari":
+        case "rakkan":
+          baseDamage += 0.25;
+          break;
+        case "svarin":
+          baseDamage += 0.15;
+          break;
+        default:
+          break;
+      }
+    }
+    return baseDamage * getSpaceShipRoleCombatProfile(ship.shipRole).damageMultiplier;
+  }
+
+  private trySupportRepair(ship: SpaceFactionShip): void {
+    const roleProfile = getSpaceShipRoleCombatProfile(ship.shipRole);
+    if (roleProfile.supportRepairAmount <= 0 || roleProfile.supportRepairRange <= 0 || ship.supportRepairCooldown > 0) {
+      return;
+    }
+
+    const repairTarget = this.factionShips
+      .filter((ally) => {
+        if (ally.id === ship.id || ally.factionId !== ship.factionId || ally.hp >= ally.maxHp) {
+          return false;
+        }
+        if (ship.factionId === "homeguard" && ally.originRaceId !== ship.originRaceId) {
+          return false;
+        }
+
+        return Phaser.Math.Distance.Between(ship.root.x, ship.root.y, ally.root.x, ally.root.y) <= roleProfile.supportRepairRange;
+      })
+      .sort((left, right) => (left.hp / Math.max(1, left.maxHp)) - (right.hp / Math.max(1, right.maxHp)))[0];
+    if (!repairTarget) {
+      return;
+    }
+
+    repairTarget.hp = Math.min(repairTarget.maxHp, repairTarget.hp + roleProfile.supportRepairAmount);
+    repairTarget.flash = Math.max(repairTarget.flash, 0.7);
+    ship.supportRepairCooldown = roleProfile.supportRepairCooldownMs / 1000;
   }
 
   private canPlayerDamageShip(ship: SpaceFactionShip): boolean {
@@ -2960,9 +3137,11 @@ export class SpaceScene extends Phaser.Scene {
 
   private updateFactionShips(dt: number): void {
     for (const ship of this.factionShips) {
-      const faction = SPACE_FACTIONS[ship.factionId];
+      const faction = this.getShipCombatConfig(ship);
+      const raceProfile = this.getShipRaceProfile(ship);
       const palette = this.getShipPalette(ship);
       ship.fireCooldown = Math.max(0, ship.fireCooldown - dt);
+      ship.supportRepairCooldown = Math.max(0, ship.supportRepairCooldown - dt);
       ship.flash = Math.max(0, ship.flash - (dt * 4));
       ship.aggressionTimer = Math.max(0, ship.aggressionTimer - dt);
       if (ship.aggressionTimer <= 0) {
@@ -2981,14 +3160,14 @@ export class SpaceScene extends Phaser.Scene {
         const dy = this.shipRoot.y - ship.root.y;
         const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
         aimDirection = new Phaser.Math.Vector2(dx / distance, dy / distance);
-        movement.copy(this.getCombatMovement(aimDirection, distance, faction.preferredRange, ship.strafeSign));
+        movement.copy(this.getCombatMovement(aimDirection, distance, faction.preferredRange, ship.strafeSign, raceProfile));
         shouldFire = distance <= faction.fireRange;
       } else if (target?.kind === "ship") {
         const dx = target.ship.root.x - ship.root.x;
         const dy = target.ship.root.y - ship.root.y;
         const distance = Math.sqrt((dx * dx) + (dy * dy)) || 0.0001;
         aimDirection = new Phaser.Math.Vector2(dx / distance, dy / distance);
-        movement.copy(this.getCombatMovement(aimDirection, distance, faction.preferredRange, ship.strafeSign));
+        movement.copy(this.getCombatMovement(aimDirection, distance, faction.preferredRange, ship.strafeSign, raceProfile));
         shouldFire = distance <= faction.fireRange;
       } else if (fleeTarget) {
         movement.copy(this.getFleeMovement(ship, fleeTarget));
@@ -3020,6 +3199,8 @@ export class SpaceScene extends Phaser.Scene {
         this.fireFactionShot(ship);
       }
 
+      this.trySupportRepair(ship);
+
       ship.damageRing.setStrokeStyle(2, palette.trimColor, ship.flash * 0.88);
       ship.damageRing.setFillStyle(palette.glowColor, ship.flash * 0.18);
       const velocityPulse = Phaser.Math.Clamp(ship.velocity.length() / faction.maxSpeed, 0, 1);
@@ -3030,8 +3211,9 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private selectShipTarget(ship: SpaceFactionShip): { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null {
-    const faction = SPACE_FACTIONS[ship.factionId];
-    let bestDistanceSq = Number.POSITIVE_INFINITY;
+    const faction = this.getShipCombatConfig(ship);
+    const raceProfile = this.getShipRaceProfile(ship);
+    let bestScore = Number.POSITIVE_INFINITY;
     let bestTarget: { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null = null;
 
     this.factionShips.forEach((targetShip) => {
@@ -3041,14 +3223,24 @@ export class SpaceScene extends Phaser.Scene {
       if (!this.isShipHostileToShip(ship, targetShip)) {
         return;
       }
+      if (!this.canHomeguardInterceptShip(ship, targetShip)) {
+        return;
+      }
       const dx = targetShip.root.x - ship.root.x;
       const dy = targetShip.root.y - ship.root.y;
       const distanceSq = (dx * dx) + (dy * dy);
-      if (distanceSq > faction.detectRange * faction.detectRange || distanceSq >= bestDistanceSq) {
+      if (distanceSq > faction.detectRange * faction.detectRange) {
         return;
       }
 
-      bestDistanceSq = distanceSq;
+      const anchorScore = this.getHomeguardTargetAnchorDistanceScore(ship, targetShip);
+      const damagedScore = (1 - (targetShip.hp / Math.max(1, targetShip.maxHp))) * 900 * raceProfile.damagedTargetBias;
+      const targetScore = distanceSq + anchorScore - damagedScore;
+      if (targetScore >= bestScore) {
+        return;
+      }
+
+      bestScore = targetScore;
       bestTarget = { kind: "ship", ship: targetShip };
     });
 
@@ -3243,6 +3435,7 @@ export class SpaceScene extends Phaser.Scene {
     distance: number,
     preferredRange: number,
     strafeSign: number,
+    raceProfile = getSpaceRaceDefenseProfile(null),
   ): Phaser.Math.Vector2 {
     const movement = new Phaser.Math.Vector2();
     if (distance > preferredRange + 90) {
@@ -3255,7 +3448,10 @@ export class SpaceScene extends Phaser.Scene {
       return movement;
     }
 
-    movement.set(-aimDirection.y * strafeSign, aimDirection.x * strafeSign);
+    movement.set(
+      (-aimDirection.y * strafeSign * raceProfile.strafeStrength) + (aimDirection.x * raceProfile.combatAdvanceBias),
+      (aimDirection.x * strafeSign * raceProfile.strafeStrength) + (aimDirection.y * raceProfile.combatAdvanceBias),
+    );
     return movement;
   }
 
@@ -3393,8 +3589,9 @@ export class SpaceScene extends Phaser.Scene {
 
   private pickNewPatrolTarget(ship: SpaceFactionShip): Phaser.Math.Vector2 {
     if (ship.guardAnchor && ship.guardRadius > 0) {
+      const raceProfile = this.getShipRaceProfile(ship);
       const angle = randomBetween(0, Math.PI * 2);
-      const radius = ship.guardRadius * randomBetween(0.48, 0.82);
+      const radius = ship.guardRadius * randomBetween(raceProfile.patrolRadiusMin, raceProfile.patrolRadiusMax);
       return new Phaser.Math.Vector2(
         ship.guardAnchor.x + (Math.cos(angle) * radius),
         ship.guardAnchor.y + (Math.sin(angle) * radius),
@@ -3409,7 +3606,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private fireFactionShot(ship: SpaceFactionShip): void {
-    const faction = SPACE_FACTIONS[ship.factionId];
+    const faction = this.getShipCombatConfig(ship);
     const palette = this.getShipPalette(ship);
     const direction = ship.aimDirection.clone().normalize();
     const spawnDistance = ship.radius + 8;
@@ -3429,8 +3626,8 @@ export class SpaceScene extends Phaser.Scene {
       velocity,
       life: FACTION_PROJECTILE_LIFETIME,
       radius: 4,
-      damage: FACTION_DAMAGE,
-      canHitPlayer: SPACE_FACTIONS[ship.factionId].attackPlayerByDefault || ship.provokedByPlayer,
+      damage: this.getShipFireDamage(ship),
+      canHitPlayer: faction.attackPlayerByDefault || ship.provokedByPlayer,
     });
 
     this.playWorldCue(
@@ -3749,9 +3946,14 @@ export class SpaceScene extends Phaser.Scene {
 
   private propagateGroupAggro(targetShip: SpaceFactionShip, source: SpaceDamageSource): void {
     const linkedGuardAnchor = targetShip.guardAnchor;
-    const allyAlertRadius = targetShip.factionId === "homeguard" ? 1800 : 820;
+    const allyAlertRadius = targetShip.factionId === "homeguard"
+      ? this.getShipRaceProfile(targetShip).allyAlertRadius
+      : 820;
     this.factionShips.forEach((ally) => {
       if (ally.id === targetShip.id || ally.factionId !== targetShip.factionId) {
+        return;
+      }
+      if (targetShip.factionId === "homeguard" && ally.originRaceId !== targetShip.originRaceId) {
         return;
       }
 
@@ -3945,8 +4147,7 @@ export class SpaceScene extends Phaser.Scene {
     const touchLocked = this.returningToShip || this.playerDestroyed || this.isMenuOverlayVisible();
     const hyperdriveCombatLocked = isShipHyperdriveCombatLocked(this.hyperdrive.state);
     const playerHostiles = this.factionShips.filter((ship) => {
-      const faction = SPACE_FACTIONS[ship.factionId];
-      if (!(faction.attackPlayerByDefault || ship.provokedByPlayer)) {
+      if (!this.canShipAttackPlayer(ship)) {
         return false;
       }
       return Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y) <= 1300;
@@ -4665,12 +4866,15 @@ export class SpaceScene extends Phaser.Scene {
       .map((ship) => ({
         id: ship.id,
         factionId: ship.factionId,
+        originRaceId: ship.originRaceId,
+        shipRole: ship.shipRole,
         sectorId: ship.sectorId,
         guardRadius: ship.guardRadius,
         x: Math.round(ship.root.x),
         y: Math.round(ship.root.y),
         hp: ship.hp,
-        hostileToPlayer: SPACE_FACTIONS[ship.factionId].attackPlayerByDefault || ship.provokedByPlayer,
+        maxHp: ship.maxHp,
+        hostileToPlayer: this.canShipAttackPlayer(ship),
       }));
     const smugglerRouteStates = [
       ...this.factionShips.map((ship) => ({
