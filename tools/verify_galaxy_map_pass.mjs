@@ -152,6 +152,10 @@ try {
               counts[system.sectorId] = (counts[system.sectorId] ?? 0) + 1;
               return counts;
             }, {}),
+            zoneCountsBySector: galaxy.zones.reduce((counts, zone) => {
+              counts[zone.sectorId] = (counts[zone.sectorId] ?? 0) + 1;
+              return counts;
+            }, {}),
             homeworldCount: galaxy.homeworlds.length,
             ringIds: galaxy.rings.map((ring) => ring.id),
           }
@@ -227,10 +231,39 @@ try {
     `Galaxy ring framework is missing or out of order: ${JSON.stringify(hubMapState.galaxySummary?.ringIds)}`);
   assert(hubMapState.galaxySummary?.homeworldCount === 7,
     `Expected exactly 7 homeworlds, got ${hubMapState.galaxySummary?.homeworldCount}`);
+  assert((hubMapState.galaxy?.zones ?? []).length === (hubMapState.galaxy?.systems ?? []).length,
+    `Expected exactly one zone per generated system, got zones=${(hubMapState.galaxy?.zones ?? []).length} systems=${(hubMapState.galaxy?.systems ?? []).length}`);
   const secondRing = hubMapState.galaxy?.rings?.find?.((ring) => ring.id === SECOND_RING_ID) ?? null;
   assert(secondRing, "Galaxy is missing the second-ring definition needed for station placement");
   Object.entries(hubMapState.galaxySummary?.systemCountsBySector ?? {}).forEach(([sectorId, count]) => {
     assert(count >= 20 && count <= 40, `Sector ${sectorId} should have 20-40 systems, got ${count}`);
+  });
+  Object.entries(hubMapState.galaxySummary?.zoneCountsBySector ?? {}).forEach(([sectorId, count]) => {
+    const systemCount = hubMapState.galaxySummary?.systemCountsBySector?.[sectorId] ?? 0;
+    assert(count === systemCount, `Sector ${sectorId} should have one zone per system, got zones=${count} systems=${systemCount}`);
+  });
+  const systemsById = new Map((hubMapState.galaxy?.systems ?? []).map((system) => [system.id, system]));
+  (hubMapState.galaxy?.systems ?? []).forEach((system) => {
+    assert(typeof system.zoneId === "string" && system.zoneId.length > 0,
+      `Generated system ${system.id} is missing a zone id`);
+  });
+  (hubMapState.galaxy?.zones ?? []).forEach((zone) => {
+    const system = systemsById.get(zone.systemId);
+    assert(system, `Zone ${zone.id} points to a missing system ${zone.systemId}`);
+    assert(zone.id === system.zoneId, `Zone ${zone.id} does not match system zone id ${system.zoneId}`);
+    const sectorController = {
+      "olydran-expanse": "olydran",
+      "aaruian-reach": "aaruian",
+      "elsari-veil": "elsari",
+      "nevari-bloom": "nevari",
+      "rakkan-drift": "rakkan",
+      "svarin-span": "svarin",
+      "ashari-crown": "ashari",
+    }[zone.sectorId];
+    assert(zone.currentControllerId === sectorController,
+      `Zone ${zone.id} should start owned by its sector race, got ${zone.currentControllerId}`);
+    assert(zone.zoneState === "stable", `Zone ${zone.id} should start stable, got ${zone.zoneState}`);
+    assert(zone.zoneCaptureProgress === 0, `Zone ${zone.id} should start with zero capture progress, got ${zone.zoneCaptureProgress}`);
   });
   const homeworldPlanetsById = new Map((hubMapState.homeworldPlanets ?? []).map((planet) => [planet.id, planet]));
   (hubMapState.galaxy?.homeworlds ?? []).forEach((homeworld) => {
@@ -261,6 +294,7 @@ try {
     assert(radialDistance >= secondRing.minRadius, `Station ${station.name} is inside the second-ring inner edge`);
     assert(radialDistance <= secondRing.maxRadius, `Station ${station.name} is outside the second-ring outer edge`);
   });
+  assert((hubMapState.mapDebug?.visibleZones ?? 0) > 0, "Galaxy map did not report any visible zones");
   assert((hubMapState.mapDebug?.visibleSystems ?? 0) > 0, "Galaxy map did not report any visible generated systems");
   assert((hubMapState.mapDebug?.visiblePlanets ?? 0) > 0, "Galaxy map did not report any visible generated planets");
   assert((hubMapState.mapDebug?.visibleStations ?? 0) > 0, "Galaxy map did not report any visible generated stations");
@@ -319,6 +353,10 @@ try {
     `Sector detail subtitle did not update: ${sectorDetailState.subtitle}`);
   assert(sectorDetailState.infoTitle.includes("Readout"),
     `Sector detail info title did not update: ${sectorDetailState.infoTitle}`);
+  assert(sectorDetailState.detailText.includes("Zones "),
+    `Sector detail should now expose zone readout text: ${sectorDetailState.detailText}`);
+  assert((sectorDetailState.mapDebug?.visibleZones ?? 0) > 0,
+    "Sector detail view did not report any visible zone cells");
   assert((sectorDetailState.mapDebug?.visiblePlanets ?? 0) > 0,
     "Sector detail view did not report any visible generated planets");
   assert((sectorDetailState.mapDebug?.visibleMoons ?? 0) > 0,

@@ -121,6 +121,32 @@ async function focusOnContact(page, contact, filename, freezeTarget = true) {
     }
     window.__loeSession?.setShipSpacePosition?.(playerX, playerY);
     space.cameras.main.centerOn(playerX, playerY);
+
+    const cellSize = 3200;
+    const nextCellKey = `${Math.max(0, Math.floor(contact.x / cellSize))},${Math.max(0, Math.floor(contact.y / cellSize))}`;
+
+    const shipState = space.shipStates?.get?.(contact.id) ?? null;
+    if (shipState) {
+      shipState.x = contact.x;
+      shipState.y = contact.y;
+      shipState.velocityX = 0;
+      shipState.velocityY = 0;
+      shipState.patrolX = contact.x;
+      shipState.patrolY = contact.y;
+      shipState.destroyed = false;
+      shipState.cellKey = nextCellKey;
+    }
+
+    const fieldState = space.fieldStates?.get?.(contact.id) ?? null;
+    if (fieldState) {
+      fieldState.x = contact.x;
+      fieldState.y = contact.y;
+      fieldState.velocityX = 0;
+      fieldState.velocityY = 0;
+      fieldState.destroyed = false;
+      fieldState.cellKey = nextCellKey;
+    }
+
     space.syncActiveWorld?.(true);
 
     const freezeRadiusSq = 4200 * 4200;

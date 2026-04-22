@@ -160,13 +160,13 @@ export type ShipHyperdriveSystemState = {
 };
 
 const SPACE_SECTOR_SHIPS: Record<string, Partial<Record<SpaceFactionId, number>>> = {
-  "olydran-expanse": { republic: 12, empire: 10, pirate: 4, smuggler: 3 },
-  "aaruian-reach": { republic: 12, empire: 9, pirate: 4, smuggler: 3 },
-  "elsari-veil": { pirate: 14, empire: 5, smuggler: 3 },
-  "nevari-bloom": { smuggler: 5, pirate: 7, republic: 5, empire: 4 },
-  "rakkan-drift": { pirate: 11, empire: 8, smuggler: 2 },
-  "svarin-span": { pirate: 10, empire: 8, smuggler: 2 },
-  "ashari-crown": { empire: 16, pirate: 6, republic: 4, smuggler: 2 },
+  "olydran-expanse": { pirate: 4, smuggler: 3 },
+  "aaruian-reach": { pirate: 4, smuggler: 3 },
+  "elsari-veil": { pirate: 14, smuggler: 3 },
+  "nevari-bloom": { pirate: 7, smuggler: 5 },
+  "rakkan-drift": { pirate: 11, smuggler: 2 },
+  "svarin-span": { pirate: 10, smuggler: 2 },
+  "ashari-crown": { pirate: 6, smuggler: 2 },
 };
 
 const FIELD_WORLD_SEED = 0x3c71_2a6d;

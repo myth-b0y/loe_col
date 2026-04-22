@@ -9,6 +9,8 @@ import {
   getGalaxyHomeworldPlanets,
   getGalaxyPlanetById,
   getGalaxyStationById as getGalaxyStationByIdFromGalaxy,
+  getGalaxyZoneById as getGalaxyZoneByIdFromGalaxy,
+  getGalaxyZoneBySystemId as getGalaxyZoneBySystemIdFromGalaxy,
   getGalaxySpawnPointForRace,
   getMissionPlanetForMission as getMissionPlanetForMissionFromGalaxy,
   normalizeGalaxyDefinition,
@@ -17,6 +19,7 @@ import {
   type GalaxyPoint,
   type GalaxyPlanetRecord,
   type GalaxyStationRecord,
+  type GalaxyZoneRecord,
 } from "../content/galaxy";
 import {
   DEFAULT_SQUAD_ASSIGNMENTS,
@@ -803,6 +806,20 @@ export class GameSession extends Phaser.Events.EventEmitter {
   getGalaxyStationById(stationId: string): GalaxyStationRecord | null {
     const station = getGalaxyStationByIdFromGalaxy(this.saveData.galaxy, stationId);
     return station ? { ...station } : null;
+  }
+
+  getGalaxyZones(): GalaxyZoneRecord[] {
+    return this.saveData.galaxy.zones.map((zone) => ({ ...zone }));
+  }
+
+  getGalaxyZoneById(zoneId: string): GalaxyZoneRecord | null {
+    const zone = getGalaxyZoneByIdFromGalaxy(this.saveData.galaxy, zoneId);
+    return zone ? { ...zone } : null;
+  }
+
+  getGalaxyZoneBySystemId(systemId: string): GalaxyZoneRecord | null {
+    const zone = getGalaxyZoneBySystemIdFromGalaxy(this.saveData.galaxy, systemId);
+    return zone ? { ...zone } : null;
   }
 
   getMissionPlanetForMission(missionId = this.getTrackedMissionId(), orbitTimeMs = 0): GalaxyMissionPlanet | null {

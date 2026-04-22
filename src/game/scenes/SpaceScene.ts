@@ -3869,7 +3869,7 @@ export class SpaceScene extends Phaser.Scene {
       ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
       : `Free roam launch  |  Region: ${regionLabel}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
-    const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guards ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
+    const localContactSummary = `Local contacts  Guardians ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
     this.contactText?.setText(missionPlanet
       ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
       : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}\n${stationStatus}`);

@@ -7,6 +7,7 @@ import {
   GALAXY_STARS,
   GALAXY_WORLD_CONFIG,
   type GalaxyDefinition,
+  getGalaxyControllerPalette,
   getGalaxyMoonPositionAtTime,
   getGalaxyPlanetPositionAtTime,
   getGalaxyRadialDistance,
@@ -15,6 +16,7 @@ import {
   getGalaxySectorLabelPoint,
   getGalaxySectorPolygonPoints,
   type GalaxySectorConfig,
+  type GalaxySystemRecord,
 } from "../content/galaxy";
 import { getMissionContract } from "../content/missions";
 import { gameSession } from "../core/session";
@@ -77,8 +79,10 @@ export class GalaxyMapOverlay {
   private selectedSectorId: string | null = null;
   private cachedGalaxy: GalaxyDefinition | null = null;
   private cachedHomeworlds: ReturnType<typeof gameSession.getHomeworldPlanets> = [];
+  private cachedSystemsById = new Map<string, GalaxySystemRecord>();
   private cachedPlanetsBySystemId = new Map<string, GalaxyDefinition["planets"]>();
   private cachedMoonsByPlanetId = new Map<string, GalaxyDefinition["moons"]>();
+  private cachedZonesBySectorId = new Map<string, GalaxyDefinition["zones"]>();
   private cachedStaticViewKey = "";
   private lastStaticDrawMs = Number.NEGATIVE_INFINITY;
 
@@ -410,8 +414,14 @@ export class GalaxyMapOverlay {
   private captureGalaxySnapshot(): void {
     this.cachedGalaxy = gameSession.getGalaxyDefinition();
     this.cachedHomeworlds = gameSession.getHomeworldPlanets();
+    this.cachedSystemsById.clear();
     this.cachedPlanetsBySystemId.clear();
     this.cachedMoonsByPlanetId.clear();
+    this.cachedZonesBySectorId.clear();
+
+    this.cachedGalaxy.systems.forEach((system) => {
+      this.cachedSystemsById.set(system.id, system);
+    });
 
     this.cachedGalaxy.planets.forEach((planet) => {
       const bucket = this.cachedPlanetsBySystemId.get(planet.systemId);
@@ -429,6 +439,15 @@ export class GalaxyMapOverlay {
         return;
       }
       this.cachedMoonsByPlanetId.set(moon.planetId, [moon]);
+    });
+
+    this.cachedGalaxy.zones.forEach((zone) => {
+      const bucket = this.cachedZonesBySectorId.get(zone.sectorId);
+      if (bucket) {
+        bucket.push(zone);
+        return;
+      }
+      this.cachedZonesBySectorId.set(zone.sectorId, [zone]);
     });
 
     this.cachedStaticViewKey = "";
@@ -548,7 +567,35 @@ export class GalaxyMapOverlay {
       this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
     });
 
+    this.drawZoneLayer(galaxy, viewBounds, selectedSector?.id ?? null);
     this.drawGeneratedBodies(galaxy, viewBounds, selectedSector?.id ?? null, homeworlds, orbitTimeMs);
+  }
+
+  private drawZoneLayer(
+    galaxy: GalaxyDefinition,
+    viewBounds: Phaser.Geom.Rectangle,
+    selectedSectorId: string | null,
+  ): void {
+    galaxy.zones.forEach((zone) => {
+      if (selectedSectorId && zone.sectorId !== selectedSectorId) {
+        return;
+      }
+
+      const system = this.cachedSystemsById.get(zone.systemId);
+      if (!system || !this.isWorldPointVisible(system, viewBounds, 280)) {
+        return;
+      }
+
+      const palette = getGalaxyControllerPalette(zone.currentControllerId, zone.coreSectorId);
+      const point = this.worldToMapWithBounds(system, viewBounds);
+      const cellSize = selectedSectorId ? 14 : 9;
+      const inset = cellSize * 0.5;
+
+      this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.2 : 0.12);
+      this.staticMap.fillRect(point.x - inset, point.y - inset, cellSize, cellSize);
+      this.staticMap.lineStyle(selectedSectorId ? 1.4 : 1, palette.borderColor, selectedSectorId ? 0.42 : 0.24);
+      this.staticMap.strokeRect(point.x - inset, point.y - inset, cellSize, cellSize);
+    });
   }
 
   private drawGeneratedBodies(
@@ -728,10 +775,34 @@ export class GalaxyMapOverlay {
 
     const shape = new Phaser.Geom.Polygon(mapped);
     const isSelectedSector = sector.id === this.selectedSectorId;
-    this.staticMap.fillStyle(sector.color, isSelectedSector ? 0.28 : 0.16);
+    const controllerPalette = this.getSectorControllerPalette(sector);
+    this.staticMap.fillStyle(controllerPalette.color, isSelectedSector ? 0.26 : 0.14);
     this.staticMap.fillPoints(shape.points, true);
-    this.staticMap.lineStyle(isSelectedSector ? 3 : 2, sector.borderColor, isSelectedSector ? 0.94 : 0.54);
+    this.staticMap.lineStyle(isSelectedSector ? 3 : 2, controllerPalette.borderColor, isSelectedSector ? 0.94 : 0.54);
     this.staticMap.strokePoints(shape.points, true);
+  }
+
+  private getSectorControllerPalette(sector: GalaxySectorConfig): ReturnType<typeof getGalaxyControllerPalette> {
+    const zones = this.cachedZonesBySectorId.get(sector.id) ?? [];
+    if (zones.length <= 0) {
+      return getGalaxyControllerPalette(sector.raceId, sector.id);
+    }
+
+    const counts = new Map<string, number>();
+    zones.forEach((zone) => {
+      counts.set(zone.currentControllerId, (counts.get(zone.currentControllerId) ?? 0) + 1);
+    });
+
+    let activeController: string = sector.raceId;
+    let activeCount = -1;
+    counts.forEach((count, controllerId) => {
+      if (count > activeCount || (count === activeCount && controllerId === sector.raceId)) {
+        activeController = controllerId;
+        activeCount = count;
+      }
+    });
+
+    return getGalaxyControllerPalette(activeController as Parameters<typeof getGalaxyControllerPalette>[0], sector.id);
   }
 
   private syncReadout(
@@ -753,9 +824,11 @@ export class GalaxyMapOverlay {
       ? homeworldPlanets.find((planet) => planet.sectorId === selectedSector.id) ?? null
       : null;
     const sectorSystems = selectedSector ? galaxy.systems.filter((system) => system.sectorId === selectedSector.id) : [];
+    const sectorZones = selectedSector ? galaxy.zones.filter((zone) => zone.sectorId === selectedSector.id) : [];
     const sectorPlanets = selectedSector ? galaxy.planets.filter((planet) => planet.sectorId === selectedSector.id) : [];
     const sectorMoons = selectedSector ? galaxy.moons.filter((moon) => moon.sectorId === selectedSector.id) : [];
     const sectorStations = selectedSector ? galaxy.stations.filter((station) => station.sectorId === selectedSector.id) : [];
+    const selectedSectorPalette = selectedSector ? this.getSectorControllerPalette(selectedSector) : null;
 
     this.subtitle.setText(selectedSector ? `${selectedSector.label} Sector Detail` : "Galaxy Map");
     this.infoTitle.setText(selectedSector ? `${selectedSector.label} Readout` : "Current Readout");
@@ -771,7 +844,8 @@ export class GalaxyMapOverlay {
     this.detailText.setText(selectedSector
       ? [
           `${selectedSector.label} uses the same galaxy coordinates as live space.`,
-          `Systems ${sectorSystems.length}  |  Planets ${sectorPlanets.length}  |  Moons ${sectorMoons.length}  |  Stations ${sectorStations.length}`,
+          `Zones ${sectorZones.length}  |  Systems ${sectorSystems.length}  |  Planets ${sectorPlanets.length}  |  Moons ${sectorMoons.length}`,
+          `Controller: ${selectedSectorPalette?.label ?? selectedSector.label}  |  Stations ${sectorStations.length}`,
           `Sector span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
           sectorHomeworld
             ? `Homeworld: ${sectorHomeworld.name}`
@@ -782,7 +856,7 @@ export class GalaxyMapOverlay {
           missionPlanet && getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).id === selectedSector.id
             ? `Mission planet in sector: ${missionPlanet.name}`
             : "Mission planet is outside this sector detail view.",
-          "Generated stars, planets, moons, and stations shown here are the same coordinates used in live space.",
+          "Zone cells are datapad-only strategic overlays on top of the same coordinates used in live space.",
         ].join("\n")
       : missionPlanet
         ? [
@@ -790,9 +864,10 @@ export class GalaxyMapOverlay {
             `Mission planet: ${missionPlanet.name}`,
             `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
             `Planet region: ${getGalaxyRegionLabelAtPosition(missionPlanet.x, missionPlanet.y)}`,
+            `Zones online: ${galaxy.zones.length}`,
             `Major stations online: ${galaxy.stations.length}`,
           ].join("\n")
-        : `No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.\nMajor stations online: ${galaxy.stations.length}`);
+        : `No mission planet staged. Accept or select a contract and the route target will appear here in the shared galaxy layout.\nZones online: ${galaxy.zones.length}\nMajor stations online: ${galaxy.stations.length}`);
 
     this.hoverText.setText(this.hoverWorldPoint
       ? (() => {
@@ -805,8 +880,8 @@ export class GalaxyMapOverlay {
       : "Hover over the map to inspect live galaxy coordinates.");
 
     this.footerText.setText(selectedSector
-      ? "Sector detail is a zoomed view of the same playable galaxy. Use Full Galaxy to return to the overview."
-      : "This is the same coordinate space used by the playable space map. Normal flight stays local; the datapad shows the full structure.");
+      ? "Sector detail is a zoomed view of the same playable galaxy. Zone cells are map-only and do not place tile overlays into flight space."
+      : "This is the same coordinate space used by the playable space map. The datapad adds strategic zone cells without turning space into a tile overlay.");
 
     this.markerMap.clear();
     this.homeworldLabel.setVisible(false);
@@ -856,12 +931,14 @@ export class GalaxyMapOverlay {
     GALAXY_SECTORS.forEach((sector, index) => {
       const label = this.sectorLabels[index];
       const labelPlacement = this.getSectorLabelPlacement(sector, viewBounds);
+      const controllerPalette = this.getSectorControllerPalette(sector);
       const isVisible = (!selectedSector || selectedSector.id === sector.id)
         && (selectedSector?.id === sector.id || this.isWorldPointVisible(labelPlacement.worldPoint, viewBounds));
       label
         .setText(selectedSector && selectedSector.id === sector.id ? sector.label : sector.label.replace(" ", "\n"))
         .setPosition(labelPlacement.point.x, labelPlacement.point.y)
         .setOrigin(labelPlacement.originX, labelPlacement.originY)
+        .setColor(colorToCss(controllerPalette.borderColor))
         .setAlpha(selectedSector && selectedSector.id === sector.id ? 0.96 : 0.76)
         .setVisible(isVisible);
     });
@@ -895,9 +972,17 @@ export class GalaxyMapOverlay {
       (!selectedSectorId || station.sectorId === selectedSectorId)
       && this.isWorldPointVisible(station, viewBounds, station.radius)
     )).length;
+    const visibleZones = galaxy.zones.filter((zone) => {
+      if (selectedSectorId && zone.sectorId !== selectedSectorId) {
+        return false;
+      }
+      const system = this.cachedSystemsById.get(zone.systemId);
+      return Boolean(system && this.isWorldPointVisible(system, viewBounds, 280));
+    }).length;
 
     return {
       selectedSectorId,
+      visibleZones,
       visibleSystems,
       visiblePlanets,
       visibleMoons,

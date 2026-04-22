@@ -320,8 +320,8 @@ try {
 
   const autoAimDisabled = await page.evaluate(async () => {
     const space = window.__loeGame?.scene.keys.space;
-    const empire = space?.factionShips?.find((ship) => ship.factionId === "empire");
-    if (!space || !empire) {
+    const pirate = space?.factionShips?.find((ship) => ship.factionId === "pirate");
+    if (!space || !pirate) {
       return null;
     }
 
@@ -330,9 +330,9 @@ try {
       ship.root.y = space.shipRoot.y + 1400;
       ship.velocity.set(0, 0);
     });
-    empire.root.x = space.shipRoot.x + 220;
-    empire.root.y = space.shipRoot.y - 20;
-    empire.velocity.set(0, 0);
+    pirate.root.x = space.shipRoot.x + 220;
+    pirate.root.y = space.shipRoot.y - 20;
+    pirate.velocity.set(0, 0);
     space.shipVelocity.set(0, 0);
     space.fireHeld = false;
     space.attackPointerId = null;
@@ -358,8 +358,8 @@ try {
 
   const autoAimOnly = await page.evaluate(async () => {
     const space = window.__loeGame?.scene.keys.space;
-    const empire = space?.factionShips?.find((ship) => ship.factionId === "empire");
-    if (!space || !empire) {
+    const pirate = space?.factionShips?.find((ship) => ship.factionId === "pirate");
+    if (!space || !pirate) {
       return null;
     }
 
@@ -368,9 +368,9 @@ try {
       ship.root.y = space.shipRoot.y + 1400;
       ship.velocity.set(0, 0);
     });
-    empire.root.x = space.shipRoot.x + 220;
-    empire.root.y = space.shipRoot.y - 20;
-    empire.velocity.set(0, 0);
+    pirate.root.x = space.shipRoot.x + 220;
+    pirate.root.y = space.shipRoot.y - 20;
+    pirate.velocity.set(0, 0);
     space.shipVelocity.set(0, 0);
     space.fireHeld = false;
     space.attackPointerId = null;
@@ -393,13 +393,13 @@ try {
   });
 
   assert(autoAimOnly?.autoAimTargetKind === "ship", "Space did not acquire a hostile ship target with auto aim enabled");
-  assert(autoAimOnly?.autoAimFaction === "empire", `Unexpected auto-aim ship target ${JSON.stringify(autoAimOnly)}`);
+  assert(autoAimOnly?.autoAimFaction === "pirate", `Unexpected auto-aim ship target ${JSON.stringify(autoAimOnly)}`);
   assert(autoAimOnly?.playerShots === 0, "Space auto-fired player shots with auto fire disabled");
 
   const autoAimFire = await page.evaluate(async () => {
     const space = window.__loeGame?.scene.keys.space;
-    const empire = space?.factionShips?.find((ship) => ship.factionId === "empire");
-    if (!space || !empire) {
+    const pirate = space?.factionShips?.find((ship) => ship.factionId === "pirate");
+    if (!space || !pirate) {
       return null;
     }
 
@@ -408,9 +408,9 @@ try {
       ship.root.y = space.shipRoot.y + 1400;
       ship.velocity.set(0, 0);
     });
-    empire.root.x = space.shipRoot.x + 220;
-    empire.root.y = space.shipRoot.y - 20;
-    empire.velocity.set(0, 0);
+    pirate.root.x = space.shipRoot.x + 220;
+    pirate.root.y = space.shipRoot.y - 20;
+    pirate.velocity.set(0, 0);
     space.shipVelocity.set(0, 0);
     space.fireHeld = false;
     space.attackPointerId = null;
@@ -428,7 +428,7 @@ try {
     return {
       autoAimTargetKind: space.autoAimTarget?.kind ?? null,
       playerShots: space.shots.filter((shot) => shot.ownerKind === "player").length,
-      hostileShipHp: empire.hp,
+      hostileShipHp: pirate.hp,
     };
   });
 

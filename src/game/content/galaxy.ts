@@ -70,11 +70,26 @@ export type GalaxyRingConfig = {
   isMainGalaxyBody: boolean;
 };
 
+export type GalaxyZoneControllerId = RaceId | "empire" | "republic" | "inactive";
+export type GalaxyZoneState = "stable" | "contested" | "capturing";
+
+export type GalaxyZoneRecord = {
+  id: string;
+  systemId: string;
+  sectorId: string;
+  coreSectorId: string;
+  ringId: GalaxyRingId;
+  currentControllerId: GalaxyZoneControllerId;
+  zoneState: GalaxyZoneState;
+  zoneCaptureProgress: number;
+};
+
 export type GalaxySystemRecord = {
   id: string;
   name: string;
   sectorId: string;
   ringId: GalaxyRingId;
+  zoneId: string;
   starId: string;
   x: number;
   y: number;
@@ -150,11 +165,18 @@ export type GalaxyDefinition = {
   seed: number;
   rings: GalaxyRingConfig[];
   systems: GalaxySystemRecord[];
+  zones: GalaxyZoneRecord[];
   planets: GalaxyPlanetRecord[];
   moons: GalaxyMoonRecord[];
   homeworlds: GalaxyHomeworldRecord[];
   stations: GalaxyStationRecord[];
   missionAssignments: Record<string, string>;
+};
+
+export type GalaxyControllerPalette = {
+  color: number;
+  borderColor: number;
+  label: string;
 };
 
 type GalaxyHomeworldSpec = {
@@ -240,6 +262,24 @@ const GALAXY_STATION_SPECS: Record<RaceId, GalaxyStationSpec> = {
   svarin: { name: "Svarin Station" },
   ashari: { name: "Ashari Station" },
   elsari: { name: "Elsari Station" },
+};
+
+const GALAXY_SPECIAL_CONTROLLER_PALETTES: Record<Exclude<GalaxyZoneControllerId, RaceId>, GalaxyControllerPalette> = {
+  empire: {
+    color: 0xa82e38,
+    borderColor: 0xff9ca4,
+    label: "Empire",
+  },
+  republic: {
+    color: 0x2c5cab,
+    borderColor: 0x92c5ff,
+    label: "Republic",
+  },
+  inactive: {
+    color: 0x7d8793,
+    borderColor: 0xc7d0db,
+    label: "Inactive",
+  },
 };
 
 const GALAXY_MISSION_ASSIGNMENT_RULES: GalaxyMissionAssignmentRule[] = [
@@ -1275,6 +1315,22 @@ function assignMissionTargets(
   return assignments;
 }
 
+function createZonesForSystems(systems: GalaxySystemRecord[]): GalaxyZoneRecord[] {
+  return systems.map((system) => {
+    const sector = getGalaxySectorById(system.sectorId) ?? GALAXY_SECTORS[0];
+    return {
+      id: system.zoneId,
+      systemId: system.id,
+      sectorId: system.sectorId,
+      coreSectorId: system.sectorId,
+      ringId: system.ringId,
+      currentControllerId: sector.raceId,
+      zoneState: "stable",
+      zoneCaptureProgress: 0,
+    };
+  });
+}
+
 function createSectorSystems(
   sector: GalaxySectorConfig,
   sectorIndex: number,
@@ -1303,6 +1359,7 @@ function createSectorSystems(
         name: buildSystemName(rng, usedSystemNames),
         sectorId: sector.id,
         ringId,
+        zoneId: `${systemId}-zone`,
         starId: `${systemId}-star`,
         x: Math.round(point.x),
         y: Math.round(point.y),
@@ -1336,6 +1393,7 @@ export function createGalaxyDefinition(seed = createGalaxySeed()): GalaxyDefinit
     createSectorSystems(sector, sectorIndex, systems, planets, rng, usedSystemNames, usedPlanetNames);
   });
 
+  const zones = createZonesForSystems(systems);
   const homeworlds = assignHomeworlds(planets);
   const moons: GalaxyMoonRecord[] = [];
   createMoonsForPlanets(planets, homeworlds, moons, rng);
@@ -1346,6 +1404,7 @@ export function createGalaxyDefinition(seed = createGalaxySeed()): GalaxyDefinit
     seed,
     rings: GALAXY_RINGS.map((ring) => ({ ...ring })),
     systems,
+    zones,
     planets,
     moons,
     homeworlds,
@@ -1368,16 +1427,41 @@ function isGalaxyDefinitionLike(value: Partial<GalaxyDefinition> | undefined): v
   );
 }
 
+function isGalaxyZoneControllerId(value: unknown): value is GalaxyZoneControllerId {
+  return typeof value === "string"
+    && (
+      value === "empire"
+      || value === "republic"
+      || value === "inactive"
+      || GALAXY_SECTORS.some((sector) => sector.raceId === value)
+    );
+}
+
+function normalizeGalaxyZoneState(value: unknown): GalaxyZoneState {
+  if (value === "capturing" || value === "contested") {
+    return value;
+  }
+  return "stable";
+}
+
 export function normalizeGalaxyDefinition(
   galaxy: Partial<GalaxyDefinition> | undefined,
   fallbackSeed?: number,
 ): GalaxyDefinition {
   if (isGalaxyDefinitionLike(galaxy)) {
-    const systems = galaxy.systems.map((system) => ({ ...system, planetIds: [...system.planetIds] }));
+    const systems = galaxy.systems.map((system) => ({
+      ...system,
+      zoneId: typeof system.zoneId === "string" && system.zoneId.length > 0
+        ? system.zoneId
+        : `${system.id}-zone`,
+      planetIds: [...system.planetIds],
+    }));
     const systemsById = systems.reduce<Map<string, GalaxySystemRecord>>((lookup, system) => {
       lookup.set(system.id, system);
       return lookup;
     }, new Map());
+    const generatedZones = createZonesForSystems(systems);
+    const sourceZones = Array.isArray(galaxy.zones) ? galaxy.zones : [];
     const planets = galaxy.planets.map((planet) => {
       const system = systemsById.get(planet.systemId);
       const fallbackOrbitRadius = system
@@ -1405,10 +1489,40 @@ export function normalizeGalaxyDefinition(
       lookup.set(planet.id, planet);
       return lookup;
     }, new Map());
+    const zones = systems.map((system) => {
+      const fallbackZone = generatedZones.find((zone) => zone.systemId === system.id) ?? {
+        id: system.zoneId,
+        systemId: system.id,
+        sectorId: system.sectorId,
+        coreSectorId: system.sectorId,
+        ringId: system.ringId,
+        currentControllerId: (getGalaxySectorById(system.sectorId) ?? GALAXY_SECTORS[0]).raceId,
+        zoneState: "stable" as const,
+        zoneCaptureProgress: 0,
+      };
+      const sourceZone = sourceZones.find((zone) => zone.systemId === system.id || zone.id === system.zoneId);
+      return {
+        id: system.zoneId,
+        systemId: system.id,
+        sectorId: system.sectorId,
+        coreSectorId: typeof sourceZone?.coreSectorId === "string" && sourceZone.coreSectorId.length > 0
+          ? sourceZone.coreSectorId
+          : fallbackZone.coreSectorId,
+        ringId: system.ringId,
+        currentControllerId: isGalaxyZoneControllerId(sourceZone?.currentControllerId)
+          ? sourceZone.currentControllerId
+          : fallbackZone.currentControllerId,
+        zoneState: normalizeGalaxyZoneState(sourceZone?.zoneState),
+        zoneCaptureProgress: typeof sourceZone?.zoneCaptureProgress === "number" && Number.isFinite(sourceZone.zoneCaptureProgress)
+          ? Math.max(0, Math.min(1, sourceZone.zoneCaptureProgress))
+          : 0,
+      };
+    });
     return {
       seed: galaxy.seed,
       rings: galaxy.rings.map((ring) => ({ ...ring })),
       systems,
+      zones,
       planets,
       moons: galaxy.moons.map((moon) => {
         const planet = planetsById.get(moon.planetId);
@@ -1620,6 +1734,46 @@ export function getGalaxyStationById(galaxy: GalaxyDefinition | null | undefined
     return null;
   }
   return galaxy.stations.find((station) => station.id === stationId) ?? null;
+}
+
+export function getGalaxyZoneById(galaxy: GalaxyDefinition | null | undefined, zoneId: string): GalaxyZoneRecord | null {
+  if (!galaxy) {
+    return null;
+  }
+  return galaxy.zones.find((zone) => zone.id === zoneId) ?? null;
+}
+
+export function getGalaxyZoneBySystemId(galaxy: GalaxyDefinition | null | undefined, systemId: string): GalaxyZoneRecord | null {
+  if (!galaxy) {
+    return null;
+  }
+  return galaxy.zones.find((zone) => zone.systemId === systemId) ?? null;
+}
+
+export function getGalaxyControllerPalette(
+  controllerId: GalaxyZoneControllerId,
+  coreSectorId?: string,
+): GalaxyControllerPalette {
+  const sectorController = GALAXY_SECTORS.find((sector) => sector.raceId === controllerId);
+  if (sectorController) {
+    return {
+      color: sectorController.color,
+      borderColor: sectorController.borderColor,
+      label: sectorController.label,
+    };
+  }
+
+  const specialPalette = GALAXY_SPECIAL_CONTROLLER_PALETTES[controllerId as Exclude<GalaxyZoneControllerId, RaceId>];
+  if (specialPalette) {
+    return specialPalette;
+  }
+
+  const fallbackSector = getGalaxySectorById(coreSectorId ?? "") ?? GALAXY_SECTORS[0];
+  return {
+    color: fallbackSector.color,
+    borderColor: fallbackSector.borderColor,
+    label: fallbackSector.label,
+  };
 }
 
 export function getGalaxyHomeworldByRace(
