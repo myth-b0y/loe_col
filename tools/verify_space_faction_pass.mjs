@@ -137,10 +137,20 @@ try {
 
   const naturalWarSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < 18; index += 1) {
       space.updateFactionWar(12000);
       space.updateForceProduction(30000);
       space.updateFactionWar(12000);
+      const debug = space.getDebugSnapshot();
+      const zoneCoreRaceBySectorId = Object.fromEntries(space.galaxyDefinition.homeworlds.map((homeworld) => [homeworld.sectorId, homeworld.raceId]));
+      const empireRaceId = debug.war.empireRaceId;
+      const empireHeldForeignZones = space.galaxyDefinition.zones.filter((zone) => (
+        zone.currentControllerId === empireRaceId
+        && zoneCoreRaceBySectorId[zone.coreSectorId] !== empireRaceId
+      ));
+      if (empireHeldForeignZones.length > 0 || debug.war.contestedZones.length > 0) {
+        break;
+      }
     }
     space.syncActiveWorld?.(true);
     const debug = space.getDebugSnapshot();
@@ -168,8 +178,85 @@ try {
     `Empire should be contesting or holding foreign territory after war fast-forward: ${JSON.stringify(naturalWarSummary)}`);
   assert(naturalWarSummary.empirePrimeAssignments.some((ship) => ship.assignmentKind === "invade"),
     `Empire Prime World reserve should launch invasion assignments: ${JSON.stringify(naturalWarSummary.empirePrimeAssignments)}`);
-  assert(naturalWarSummary.republicTargets.length > 0 || naturalWarSummary.contestedZones.some((zone) => naturalWarSummary.war.republicRaceIds.includes(zone.captureAttackerRaceId)),
-    `Republic-aligned races should be resisting or reclaiming against the Empire: ${JSON.stringify(naturalWarSummary)}`);
+
+  const republicResistanceSummary = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    const war = space.warState;
+    const zoneCoreRaceBySectorId = Object.fromEntries(
+      space.galaxyDefinition.homeworlds.map((homeworld) => [homeworld.sectorId, homeworld.raceId]),
+    );
+    const targetZone = space.galaxyDefinition.zones.find((zone) => (
+      war.republicRaceIds.includes(zoneCoreRaceBySectorId[zone.coreSectorId])
+      && !zone.isPrimeWorldZone
+    )) ?? space.galaxyDefinition.zones.find((zone) => (
+      war.republicRaceIds.includes(zoneCoreRaceBySectorId[zone.coreSectorId])
+    ));
+    if (!targetZone) {
+      return null;
+    }
+
+    const ownerRaceId = zoneCoreRaceBySectorId[targetZone.coreSectorId];
+    targetZone.currentControllerId = war.empireRaceId;
+    targetZone.zoneState = "stable";
+    targetZone.zoneCaptureProgress = 0;
+    targetZone.captureAttackerRaceId = null;
+    war.raceStates.forEach((raceState) => {
+      if (!war.republicRaceIds.includes(raceState.raceId)) {
+        return;
+      }
+      raceState.activeTargetZoneId = null;
+      raceState.retargetCooldownRemainingMs = 0;
+    });
+
+    let sawTargetingResponse = false;
+    let sawReclaimAssignments = false;
+    let sawFrontlineContest = false;
+    let finalDebug = null;
+
+    for (let index = 0; index < 14; index += 1) {
+      space.updateFactionWar(12000);
+      space.updateForceProduction(30000);
+      space.updateFactionWar(12000);
+      const debug = space.getDebugSnapshot();
+      finalDebug = debug;
+      const republicTargeting = debug.war.raceTargets.filter((raceState) => (
+        war.republicRaceIds.includes(raceState.raceId) && raceState.activeTargetZoneId === targetZone.id
+      ));
+      if (republicTargeting.length > 0) {
+        sawTargetingResponse = true;
+      }
+      const reclaimAssignments = debug.production.pools
+        .filter((pool) => pool.kind === "prime-world" && war.republicRaceIds.includes(pool.raceId))
+        .flatMap((pool) => pool.activeShips)
+        .filter((ship) => ship.assignmentKind === "reclaim" && ship.assignmentZoneId === targetZone.id);
+      if (reclaimAssignments.length > 0) {
+        sawReclaimAssignments = true;
+      }
+      if (debug.war.contestedZones.some((zone) => zone.id === targetZone.id && war.republicRaceIds.includes(zone.captureAttackerRaceId))) {
+        sawFrontlineContest = true;
+      }
+    }
+
+    return {
+      ownerRaceId,
+      targetZoneId: targetZone.id,
+      sawTargetingResponse,
+      sawReclaimAssignments,
+      sawFrontlineContest,
+      finalControllerRaceId: targetZone.currentControllerId,
+      finalRaceTargets: finalDebug?.war?.raceTargets ?? [],
+      finalContestedZones: finalDebug?.war?.contestedZones ?? [],
+    };
+  });
+
+  assert(republicResistanceSummary, "Could not stage a Republic reclaim scenario");
+  assert(
+    republicResistanceSummary.sawTargetingResponse
+    || republicResistanceSummary.sawReclaimAssignments
+    || republicResistanceSummary.sawFrontlineContest
+    || republicResistanceSummary.finalControllerRaceId === republicResistanceSummary.ownerRaceId,
+    `Republic-aligned races should be resisting or reclaiming against the Empire: ${JSON.stringify(republicResistanceSummary)}`,
+  );
 
   const hostilitySummary = await page.evaluate((cellSize) => {
     const space = window.__loeGame?.scene.keys.space;
@@ -307,6 +394,7 @@ try {
   const summary = {
     initialSummary,
     naturalWarSummary,
+    republicResistanceSummary,
     hostilitySummary,
     neutralDefenseSummary,
     consoleErrors,

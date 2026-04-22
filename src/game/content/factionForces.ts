@@ -82,13 +82,13 @@ export const PRIME_WORLD_DEFENSE_TARGET = 3;
 export const ZONE_DEFENSE_TARGET = 3;
 
 const BASE_RESPAWN_COOLDOWNS_MS: Record<FactionForceShipRole, number> = {
-  "base-fighter": 14000,
-  "support-fighter": 18000,
-  "attack-warship": 27000,
-  "defense-warship": 24000,
+  "base-fighter": 22000,
+  "support-fighter": 28000,
+  "attack-warship": 46000,
+  "defense-warship": 40000,
 };
 
-const PRIME_WORLD_PRODUCTION_MULTIPLIER = 0.72;
+const PRIME_WORLD_PRODUCTION_MULTIPLIER = 0.7;
 
 const PRIME_WORLD_DEFENSE_ROSTER: readonly FactionForceShipRole[] = [
   "attack-warship",

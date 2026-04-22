@@ -38,13 +38,22 @@ export type FactionWarAdvanceResult = {
 
 export type FactionWarZoneAdjacency = Record<string, string[]>;
 
-const EMPIRE_RETARGET_COOLDOWN_MS = 18000;
-const REPUBLIC_RETARGET_COOLDOWN_MS = 15000;
-const NEUTRAL_RETARGET_COOLDOWN_MS = 17000;
-const EMPIRE_ATTACK_READY_SHIPS = 5;
-const REPUBLIC_RECLAIM_READY_SHIPS = 4;
-const NEUTRAL_RECLAIM_READY_SHIPS = 3;
-const BASE_ZONE_CAPTURE_DURATION_MS = 72000;
+const EMPIRE_RETARGET_COOLDOWN_MS = 26000;
+const REPUBLIC_RETARGET_COOLDOWN_MS = 24000;
+const NEUTRAL_RETARGET_COOLDOWN_MS = 30000;
+const EMPIRE_ATTACK_READY_SHIPS = 7;
+const REPUBLIC_RECLAIM_READY_SHIPS = 5;
+const NEUTRAL_RECLAIM_READY_SHIPS = 4;
+const BASE_ZONE_CAPTURE_DURATION_MS = 120000;
+const MIN_CAPTURE_PRESSURE = 0.28;
+const BASE_ZONE_DEFENSE_POWER = 0.25;
+const PRIME_WORLD_DEFENSE_POWER = 1.75;
+const EMPIRE_PRIME_WORLD_HOLD_SHIPS = 1;
+const REPUBLIC_PRIME_WORLD_HOLD_SHIPS = 1;
+const NEUTRAL_PRIME_WORLD_HOLD_SHIPS = 1;
+const EMPIRE_POST_CAPTURE_COOLDOWN_MULTIPLIER = 1.05;
+const REPUBLIC_POST_CAPTURE_COOLDOWN_MULTIPLIER = 1.12;
+const NEUTRAL_POST_CAPTURE_COOLDOWN_MULTIPLIER = 1.18;
 const K_NEAREST_ZONE_NEIGHBORS = 5;
 
 class SeededRandom {
@@ -127,15 +136,38 @@ function getReserveTargetShips(
 ): number {
   switch (alignment) {
     case "empire":
-      return Math.max(6, Math.min(14, 6 + Math.floor(controlledZoneCount * 0.25)));
+      return Math.max(7, Math.min(15, 6 + Math.floor(controlledZoneCount * 0.2)));
     case "republic":
       return hasActiveTarget || lostOwnedZones > 0
-        ? Math.max(5, Math.min(12, 4 + Math.floor(controlledZoneCount * 0.2)))
+        ? Math.max(5, Math.min(10, 4 + Math.floor(controlledZoneCount * 0.16)))
         : 2;
     default:
       return lostOwnedZones > 0
-        ? Math.max(4, Math.min(9, 3 + Math.floor(controlledZoneCount * 0.16)))
+        ? Math.max(4, Math.min(7, 3 + Math.floor(controlledZoneCount * 0.12)))
         : 0;
+  }
+}
+
+function getPrimeWorldHoldShips(alignment: RaceAllianceStatus): number {
+  switch (alignment) {
+    case "empire":
+      return EMPIRE_PRIME_WORLD_HOLD_SHIPS;
+    case "republic":
+      return REPUBLIC_PRIME_WORLD_HOLD_SHIPS;
+    default:
+      return NEUTRAL_PRIME_WORLD_HOLD_SHIPS;
+  }
+}
+
+function getPostCaptureCooldownMs(alignment: RaceAllianceStatus): number {
+  const baseCooldown = getRetargetCooldownMs(alignment);
+  switch (alignment) {
+    case "empire":
+      return Math.round(baseCooldown * EMPIRE_POST_CAPTURE_COOLDOWN_MULTIPLIER);
+    case "republic":
+      return Math.round(baseCooldown * REPUBLIC_POST_CAPTURE_COOLDOWN_MULTIPLIER);
+    default:
+      return Math.round(baseCooldown * NEUTRAL_POST_CAPTURE_COOLDOWN_MULTIPLIER);
   }
 }
 
@@ -281,6 +313,7 @@ function chooseBestWarTargetZone(
   warState: FactionWarState,
   adjacency: FactionWarZoneAdjacency,
   raceId: RaceId,
+  currentTargetZoneId: string | null,
 ): string | null {
   const alignment = getRaceAllianceStatus(warState, raceId);
   const candidates = getAvailableTargetZones(galaxy, warState, adjacency, raceId, alignment);
@@ -303,6 +336,15 @@ function chooseBestWarTargetZone(
     } else {
       score += coreRaceId === raceId ? 220 : -400;
       score += zone.isPrimeWorldZone ? 90 : 0;
+    }
+
+    if (zone.id === currentTargetZoneId) {
+      score += 140;
+    }
+    if (zone.captureAttackerRaceId === raceId) {
+      score += 200;
+    } else if (zone.zoneState !== "stable") {
+      score += 50;
     }
 
     score -= getTargetDefenseEstimate(forceState, zone, warState) * 48;
@@ -371,13 +413,14 @@ function setPrimePoolAssignments(
   const primeZoneId = pool.originZoneId;
   const raceAlignment = getRaceAllianceStatus(warState, pool.raceId);
   const raceState = getRaceStateById(warState, pool.raceId);
-  const availableAttackers = Math.max(0, pool.activeShips.length - pool.desiredDefenseShips);
+  const holdShips = getPrimeWorldHoldShips(raceAlignment);
+  const availableAttackers = Math.max(0, pool.activeShips.length - pool.desiredDefenseShips - holdShips);
   const readyShipThreshold = getReadyShipThreshold(raceAlignment);
   const canLaunch = Boolean(raceState.activeTargetZoneId) && availableAttackers >= readyShipThreshold;
 
   let changed = false;
   pool.activeShips.forEach((ship, index) => {
-    if (index < pool.desiredDefenseShips || !canLaunch || !raceState.activeTargetZoneId) {
+    if (index < (pool.desiredDefenseShips + holdShips) || !canLaunch || !raceState.activeTargetZoneId) {
       changed = setShipAssignment(ship, "defend", primeZoneId) || changed;
       return;
     }
@@ -449,7 +492,14 @@ function refreshRaceTargets(
       return;
     }
 
-    const nextTargetZoneId = chooseBestWarTargetZone(galaxy, forceState, warState, adjacency, raceState.raceId);
+    const nextTargetZoneId = chooseBestWarTargetZone(
+      galaxy,
+      forceState,
+      warState,
+      adjacency,
+      raceState.raceId,
+      raceState.activeTargetZoneId,
+    );
     if (nextTargetZoneId !== raceState.activeTargetZoneId) {
       raceState.activeTargetZoneId = nextTargetZoneId;
       raceState.retargetCooldownRemainingMs = nextTargetZoneId ? getRetargetCooldownMs(alignment) : 0;
@@ -587,9 +637,10 @@ function advanceZoneCaptures(
     }
 
     const [attackerRaceId, attackPower] = strongestAttacker;
-    const capturePressure = attackPower - defendingPower;
-    if (capturePressure <= 0.08) {
-      const nextProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * 0.9);
+    const defenseFloor = BASE_ZONE_DEFENSE_POWER + (zone.isPrimeWorldZone ? PRIME_WORLD_DEFENSE_POWER : 0);
+    const capturePressure = attackPower - (defendingPower + defenseFloor);
+    if (capturePressure <= MIN_CAPTURE_PRESSURE) {
+      const nextProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * 0.95);
       if (nextProgress !== zone.zoneCaptureProgress || zone.zoneState !== "contested") {
         zone.zoneCaptureProgress = nextProgress;
         zone.zoneState = nextProgress > 0 ? "contested" : "stable";
@@ -601,11 +652,11 @@ function advanceZoneCaptures(
       return;
     }
 
-    const pressureFactor = Math.min(2.4, 1 + (capturePressure / Math.max(1, defendingPower + 1)));
+    const pressureFactor = Math.min(1.65, 1 + (capturePressure / Math.max(1.4, defendingPower + defenseFloor)));
     const progressGain = (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * pressureFactor;
     if (zone.captureAttackerRaceId !== attackerRaceId) {
       zone.captureAttackerRaceId = attackerRaceId;
-      zone.zoneCaptureProgress = Math.max(0.08, zone.zoneCaptureProgress * 0.35);
+      zone.zoneCaptureProgress = Math.max(0.05, zone.zoneCaptureProgress * 0.2);
       changed = true;
     }
     zone.zoneCaptureProgress = Math.min(1, zone.zoneCaptureProgress + progressGain);
@@ -623,6 +674,14 @@ function advanceZoneCaptures(
     zone.zoneCaptureProgress = 0;
     zone.zoneState = "stable";
     zone.captureAttackerRaceId = null;
+    const attackerRaceState = warState.raceStates.find((candidate) => candidate.raceId === attackerRaceId);
+    if (attackerRaceState) {
+      attackerRaceState.activeTargetZoneId = null;
+      attackerRaceState.retargetCooldownRemainingMs = Math.max(
+        attackerRaceState.retargetCooldownRemainingMs,
+        getPostCaptureCooldownMs(getRaceAllianceStatus(warState, attackerRaceId)),
+      );
+    }
     capturedZoneIds.push(zone.id);
   });
 
