@@ -557,6 +557,104 @@ try {
   assert(contestedSpawnSuppressionSummary, "Could not stage a contested-zone spawn-suppression scenario");
   assert(contestedSpawnSuppressionSummary.activeShipCount === 0, `Contested local zones should not instantly respawn new defenders: ${JSON.stringify(contestedSpawnSuppressionSummary)}`);
 
+  const captureCompletionSummary = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    const war = space.warState;
+    const zoneCoreRaceBySectorId = Object.fromEntries(space.galaxyDefinition.homeworlds.map((homeworld) => [homeworld.sectorId, homeworld.raceId]));
+    const targetZone = space.galaxyDefinition.zones.find((zone) => {
+      if (zone.isPrimeWorldZone) {
+        return false;
+      }
+      if (zoneCoreRaceBySectorId[zone.coreSectorId] === war.empireRaceId) {
+        return false;
+      }
+      if (zone.currentControllerId !== zoneCoreRaceBySectorId[zone.coreSectorId]) {
+        return false;
+      }
+      return (space.zoneAdjacency?.[zone.id] ?? []).some((adjacentZoneId) => {
+        const adjacentZone = space.galaxyDefinition.zones.find((candidate) => candidate.id === adjacentZoneId);
+        return adjacentZone?.currentControllerId === war.empireRaceId;
+      });
+    });
+    if (!targetZone) {
+      return null;
+    }
+
+    const defenderRaceId = zoneCoreRaceBySectorId[targetZone.coreSectorId];
+    targetZone.currentControllerId = defenderRaceId;
+    targetZone.zoneState = "stable";
+    targetZone.zoneCaptureProgress = 0;
+    targetZone.captureAttackerRaceId = null;
+
+    space.forceState.pools.forEach((pool) => {
+      if (pool.raceId !== war.empireRaceId) {
+        pool.activeShips = [];
+        pool.spawnCooldownRemainingMs = 999999;
+      }
+    });
+
+    const empirePrimePool = space.forceState.pools.find((pool) => pool.kind === "prime-world" && pool.raceId === war.empireRaceId);
+    const empireRaceState = war.raceStates.find((raceState) => raceState.raceId === war.empireRaceId);
+    if (!empirePrimePool || !empireRaceState) {
+      return null;
+    }
+
+    empireRaceState.activeTargetZoneId = targetZone.id;
+    empireRaceState.retargetCooldownRemainingMs = 999999;
+    empirePrimePool.activeShips = Array.from({ length: 12 }, (_value, index) => ({
+      id: `verify-capture:${index + 1}`,
+      role: index === 0 || index === 4
+        ? "attack-warship"
+        : index === 1
+          ? "support-fighter"
+          : index === 2
+            ? "defense-warship"
+            : "base-fighter",
+      assignmentKind: "invade",
+      assignmentZoneId: targetZone.id,
+    }));
+    empirePrimePool.nextShipSerial = 13;
+    empirePrimePool.spawnCooldownRemainingMs = 0;
+
+    for (let index = 0; index < 5; index += 1) {
+      space.updateFactionWar(20000);
+    }
+
+    window.__loeSession?.setGalaxyDefinition?.(space.galaxyDefinition);
+    window.__loeSession?.setFactionWarState?.(space.warState);
+    window.__loeSession?.setFactionForceState?.(space.forceState);
+
+    const overlay = space.galaxyMapOverlay;
+    overlay?.show?.();
+    if (overlay) {
+      overlay.selectedSectorId = targetZone.sectorId;
+      overlay.refresh(true);
+    }
+
+    const sessionZone = window.__loeSession?.getGalaxyDefinition?.()?.zones?.find?.((zone) => zone.id === targetZone.id) ?? null;
+    return {
+      targetZoneId: targetZone.id,
+      targetZoneName: targetZone.name,
+      sectorId: targetZone.sectorId,
+      finalControllerRaceId: targetZone.currentControllerId,
+      sessionControllerRaceId: sessionZone?.currentControllerId ?? null,
+      capturedByEmpire: targetZone.currentControllerId === war.empireRaceId,
+      overlayVisible: overlay?.isVisible?.() ?? false,
+      mapDebug: overlay?.getDebugSnapshot?.() ?? null,
+    };
+  });
+
+  await page.waitForTimeout(180);
+  await capture(page, "space-capture-map.png");
+
+  assert(captureCompletionSummary, "Could not stage an end-to-end zone capture scenario");
+  assert(captureCompletionSummary.capturedByEmpire, `Empire capture should complete end-to-end: ${JSON.stringify(captureCompletionSummary)}`);
+  assert(captureCompletionSummary.sessionControllerRaceId === captureCompletionSummary.finalControllerRaceId,
+    `Captured zone controller should sync back into session data: ${JSON.stringify(captureCompletionSummary)}`);
+  assert(captureCompletionSummary.overlayVisible, `Space datapad map should be visible for capture verification: ${JSON.stringify(captureCompletionSummary)}`);
+  assert(captureCompletionSummary.mapDebug?.selectedSectorId === captureCompletionSummary.sectorId,
+    `Sector-detail map should be focused on the captured zone's sector: ${JSON.stringify(captureCompletionSummary)}`);
+
   const summary = {
     initialSummary,
     naturalWarSummary,
@@ -566,6 +664,7 @@ try {
     neutralDefenseSummary,
     contestedDefenseSummary,
     contestedSpawnSuppressionSummary,
+    captureCompletionSummary,
     consoleErrors,
   };
 

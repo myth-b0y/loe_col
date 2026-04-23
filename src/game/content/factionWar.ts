@@ -58,6 +58,7 @@ const K_NEAREST_ZONE_NEIGHBORS = 5;
 const ZONE_DEFENSE_REINFORCEMENT_MAX_DISTANCE = 18000;
 const PRIME_WORLD_DEFENSE_REINFORCEMENT_MAX_DISTANCE = 26000;
 const MIN_DEFENSE_REINFORCEMENT_DEFICIT = 0.45;
+const REPUBLIC_COALITION_SUPPORT_DEMAND_BONUS = 2.05;
 
 class SeededRandom {
   private seed: number;
@@ -142,7 +143,7 @@ function getReserveTargetShips(
       return Math.max(7, Math.min(15, 6 + Math.floor(controlledZoneCount * 0.2)));
     case "republic":
       return hasActiveTarget || lostOwnedZones > 0
-        ? Math.max(5, Math.min(10, 4 + Math.floor(controlledZoneCount * 0.16)))
+        ? Math.max(6, Math.min(11, 4 + Math.floor(controlledZoneCount * 0.18)))
         : 2;
     default:
       return lostOwnedZones > 0
@@ -286,7 +287,10 @@ function chooseBestDefenseTargetZone(
       const controllerRaceId = getZoneControllerRaceId(zone, warState);
       const coreRaceId = getZoneCoreRaceId(zone);
       const distance = getZoneSystemDistance(galaxy, sourceZoneId, zone.id);
-      if (distance === null || distance > maxDistance) {
+      const effectiveMaxDistance = alignment === "republic" && controllerRaceId !== warState.empireRaceId
+        ? maxDistance * 2.2
+        : maxDistance;
+      if (distance === null || distance > effectiveMaxDistance) {
         return null;
       }
       const targetSystem = getGalaxySystemById(galaxy, zone.systemId);
@@ -300,7 +304,7 @@ function chooseBestDefenseTargetZone(
       const republicSupportDemand = alignment === "republic"
         && controllerRaceId !== raceId
         && controllerRaceId !== warState.empireRaceId
-        ? 1.4
+        ? REPUBLIC_COALITION_SUPPORT_DEMAND_BONUS
         : 0;
       const defenseDemand = getZoneDefenseDemandPower(zone, warState) + republicSupportDemand;
       const plannedDefensePower = plannedDefensePowerByZone.get(zone.id) ?? 0;
@@ -316,7 +320,7 @@ function chooseBestDefenseTargetZone(
       score += controllerRaceId === raceId ? 180 : 0;
       score += coreRaceId === raceId ? 140 : 0;
       if (alignment === "republic" && controllerRaceId !== raceId && controllerRaceId !== warState.empireRaceId) {
-        score += 120;
+        score += 170;
       }
       score += Math.min(deficit, availablePower) * 180;
       score -= Math.max(0, availablePower - deficit) * 26;
@@ -508,6 +512,7 @@ function chooseBestWarTargetZone(
     } else if (alignment === "republic") {
       score += coreRaceId === raceId ? 180 : getRaceAllianceStatus(warState, coreRaceId) === "republic" ? 120 : 70;
       score += zone.isPrimeWorldZone ? 80 : 24;
+      score += controllerRaceId === warState.empireRaceId ? 130 : 0;
     } else {
       score += coreRaceId === raceId ? 220 : -400;
       score += zone.isPrimeWorldZone ? 90 : 0;
@@ -518,11 +523,13 @@ function chooseBestWarTargetZone(
     }
     if (zone.captureAttackerRaceId === raceId) {
       score += 200;
+    } else if (alignment === "republic" && zone.captureAttackerRaceId === warState.empireRaceId) {
+      score += 220;
     } else if (zone.zoneState !== "stable") {
       score += 50;
     }
 
-    score -= getTargetDefenseEstimate(forceState, zone, warState) * 48;
+    score -= getTargetDefenseEstimate(forceState, zone, warState) * (alignment === "republic" ? 40 : 48);
     return { zone, score };
   });
 

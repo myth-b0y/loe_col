@@ -6,10 +6,14 @@ import {
   GALAXY_STARS,
   GALAXY_WORLD_CONFIG,
   clampPointToGalaxyTravelBounds,
+  getGalaxyControllerDisplayLabel,
   getGalaxyMoonPositionAtTime,
   getGalaxyPlanetPositionAtTime,
   getGalaxyRegionLabelAtPosition,
   getGalaxySectorAtPosition,
+  getGalaxySectorDisplayLabel,
+  getGalaxySectorTravelLabel,
+  getGalaxyTerritoryEntryLabel,
   isGalaxyDeepSpaceAtPosition,
   type GalaxyDefinition,
   type GalaxyHazeNode,
@@ -265,6 +269,12 @@ type SpaceCelestialSystemView = {
   moonIds: string[];
 };
 
+type SpaceStatusMessage = {
+  id: string;
+  text: string;
+  expiresAtMs: number;
+};
+
 type SpaceStationView = {
   stationId: string;
   root: Phaser.GameObjects.Container;
@@ -304,6 +314,8 @@ const SMUGGLER_ROUTE_WAIT_MIN_MS = 2200;
 const SMUGGLER_ROUTE_WAIT_MAX_MS = 4200;
 const FORCE_STATE_SYNC_INTERVAL_MS = 1000;
 const WAR_STATE_UPDATE_INTERVAL_MS = 1000;
+const STATUS_MESSAGE_DURATION_MS = 5600;
+const STATUS_MESSAGE_LIMIT = 3;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -541,6 +553,7 @@ export class SpaceScene extends Phaser.Scene {
   private routeText?: Phaser.GameObjects.Text;
   private statusText?: Phaser.GameObjects.Text;
   private contactText?: Phaser.GameObjects.Text;
+  private radarEventText?: Phaser.GameObjects.Text;
   private coordinateText?: Phaser.GameObjects.Text;
   private waypointArrow?: Phaser.GameObjects.Triangle;
   private waypointLabel?: Phaser.GameObjects.Text;
@@ -553,6 +566,8 @@ export class SpaceScene extends Phaser.Scene {
   private stationOverlay?: SpaceStationOverlay;
   private stationOverlayStationId: string | null = null;
   private stationOverlayStatusText = "";
+  private statusMessages: SpaceStatusMessage[] = [];
+  private lastSectorEntryKey: string | null = null;
   private inputKeys?: {
     up: Phaser.Input.Keyboard.Key;
     down: Phaser.Input.Keyboard.Key;
@@ -660,6 +675,8 @@ export class SpaceScene extends Phaser.Scene {
     this.playerDestroyed = false;
     this.stationOverlayStationId = null;
     this.stationOverlayStatusText = "";
+    this.statusMessages = [];
+    this.lastSectorEntryKey = null;
 
     this.cameras.main.setBackgroundColor("#040810");
     this.input.mouse?.disableContextMenu();
@@ -667,7 +684,7 @@ export class SpaceScene extends Phaser.Scene {
     this.createPlayerShip();
     this.indexGalaxyCelestials();
     this.currentSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
-    this.currentRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y);
+    this.currentRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y, this.warState);
     this.currentRegionIsDeepSpace = isGalaxyDeepSpaceAtPosition(this.shipRoot.x, this.shipRoot.y);
     this.drawWorldBackdrop();
     this.initializeWorldStates();
@@ -881,7 +898,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private refreshCurrentSector(): void {
     const nextSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
-    const nextRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y);
+    const nextRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y, this.warState);
     const nextRegionIsDeepSpace = isGalaxyDeepSpaceAtPosition(this.shipRoot.x, this.shipRoot.y);
     if (
       nextSector.id === this.currentSector.id
@@ -898,6 +915,64 @@ export class SpaceScene extends Phaser.Scene {
       this.currentRegionIsDeepSpace ? DEEP_SPACE_OVERLAY_COLOR : this.currentSector.color,
       this.currentRegionIsDeepSpace ? 0.034 : 0.05,
     );
+
+    const sectorEntryKey = nextRegionIsDeepSpace
+      ? "deep-space"
+      : `${nextSector.id}:${getGalaxySectorDisplayLabel(nextSector, this.warState)}`;
+    if (this.lastSectorEntryKey !== sectorEntryKey) {
+      if (nextRegionIsDeepSpace) {
+        this.pushStatusMessage("Entered Deep Space");
+      } else {
+        this.pushStatusMessage(getGalaxyTerritoryEntryLabel(nextSector, this.warState));
+        this.pushStatusMessage(getGalaxySectorTravelLabel(nextSector));
+      }
+      this.lastSectorEntryKey = sectorEntryKey;
+    }
+  }
+
+  private pruneStatusMessages(): void {
+    const now = this.time.now;
+    this.statusMessages = this.statusMessages
+      .filter((message) => message.expiresAtMs > now)
+      .slice(-STATUS_MESSAGE_LIMIT);
+  }
+
+  private pushStatusMessage(text: string, durationMs = STATUS_MESSAGE_DURATION_MS): void {
+    const trimmedText = text.trim();
+    if (trimmedText.length <= 0) {
+      return;
+    }
+
+    const now = this.time.now;
+    const existing = this.statusMessages.find((message) => message.text === trimmedText);
+    if (existing) {
+      existing.expiresAtMs = Math.max(existing.expiresAtMs, now + durationMs);
+    } else {
+      this.statusMessages.push({
+        id: `${now}-${this.statusMessages.length}`,
+        text: trimmedText,
+        expiresAtMs: now + durationMs,
+      });
+    }
+
+    this.pruneStatusMessages();
+    this.refreshStatusMessageText();
+  }
+
+  private refreshStatusMessageText(): void {
+    this.pruneStatusMessages();
+    if (!this.radarEventText) {
+      return;
+    }
+
+    if (this.statusMessages.length <= 0) {
+      this.radarEventText.setVisible(false).setText("");
+      return;
+    }
+
+    this.radarEventText
+      .setText(this.statusMessages.map((message) => message.text).join("\n"))
+      .setVisible(true);
   }
 
   private createBackdropStarCell(
@@ -1758,6 +1833,12 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    const previousTargetByRace = new Map(this.warState.raceStates.map((raceState) => [raceState.raceId, raceState.activeTargetZoneId]));
+    const previousZoneStates = new Map(this.galaxyDefinition.zones.map((zone) => [zone.id, {
+      currentControllerId: zone.currentControllerId,
+      zoneState: zone.zoneState,
+      captureAttackerRaceId: zone.captureAttackerRaceId,
+    }]));
     const warUpdate = advanceFactionWarState(
       this.warState,
       this.galaxyDefinition,
@@ -1770,10 +1851,77 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    this.emitWarUpdateMessages(previousTargetByRace, previousZoneStates, warUpdate.capturedZoneIds);
     this.galaxyStateDirty = true;
     this.warStateDirty = true;
     this.forceStateDirty = true;
     this.reconcileForceShips();
+  }
+
+  private emitWarUpdateMessages(
+    previousTargetByRace: ReadonlyMap<RaceId, string | null>,
+    previousZoneStates: ReadonlyMap<string, {
+      currentControllerId: string;
+      zoneState: string;
+      captureAttackerRaceId: RaceId | null;
+    }>,
+    capturedZoneIds: string[],
+  ): void {
+    this.warState.raceStates.forEach((raceState) => {
+      if (!raceState.activeTargetZoneId || previousTargetByRace.get(raceState.raceId) === raceState.activeTargetZoneId) {
+        return;
+      }
+
+      const zone = this.galaxyDefinition.zones.find((candidate) => candidate.id === raceState.activeTargetZoneId);
+      if (!zone) {
+        return;
+      }
+
+      const alignment = getRaceAllianceStatus(this.warState, raceState.raceId);
+      if (alignment === "empire") {
+        this.pushStatusMessage(`Empire forces sighted near ${zone.name}`);
+      } else if (alignment === "republic") {
+        this.pushStatusMessage(`Republic reinforcements inbound to ${zone.name}`);
+      }
+    });
+
+    this.galaxyDefinition.zones.forEach((zone) => {
+      const previous = previousZoneStates.get(zone.id);
+      if (!zone.captureAttackerRaceId) {
+        return;
+      }
+
+      const attackerChanged = previous?.captureAttackerRaceId !== zone.captureAttackerRaceId;
+      const enteredCaptureState = previous?.zoneState === "stable" && zone.zoneState !== "stable";
+      if (!attackerChanged && !enteredCaptureState) {
+        return;
+      }
+
+      const attackerAlignment = getRaceAllianceStatus(this.warState, zone.captureAttackerRaceId);
+      if (attackerAlignment === "empire") {
+        this.pushStatusMessage(`The Empire is attacking ${zone.name}`);
+      } else if (attackerAlignment === "republic") {
+        this.pushStatusMessage(`Republic forces are contesting ${zone.name}`);
+      } else {
+        this.pushStatusMessage(`${getGalaxyControllerDisplayLabel(zone.captureAttackerRaceId, this.warState, zone.coreSectorId)} forces are contesting ${zone.name}`);
+      }
+    });
+
+    capturedZoneIds.forEach((zoneId) => {
+      const zone = this.galaxyDefinition.zones.find((candidate) => candidate.id === zoneId);
+      if (!zone) {
+        return;
+      }
+
+      const controllerLabel = getGalaxyControllerDisplayLabel(zone.currentControllerId, this.warState, zone.coreSectorId);
+      if (controllerLabel === "Galactic Empire") {
+        this.pushStatusMessage(`${zone.name} has fallen to the Empire`);
+      } else if (controllerLabel.includes("Republic")) {
+        this.pushStatusMessage(`${zone.name} reclaimed by the Republic`);
+      } else {
+        this.pushStatusMessage(`${zone.name} restored to ${controllerLabel}`);
+      }
+    });
   }
 
   private updateForceProduction(deltaMs: number): void {
@@ -2012,22 +2160,23 @@ export class SpaceScene extends Phaser.Scene {
         }
       } else if (state.shipRole === "attack-warship") {
         children.push(
-          this.add.rectangle(-bodyRadius * 0.98, bodyRadius * 0.26, bodyRadius * 0.46, bodyRadius * 1.18, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
-          this.add.rectangle(bodyRadius * 0.98, bodyRadius * 0.26, bodyRadius * 0.46, bodyRadius * 1.18, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.36),
-          this.add.rectangle(0, bodyRadius * 0.24, bodyRadius * 1.22, bodyRadius * 1.54, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.82),
-          this.add.triangle(0, -bodyRadius * 1.08, 0, -bodyRadius * 1.52, -bodyRadius * 0.54, -bodyRadius * 0.1, bodyRadius * 0.54, -bodyRadius * 0.1, palette.trimColor, 0.96).setStrokeStyle(1, 0xf7fbff, 0.42),
-          this.add.rectangle(0, bodyRadius * 1.12, bodyRadius * 0.92, bodyRadius * 0.44, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
-          this.add.rectangle(-bodyRadius * 0.7, -bodyRadius * 0.2, bodyRadius * 0.18, bodyRadius * 0.92, palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.28),
-          this.add.rectangle(bodyRadius * 0.7, -bodyRadius * 0.2, bodyRadius * 0.18, bodyRadius * 0.92, palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.28),
+          this.add.rectangle(-bodyRadius * 0.94, bodyRadius * 0.52, bodyRadius * 0.34, bodyRadius * 1.72, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.rectangle(bodyRadius * 0.94, bodyRadius * 0.52, bodyRadius * 0.34, bodyRadius * 1.72, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.rectangle(0, bodyRadius * 0.22, bodyRadius * 0.92, bodyRadius * 2.16, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.84),
+          this.add.triangle(0, -bodyRadius * 1.28, 0, -bodyRadius * 1.82, -bodyRadius * 0.44, -bodyRadius * 0.18, bodyRadius * 0.44, -bodyRadius * 0.18, palette.trimColor, 0.96).setStrokeStyle(1, 0xf7fbff, 0.44),
+          this.add.rectangle(0, -bodyRadius * 0.22, bodyRadius * 0.26, bodyRadius * 0.96, palette.trimColor, 0.9).setStrokeStyle(1, 0xf7fbff, 0.28),
+          this.add.ellipse(0, bodyRadius * 0.18, bodyRadius * 1.46, bodyRadius * 0.84, palette.glowColor, 0.1).setStrokeStyle(1, palette.trimColor, 0.22),
+          this.add.rectangle(0, bodyRadius * 1.46, bodyRadius * 0.86, bodyRadius * 0.42, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
         );
       } else {
         children.push(
-          this.add.rectangle(-bodyRadius * 1.08, bodyRadius * 0.3, bodyRadius * 0.56, bodyRadius * 1.16, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.38),
-          this.add.rectangle(bodyRadius * 1.08, bodyRadius * 0.3, bodyRadius * 0.56, bodyRadius * 1.16, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.38),
-          this.add.rectangle(0, bodyRadius * 0.34, bodyRadius * 1.36, bodyRadius * 1.62, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.84),
-          this.add.polygon(0, -bodyRadius * 0.84, createStarPoints(bodyRadius * 0.34, bodyRadius * 0.16, 4), palette.trimColor, 0.92).setStrokeStyle(1, 0xf7fbff, 0.32),
-          this.add.rectangle(0, bodyRadius * 1.18, bodyRadius * 0.98, bodyRadius * 0.46, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
-          this.add.ellipse(0, bodyRadius * 0.16, bodyRadius * 1.76, bodyRadius * 0.96, palette.glowColor, 0.12).setStrokeStyle(1, palette.trimColor, 0.22),
+          this.add.rectangle(-bodyRadius * 1.12, bodyRadius * 0.5, bodyRadius * 0.52, bodyRadius * 1.46, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.38),
+          this.add.rectangle(bodyRadius * 1.12, bodyRadius * 0.5, bodyRadius * 0.52, bodyRadius * 1.46, palette.color, 0.98).setStrokeStyle(1, palette.trimColor, 0.38),
+          this.add.rectangle(0, bodyRadius * 0.34, bodyRadius * 1.08, bodyRadius * 2.12, palette.color, 0.98).setStrokeStyle(2, palette.trimColor, 0.84),
+          this.add.triangle(0, -bodyRadius * 1.12, 0, -bodyRadius * 1.56, -bodyRadius * 0.54, -bodyRadius * 0.14, bodyRadius * 0.54, -bodyRadius * 0.14, palette.trimColor, 0.94).setStrokeStyle(1, 0xf7fbff, 0.34),
+          this.add.rectangle(0, -bodyRadius * 0.12, bodyRadius * 0.28, bodyRadius * 0.88, palette.trimColor, 0.88).setStrokeStyle(1, 0xf7fbff, 0.26),
+          this.add.rectangle(0, bodyRadius * 1.42, bodyRadius * 0.94, bodyRadius * 0.46, 0x183248, 0.98).setStrokeStyle(1, palette.trimColor, 0.34),
+          this.add.ellipse(0, bodyRadius * 0.26, bodyRadius * 1.94, bodyRadius * 0.96, palette.glowColor, 0.12).setStrokeStyle(1, palette.trimColor, 0.22),
         );
       }
     } else if (state.factionId === "empire") {
@@ -2170,6 +2319,17 @@ export class SpaceScene extends Phaser.Scene {
       color: "#c8def9",
       wordWrap: { width: 376 },
     }).setScrollFactor(0).setDepth(51);
+
+    this.radarEventText = this.add.text(GAME_WIDTH * 0.5, 164, "", {
+      fontFamily: "Arial",
+      fontSize: "14px",
+      color: "#e8f4ff",
+      align: "center",
+      backgroundColor: "#09131fcc",
+      padding: { x: 10, y: 6 },
+      wordWrap: { width: 420, useAdvancedWrap: true },
+      lineSpacing: 4,
+    }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
     this.coordinateText = this.add.text(GAME_WIDTH - 34, 92, "", {
       fontFamily: "Arial",
@@ -3729,13 +3889,27 @@ export class SpaceScene extends Phaser.Scene {
     const leader = this.getPatrolLeader(ship);
     if (leader && leader.id !== ship.id) {
       const slotTarget = this.getFormationSlotTarget(ship, leader);
-      const slotDx = slotTarget.x - ship.root.x;
-      const slotDy = slotTarget.y - ship.root.y;
-      if ((slotDx * slotDx) + (slotDy * slotDy) > 36) {
-        return new Phaser.Math.Vector2(slotDx, slotDy).normalize();
+      const slotVector = new Phaser.Math.Vector2(slotTarget.x - ship.root.x, slotTarget.y - ship.root.y);
+      const slotDistance = slotVector.length();
+      const leaderForward = this.getShipTravelDirection(leader);
+      const desiredDirection = new Phaser.Math.Vector2();
+
+      if (slotDistance > 0.001) {
+        const catchUpBias = Phaser.Math.Clamp(slotDistance / (FORMATION_RECOVERY_DISTANCE * 1.9), 0.18, 1);
+        desiredDirection.add(slotVector.normalize().scale(0.84));
+        if (leaderForward.lengthSq() > 0.001) {
+          desiredDirection.add(leaderForward.clone().scale(0.42 * (1 - Math.min(1, catchUpBias))));
+        }
       }
 
-      const leaderForward = this.getShipTravelDirection(leader);
+      if (leader.velocity.lengthSq() > 1) {
+        desiredDirection.add(leader.velocity.clone().normalize().scale(0.38));
+      }
+
+      if (desiredDirection.lengthSq() > 0.001) {
+        return desiredDirection.normalize();
+      }
+
       return leaderForward.lengthSq() > 0 ? leaderForward : new Phaser.Math.Vector2();
     }
 
@@ -3769,9 +3943,12 @@ export class SpaceScene extends Phaser.Scene {
   private getFormationSlotTarget(ship: SpaceFactionShip, leader: SpaceFactionShip): Phaser.Math.Vector2 {
     const forward = this.getShipTravelDirection(leader);
     const right = new Phaser.Math.Vector2(-forward.y, forward.x);
+    const lookAheadScale = Phaser.Math.Clamp(leader.velocity.length() / Math.max(1, this.getShipCombatConfig(leader).maxSpeed), 0.12, 0.34);
+    const lookAheadX = leader.velocity.x * lookAheadScale;
+    const lookAheadY = leader.velocity.y * lookAheadScale;
     return new Phaser.Math.Vector2(
-      leader.root.x + (right.x * ship.formationOffsetX) - (forward.x * ship.formationOffsetY),
-      leader.root.y + (right.y * ship.formationOffsetX) - (forward.y * ship.formationOffsetY),
+      leader.root.x + (right.x * ship.formationOffsetX) - (forward.x * ship.formationOffsetY) + lookAheadX,
+      leader.root.y + (right.y * ship.formationOffsetX) - (forward.y * ship.formationOffsetY) + lookAheadY,
     );
   }
 
@@ -3824,6 +4001,7 @@ export class SpaceScene extends Phaser.Scene {
     let maxSpeed = faction.maxSpeed;
     const formationSlotDistance = this.getFormationSlotDistance(ship);
     const leaderLag = ship.leaderId ? 0 : this.getLeaderFormationLag(ship);
+    const leader = ship.leaderId ? this.getPatrolLeader(ship) : null;
     if (formationSlotDistance > FORMATION_RECOVERY_DISTANCE) {
       acceleration *= 1.22;
       maxSpeed *= 1.18;
@@ -3838,6 +4016,17 @@ export class SpaceScene extends Phaser.Scene {
       ship.velocity.scale(Math.max(0, 1 - (0.92 * dt)));
     } else {
       ship.velocity.scale(Math.max(0, 1 - (1.9 * dt)));
+    }
+
+    if (leader && leader.id !== ship.id) {
+      const velocityMatchAlpha = Phaser.Math.Clamp(
+        dt * (formationSlotDistance > FORMATION_RECOVERY_DISTANCE ? 1.8 : 3.2),
+        0,
+        0.24,
+      );
+      ship.velocity.x = Phaser.Math.Linear(ship.velocity.x, leader.velocity.x, velocityMatchAlpha);
+      ship.velocity.y = Phaser.Math.Linear(ship.velocity.y, leader.velocity.y, velocityMatchAlpha);
+      maxSpeed *= formationSlotDistance > FORMATION_RECOVERY_DISTANCE ? 1.06 : 0.98;
     }
 
     if (ship.velocity.length() > maxSpeed) {
@@ -3927,6 +4116,7 @@ export class SpaceScene extends Phaser.Scene {
       for (let rightIndex = leftIndex + 1; rightIndex < this.factionShips.length; rightIndex += 1) {
         const leftShip = this.factionShips[leftIndex];
         const rightShip = this.factionShips[rightIndex];
+        const sharedGroup = leftShip.groupId === rightShip.groupId;
         this.resolveMovingBodiesOverlap(
           leftShip.root,
           leftShip.radius,
@@ -3934,7 +4124,7 @@ export class SpaceScene extends Phaser.Scene {
           rightShip.root,
           rightShip.radius,
           rightShip.velocity,
-          0.5,
+          sharedGroup ? 0.24 : 0.5,
         );
       }
     }
@@ -4475,6 +4665,7 @@ export class SpaceScene extends Phaser.Scene {
     });
     this.updateMissionPlanetVisuals(missionPlanet, landingReady);
     this.updateWaypointIndicator(missionPlanet, missionDistance, landingReady);
+    this.refreshStatusMessageText();
     if (this.stationOverlay?.isVisible() && this.stationOverlayStationId) {
       const station = this.galaxyStationsById.get(this.stationOverlayStationId);
       if (station) {
@@ -4663,7 +4854,7 @@ export class SpaceScene extends Phaser.Scene {
 
     return {
       stationName: station.name,
-      sectorLabel: getGalaxyRegionLabelAtPosition(station.x, station.y),
+      sectorLabel: getGalaxyRegionLabelAtPosition(station.x, station.y, this.warState),
       credits,
       repairCost,
       hasDamage: repairCost > 0,
@@ -5040,6 +5231,7 @@ export class SpaceScene extends Phaser.Scene {
     this.routeText?.setAlpha(alpha);
     this.statusText?.setAlpha(alpha);
     this.contactText?.setAlpha(alpha);
+    this.radarEventText?.setAlpha(alpha);
     this.coordinateText?.setAlpha(alpha);
     this.radar?.setAlpha(alpha);
     this.waypointArrow?.setAlpha(blocking ? 0.16 : 1);
@@ -5170,7 +5362,7 @@ export class SpaceScene extends Phaser.Scene {
         galaxyRadius: GALAXY_WORLD_CONFIG.radius,
         restrictedCoreRadius: GALAXY_WORLD_CONFIG.restrictedCoreRadius,
       },
-      sector: this.getCurrentGalaxySector().label,
+      sector: getGalaxySectorDisplayLabel(this.getCurrentGalaxySector(), this.warState),
       region: this.getCurrentRegionLabel(),
       isDeepSpace: this.currentRegionIsDeepSpace,
       playerRaceId: gameSession.getPlayerRaceId(),
@@ -5190,6 +5382,7 @@ export class SpaceScene extends Phaser.Scene {
           .filter((zone) => zone.zoneState !== "stable" || zone.captureAttackerRaceId)
           .map((zone) => ({
             id: zone.id,
+            name: zone.name,
             systemId: zone.systemId,
             currentControllerId: zone.currentControllerId,
             zoneState: zone.zoneState,

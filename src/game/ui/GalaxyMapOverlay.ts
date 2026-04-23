@@ -6,6 +6,7 @@ import {
   GALAXY_SECTORS,
   GALAXY_STARS,
   GALAXY_WORLD_CONFIG,
+  getGalaxyControllerDisplayLabel,
   type GalaxyDefinition,
   getGalaxyControllerPalette,
   getGalaxyMoonPositionAtTime,
@@ -13,6 +14,7 @@ import {
   getGalaxyRadialDistance,
   getGalaxyRegionLabelAtPosition,
   getGalaxySectorAtPosition,
+  getGalaxySectorDisplayLabel,
   getGalaxySectorLabelPoint,
   getGalaxySectorPolygonPoints,
   type GalaxySectorConfig,
@@ -37,6 +39,7 @@ const MAP_RECT = new Phaser.Geom.Rectangle(WINDOW.x + 20, WINDOW.y + 122, 690, 4
 const INFO_RECT = new Phaser.Geom.Rectangle(WINDOW.right - 334, WINDOW.y + 122, 314, 430);
 const SECTOR_VIEW_PADDING = 900;
 const MAP_SNAPSHOT_REDRAW_INTERVAL_MS = 1200;
+const MAP_DATA_REFRESH_INTERVAL_MS = 450;
 const TAB_LAYOUT = [
   { tab: "inventory", label: "Inventory", x: 428 },
   { tab: "skills", label: "Skills", x: 562 },
@@ -85,6 +88,7 @@ export class GalaxyMapOverlay {
   private cachedZonesBySectorId = new Map<string, GalaxyDefinition["zones"]>();
   private cachedStaticViewKey = "";
   private lastStaticDrawMs = Number.NEGATIVE_INFINITY;
+  private lastSnapshotCaptureMs = Number.NEGATIVE_INFINITY;
 
   constructor({ scene, onClose, onOpenSettings, onRequestTab }: GalaxyMapOverlayOptions) {
     this.scene = scene;
@@ -375,6 +379,9 @@ export class GalaxyMapOverlay {
   }
 
   refresh(forceStatic = false): void {
+    if (forceStatic || this.shouldRefreshGalaxySnapshot()) {
+      this.captureGalaxySnapshot();
+    }
     this.ensureGalaxySnapshot();
     const viewBounds = this.getMapViewBounds();
     const orbitTimeMs = this.scene.time.now;
@@ -452,12 +459,20 @@ export class GalaxyMapOverlay {
 
     this.cachedStaticViewKey = "";
     this.lastStaticDrawMs = Number.NEGATIVE_INFINITY;
+    this.lastSnapshotCaptureMs = this.scene.time.now;
   }
 
   private ensureGalaxySnapshot(): void {
     if (!this.cachedGalaxy) {
       this.captureGalaxySnapshot();
     }
+  }
+
+  private shouldRefreshGalaxySnapshot(): boolean {
+    if (!this.cachedGalaxy) {
+      return true;
+    }
+    return (this.scene.time.now - this.lastSnapshotCaptureMs) >= MAP_DATA_REFRESH_INTERVAL_MS;
   }
 
   private getStaticViewKey(viewBounds: Phaser.Geom.Rectangle): string {
@@ -483,7 +498,18 @@ export class GalaxyMapOverlay {
       return true;
     }
 
-    return (orbitTimeMs - this.lastStaticDrawMs) >= MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
+    return (orbitTimeMs - this.lastStaticDrawMs) >= this.getStaticRedrawIntervalMs();
+  }
+
+  private getStaticRedrawIntervalMs(): number {
+    if (!this.cachedGalaxy) {
+      return MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
+    }
+    const hasVisibleContestedZones = this.cachedGalaxy.zones.some((zone) => (
+      (zone.zoneState !== "stable" || zone.captureAttackerRaceId !== null)
+      && (!this.selectedSectorId || zone.sectorId === this.selectedSectorId)
+    ));
+    return hasVisibleContestedZones ? 320 : MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
   }
 
   private getCachedGalaxySnapshot(): GalaxyDefinition {
@@ -567,7 +593,7 @@ export class GalaxyMapOverlay {
       this.staticMap.fillCircle(point.x, point.y, Math.max(0.45, star.size * 0.54));
     });
 
-    this.drawZoneLayer(galaxy, viewBounds, selectedSector?.id ?? null);
+    this.drawZoneLayer(galaxy, viewBounds, selectedSector?.id ?? null, orbitTimeMs);
     this.drawGeneratedBodies(galaxy, viewBounds, selectedSector?.id ?? null, homeworlds, orbitTimeMs);
   }
 
@@ -575,6 +601,7 @@ export class GalaxyMapOverlay {
     galaxy: GalaxyDefinition,
     viewBounds: Phaser.Geom.Rectangle,
     selectedSectorId: string | null,
+    orbitTimeMs: number,
   ): void {
     const sectorIds = selectedSectorId
       ? [selectedSectorId]
@@ -588,28 +615,40 @@ export class GalaxyMapOverlay {
       }
 
       const controllerIds = [...new Set(zones.map((zone) => zone.currentControllerId))];
+      const contestedZones = zones.filter((zone) => zone.zoneState !== "stable" || zone.captureAttackerRaceId);
       if (controllerIds.length === 1) {
         const palette = getGalaxyControllerPalette(controllerIds[0], sector.id);
         const polygon = getGalaxySectorPolygonPoints(sector);
         const mapped = this.mapFlatPolygonPoints(polygon, viewBounds);
         this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.36 : 0.22);
         this.staticMap.fillPoints(mapped, true);
-        return;
+      } else {
+        zones.forEach((zone) => {
+          const palette = getGalaxyControllerPalette(zone.currentControllerId, zone.coreSectorId);
+          const mapped = this.mapPointPolygon(zone.territoryPoints, viewBounds);
+          this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.34 : 0.2);
+          this.staticMap.fillPoints(mapped, true);
+        });
+
+        const boundarySegments = this.getZoneBoundarySegments(zones);
+        this.staticMap.lineStyle(selectedSectorId ? 2.2 : 1.4, 0xf4fbff, selectedSectorId ? 0.7 : 0.5);
+        boundarySegments.forEach((segment) => {
+          const start = this.worldToMapWithBounds(segment.start, viewBounds);
+          const end = this.worldToMapWithBounds(segment.end, viewBounds);
+          this.staticMap.lineBetween(start.x, start.y, end.x, end.y);
+        });
       }
 
-      zones.forEach((zone) => {
-        const palette = getGalaxyControllerPalette(zone.currentControllerId, zone.coreSectorId);
+      contestedZones.forEach((zone) => {
+        const invaderPalette = getGalaxyControllerPalette(zone.captureAttackerRaceId ?? zone.currentControllerId, zone.coreSectorId);
         const mapped = this.mapPointPolygon(zone.territoryPoints, viewBounds);
-        this.staticMap.fillStyle(palette.color, selectedSectorId ? 0.34 : 0.2);
+        const pulse = 0.5 + (Math.sin((orbitTimeMs / 900) + (zone.id.length * 0.27)) * 0.5);
+        const fillAlpha = (selectedSectorId ? 0.18 : 0.11) + (pulse * (selectedSectorId ? 0.22 : 0.14));
+        const strokeAlpha = 0.36 + (pulse * 0.44);
+        this.staticMap.fillStyle(invaderPalette.color, fillAlpha);
         this.staticMap.fillPoints(mapped, true);
-      });
-
-      const boundarySegments = this.getZoneBoundarySegments(zones);
-      this.staticMap.lineStyle(selectedSectorId ? 2.2 : 1.4, 0xf4fbff, selectedSectorId ? 0.7 : 0.5);
-      boundarySegments.forEach((segment) => {
-        const start = this.worldToMapWithBounds(segment.start, viewBounds);
-        const end = this.worldToMapWithBounds(segment.end, viewBounds);
-        this.staticMap.lineBetween(start.x, start.y, end.x, end.y);
+        this.staticMap.lineStyle(selectedSectorId ? 2.4 : 1.8, invaderPalette.borderColor, strokeAlpha);
+        this.staticMap.strokePoints(mapped, true);
       });
     });
   }
@@ -866,17 +905,21 @@ export class GalaxyMapOverlay {
   }
 
   private getSectorControllerPalette(sector: GalaxySectorConfig): ReturnType<typeof getGalaxyControllerPalette> {
+    return getGalaxyControllerPalette(this.getSectorActiveControllerId(sector), sector.id);
+  }
+
+  private getSectorActiveControllerId(sector: GalaxySectorConfig): GalaxyDefinition["zones"][number]["currentControllerId"] {
     const zones = this.cachedZonesBySectorId.get(sector.id) ?? [];
     if (zones.length <= 0) {
-      return getGalaxyControllerPalette(sector.raceId, sector.id);
+      return sector.raceId;
     }
 
-    const counts = new Map<string, number>();
+    const counts = new Map<GalaxyDefinition["zones"][number]["currentControllerId"], number>();
     zones.forEach((zone) => {
       counts.set(zone.currentControllerId, (counts.get(zone.currentControllerId) ?? 0) + 1);
     });
 
-    let activeController: string = sector.raceId;
+    let activeController: GalaxyDefinition["zones"][number]["currentControllerId"] = sector.raceId;
     let activeCount = -1;
     counts.forEach((count, controllerId) => {
       if (count > activeCount || (count === activeCount && controllerId === sector.raceId)) {
@@ -885,7 +928,7 @@ export class GalaxyMapOverlay {
       }
     });
 
-    return getGalaxyControllerPalette(activeController as Parameters<typeof getGalaxyControllerPalette>[0], sector.id);
+    return activeController;
   }
 
   private syncReadout(
@@ -893,7 +936,8 @@ export class GalaxyMapOverlay {
     orbitTimeMs = this.scene.time.now,
   ): void {
     const playerPosition = gameSession.getShipSpacePosition();
-    const playerRegionLabel = getGalaxyRegionLabelAtPosition(playerPosition.x, playerPosition.y);
+    const warState = gameSession.getFactionWarState();
+    const playerRegionLabel = getGalaxyRegionLabelAtPosition(playerPosition.x, playerPosition.y, warState);
     const homeworldPlanets = this.cachedHomeworlds;
     const galaxy = this.getCachedGalaxySnapshot();
     const selectedSector = this.selectedSectorId
@@ -911,10 +955,11 @@ export class GalaxyMapOverlay {
     const sectorPlanets = selectedSector ? galaxy.planets.filter((planet) => planet.sectorId === selectedSector.id) : [];
     const sectorMoons = selectedSector ? galaxy.moons.filter((moon) => moon.sectorId === selectedSector.id) : [];
     const sectorStations = selectedSector ? galaxy.stations.filter((station) => station.sectorId === selectedSector.id) : [];
-    const selectedSectorPalette = selectedSector ? this.getSectorControllerPalette(selectedSector) : null;
+    const selectedSectorActiveControllerId = selectedSector ? this.getSectorActiveControllerId(selectedSector) : null;
+    const selectedSectorDisplayLabel = selectedSector ? getGalaxySectorDisplayLabel(selectedSector, warState) : null;
 
-    this.subtitle.setText(selectedSector ? `${selectedSector.label} Sector Detail` : "Galaxy Map");
-    this.infoTitle.setText(selectedSector ? `${selectedSector.label} Readout` : "Current Readout");
+    this.subtitle.setText(selectedSector ? `${selectedSectorDisplayLabel} Sector Detail` : "Galaxy Map");
+    this.infoTitle.setText(selectedSector ? `${selectedSectorDisplayLabel} Readout` : "Current Readout");
     this.sectorBackButton.container.setVisible(selectedSector !== null);
     this.sectorBackButton.setInputEnabled(this.root.visible && selectedSector !== null);
 
@@ -926,9 +971,9 @@ export class GalaxyMapOverlay {
 
     this.detailText.setText(selectedSector
       ? [
-          `${selectedSector.label} uses the same galaxy coordinates as live space.`,
+          `${selectedSectorDisplayLabel} uses the same galaxy coordinates as live space.`,
           `Zones ${sectorZones.length}  |  Systems ${sectorSystems.length}  |  Planets ${sectorPlanets.length}  |  Moons ${sectorMoons.length}`,
-          `Controller: ${selectedSectorPalette?.label ?? selectedSector.label}  |  Stations ${sectorStations.length}`,
+          `Controller: ${selectedSectorActiveControllerId ? getGalaxyControllerDisplayLabel(selectedSectorActiveControllerId, warState, selectedSector.id) : selectedSectorDisplayLabel}  |  Stations ${sectorStations.length}`,
           `Sector span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
           sectorHomeworld
             ? `Homeworld: ${sectorHomeworld.name}`
@@ -946,7 +991,7 @@ export class GalaxyMapOverlay {
             `Current route: ${mission?.title ?? missionPlanet.missionId}`,
             `Mission planet: ${missionPlanet.name}`,
             `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
-            `Planet region: ${getGalaxyRegionLabelAtPosition(missionPlanet.x, missionPlanet.y)}`,
+            `Planet region: ${getGalaxyRegionLabelAtPosition(missionPlanet.x, missionPlanet.y, warState)}`,
             `Zones online: ${galaxy.zones.length}`,
             `Major stations online: ${galaxy.stations.length}`,
           ].join("\n")
@@ -954,7 +999,7 @@ export class GalaxyMapOverlay {
 
     this.hoverText.setText(this.hoverWorldPoint
       ? (() => {
-          const hoverRegion = getGalaxyRegionLabelAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y);
+          const hoverRegion = getGalaxyRegionLabelAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState);
           return [
             `Hover: X ${this.hoverWorldPoint.x}  Y ${this.hoverWorldPoint.y}`,
             `Hover region: ${hoverRegion}`,
@@ -1015,10 +1060,11 @@ export class GalaxyMapOverlay {
       const label = this.sectorLabels[index];
       const labelPlacement = this.getSectorLabelPlacement(sector, viewBounds);
       const controllerPalette = this.getSectorControllerPalette(sector);
+      const sectorDisplayLabel = getGalaxySectorDisplayLabel(sector, warState);
       const isVisible = (!selectedSector || selectedSector.id === sector.id)
         && (selectedSector?.id === sector.id || this.isWorldPointVisible(labelPlacement.worldPoint, viewBounds));
       label
-        .setText(selectedSector && selectedSector.id === sector.id ? sector.label : sector.label.replace(" ", "\n"))
+        .setText(selectedSector && selectedSector.id === sector.id ? sectorDisplayLabel : sectorDisplayLabel.replace(" ", "\n"))
         .setPosition(labelPlacement.point.x, labelPlacement.point.y)
         .setOrigin(labelPlacement.originX, labelPlacement.originY)
         .setColor(colorToCss(controllerPalette.borderColor))
@@ -1039,6 +1085,7 @@ export class GalaxyMapOverlay {
     const galaxy = this.getCachedGalaxySnapshot();
     const viewBounds = this.getMapViewBounds();
     const selectedSectorId = this.selectedSectorId;
+    const warState = gameSession.getFactionWarState();
     const visibleSystems = galaxy.systems.filter((system) => (
       (!selectedSectorId || system.sectorId === selectedSectorId)
       && this.isWorldPointVisible(system, viewBounds, 260)
@@ -1072,10 +1119,25 @@ export class GalaxyMapOverlay {
       shipRegion: getGalaxyRegionLabelAtPosition(
         gameSession.getShipSpacePosition().x,
         gameSession.getShipSpacePosition().y,
+        warState,
       ),
       hoverRegion: this.hoverWorldPoint
-        ? getGalaxyRegionLabelAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y)
+        ? getGalaxyRegionLabelAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState)
         : null,
+      sectorLabels: GALAXY_SECTORS.map((sector) => ({
+        id: sector.id,
+        label: getGalaxySectorDisplayLabel(sector, warState),
+      })),
+      contestedZones: galaxy.zones
+        .filter((zone) => zone.zoneState !== "stable" || zone.captureAttackerRaceId !== null)
+        .map((zone) => ({
+          id: zone.id,
+          name: zone.name,
+          currentControllerId: zone.currentControllerId,
+          captureAttackerRaceId: zone.captureAttackerRaceId,
+          zoneState: zone.zoneState,
+          zoneCaptureProgress: Number(zone.zoneCaptureProgress.toFixed(3)),
+        })),
     };
   }
 

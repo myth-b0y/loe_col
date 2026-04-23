@@ -75,6 +75,7 @@ export type GalaxyZoneState = "stable" | "contested" | "capturing";
 
 export type GalaxyZoneRecord = {
   id: string;
+  name: string;
   systemId: string;
   sectorId: string;
   coreSectorId: string;
@@ -183,6 +184,11 @@ export type GalaxyControllerPalette = {
   label: string;
 };
 
+export type GalaxyWarStateLike = {
+  empireRaceId: RaceId;
+  republicRaceIds: RaceId[];
+};
+
 type GalaxyHomeworldSpec = {
   name: string;
   moonCount: number;
@@ -222,6 +228,9 @@ const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
 const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
 const GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR = 0.42;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_ATTEMPTS = 18;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_GROWTH = 1.24;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY = 0.72;
 const GALAXY_ZONE_POLYGON_STEPS = 28;
 const GALAXY_ZONE_CLIP_EPSILON = 0.0001;
 const GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND = 0.12;
@@ -1248,7 +1257,7 @@ function getHomeworldIsolationPenalty(
 
   const thirdRingSpacing = getSystemPlacementMinDistance("third");
   const normalizedIsolation = clamp01((nearestDistance - thirdRingSpacing) / (thirdRingSpacing * 1.55));
-  return (1 - normalizedIsolation) * 0.34;
+  return (1 - normalizedIsolation) * 1.18;
 }
 
 function assignHomeworlds(
@@ -1610,11 +1619,95 @@ function buildZoneTerritoryPolygon(
   return normalizeZonePolygonPoints(polygon);
 }
 
+function getSectorZoneCodePrefix(sector: GalaxySectorConfig): string {
+  return (sector.label.split(/\s+/)[0] ?? sector.label).slice(0, 3).toUpperCase();
+}
+
+function getRingZoneCodeNumber(ringId: GalaxyRingId): string {
+  switch (ringId) {
+    case "inner":
+      return "1";
+    case "second":
+      return "2";
+    case "third":
+      return "3";
+    case "outer":
+      return "4";
+    default:
+      return "5";
+  }
+}
+
+function getZoneLetterSuffix(index: number): string {
+  let value = Math.max(0, index);
+  let suffix = "";
+  do {
+    suffix = String.fromCharCode(65 + (value % 26)) + suffix;
+    value = Math.floor(value / 26) - 1;
+  } while (value >= 0);
+  return suffix;
+}
+
+function getSystemAngularOrderValue(system: Pick<GalaxySystemRecord, "x" | "y">): number {
+  const dx = system.x - GALAXY_WORLD_CONFIG.center.x;
+  const dy = (system.y - GALAXY_WORLD_CONFIG.center.y) / GALAXY_WORLD_CONFIG.verticalScale;
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+  return angle < 0 ? angle + 360 : angle;
+}
+
+function buildZoneNamesBySystemId(systems: GalaxySystemRecord[]): Map<string, string> {
+  const zoneNames = new Map<string, string>();
+  const systemsBySectorId = systems.reduce<Map<string, GalaxySystemRecord[]>>((lookup, system) => {
+    const bucket = lookup.get(system.sectorId);
+    if (bucket) {
+      bucket.push(system);
+      return lookup;
+    }
+    lookup.set(system.sectorId, [system]);
+    return lookup;
+  }, new Map());
+
+  systemsBySectorId.forEach((sectorSystems, sectorId) => {
+    const sector = getGalaxySectorById(sectorId) ?? GALAXY_SECTORS[0];
+    const prefix = getSectorZoneCodePrefix(sector);
+    const systemsByRing = sectorSystems.reduce<Map<GalaxyRingId, GalaxySystemRecord[]>>((lookup, system) => {
+      const bucket = lookup.get(system.ringId);
+      if (bucket) {
+        bucket.push(system);
+        return lookup;
+      }
+      lookup.set(system.ringId, [system]);
+      return lookup;
+    }, new Map());
+
+    systemsByRing.forEach((ringSystems, ringId) => {
+      const sorted = [...ringSystems].sort((left, right) => {
+        const angleDelta = getSystemAngularOrderValue(left) - getSystemAngularOrderValue(right);
+        if (Math.abs(angleDelta) > 0.001) {
+          return angleDelta;
+        }
+        const radialDelta = getGalaxyRadialDistance(left.x, left.y) - getGalaxyRadialDistance(right.x, right.y);
+        if (Math.abs(radialDelta) > 0.001) {
+          return radialDelta;
+        }
+        return left.id.localeCompare(right.id);
+      });
+
+      sorted.forEach((system, index) => {
+        zoneNames.set(system.id, `${prefix}-${getRingZoneCodeNumber(ringId)}${getZoneLetterSuffix(index)}`);
+      });
+    });
+  });
+
+  return zoneNames;
+}
+
 function createZonesForSystems(
   systems: GalaxySystemRecord[],
   homeworlds: GalaxyHomeworldRecord[],
 ): GalaxyZoneRecord[] {
   const homeworldSystemIds = new Set(homeworlds.map((homeworld) => homeworld.systemId));
+  const zoneNamesBySystemId = buildZoneNamesBySystemId(systems);
   const systemsBySectorId = systems.reduce<Map<string, GalaxySystemRecord[]>>((lookup, system) => {
     const bucket = lookup.get(system.sectorId);
     if (bucket) {
@@ -1638,7 +1731,7 @@ function createZonesForSystems(
     let bestValidGeometry = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
     let weightFactor = GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR;
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let attempt = 0; attempt < GALAXY_PRIME_WORLD_ZONE_WEIGHT_ATTEMPTS; attempt += 1) {
       zoneAnchorWeights.clear();
       sectorZoneGeometry.clear();
       sectorSystems.forEach((system) => {
@@ -1678,11 +1771,11 @@ function createZonesForSystems(
           break;
         }
 
-        weightFactor *= 1.18;
+        weightFactor *= GALAXY_PRIME_WORLD_ZONE_WEIGHT_GROWTH;
         continue;
       }
 
-      weightFactor *= 0.72;
+      weightFactor *= GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY;
     }
 
     if (bestValidGeometry.size > 0) {
@@ -1702,6 +1795,7 @@ function createZonesForSystems(
     const zoneGeometry = zoneGeometryBySystemId.get(system.id);
     return {
       id: system.zoneId,
+      name: zoneNamesBySystemId.get(system.id) ?? `${getSectorZoneCodePrefix(sector)}-${getRingZoneCodeNumber(system.ringId)}A`,
       systemId: system.id,
       sectorId: system.sectorId,
       coreSectorId: system.sectorId,
@@ -1879,6 +1973,7 @@ export function normalizeGalaxyDefinition(
     const zones = systems.map((system) => {
       const fallbackZone = generatedZones.find((zone) => zone.systemId === system.id) ?? {
         id: system.zoneId,
+        name: `${(getGalaxySectorById(system.sectorId)?.label.split(/\s+/)[0] ?? "SEC").slice(0, 3).toUpperCase()}-${getRingZoneCodeNumber(system.ringId)}A`,
         systemId: system.id,
         sectorId: system.sectorId,
         coreSectorId: system.sectorId,
@@ -1894,6 +1989,9 @@ export function normalizeGalaxyDefinition(
       const sourceZone = sourceZones.find((zone) => zone.systemId === system.id || zone.id === system.zoneId);
       return {
         id: system.zoneId,
+        name: typeof sourceZone?.name === "string" && sourceZone.name.length > 0
+          ? sourceZone.name
+          : fallbackZone.name,
         systemId: system.id,
         sectorId: system.sectorId,
         coreSectorId: typeof sourceZone?.coreSectorId === "string" && sourceZone.coreSectorId.length > 0
@@ -2038,10 +2136,89 @@ export function isGalaxyDeepSpaceAtPosition(x: number, y: number): boolean {
   return getGalaxyRingAtPosition(x, y).id === "deep-space";
 }
 
-export function getGalaxyRegionLabelAtPosition(x: number, y: number): string {
+function getGalaxySectorIdentityWord(sector: GalaxySectorConfig): string {
+  return sector.label.split(/\s+/)[0] ?? sector.label;
+}
+
+export function getGalaxySectorAllianceStatus(
+  sectorOrRace: GalaxySectorConfig | RaceId,
+  warState?: GalaxyWarStateLike | null,
+): "empire" | "republic" | "neutral" {
+  const raceId = typeof sectorOrRace === "string" ? sectorOrRace : sectorOrRace.raceId;
+  if (!warState) {
+    return "neutral";
+  }
+  if (warState.empireRaceId === raceId) {
+    return "empire";
+  }
+  if (warState.republicRaceIds.includes(raceId)) {
+    return "republic";
+  }
+  return "neutral";
+}
+
+export function getGalaxySectorDisplayLabel(
+  sectorOrRace: GalaxySectorConfig | RaceId,
+  warState?: GalaxyWarStateLike | null,
+): string {
+  const sector = typeof sectorOrRace === "string"
+    ? getGalaxySectorByRace(sectorOrRace)
+    : sectorOrRace;
+  switch (getGalaxySectorAllianceStatus(sector, warState)) {
+    case "empire":
+      return "Galactic Empire";
+    case "republic":
+      return `${getGalaxySectorIdentityWord(sector)} Republic`;
+    default:
+      return sector.label;
+  }
+}
+
+export function getGalaxySectorTravelLabel(
+  sectorOrRace: GalaxySectorConfig | RaceId,
+): string {
+  const sector = typeof sectorOrRace === "string"
+    ? getGalaxySectorByRace(sectorOrRace)
+    : sectorOrRace;
+  return `${getGalaxySectorIdentityWord(sector)} Sector`;
+}
+
+export function getGalaxyTerritoryEntryLabel(
+  sectorOrRace: GalaxySectorConfig | RaceId,
+  warState?: GalaxyWarStateLike | null,
+): string {
+  switch (getGalaxySectorAllianceStatus(sectorOrRace, warState)) {
+    case "empire":
+      return "Entered Empire Domain";
+    case "republic":
+      return "Entered Republic Territory";
+    default:
+      return "Entered Neutral Territory";
+  }
+}
+
+export function getGalaxyControllerDisplayLabel(
+  controllerId: GalaxyZoneControllerId,
+  warState?: GalaxyWarStateLike | null,
+  coreSectorId?: string,
+): string {
+  if (controllerId === "empire") {
+    return "Galactic Empire";
+  }
+  if (controllerId === "republic") {
+    return "Republic";
+  }
+  if (controllerId === "inactive") {
+    return "Inactive";
+  }
+  const sector = getGalaxySectorByRace(controllerId) ?? getGalaxySectorById(coreSectorId ?? "") ?? GALAXY_SECTORS[0];
+  return getGalaxySectorDisplayLabel(sector, warState);
+}
+
+export function getGalaxyRegionLabelAtPosition(x: number, y: number, warState?: GalaxyWarStateLike | null): string {
   return isGalaxyDeepSpaceAtPosition(x, y)
     ? "Deep space"
-    : getGalaxySectorAtPosition(x, y).label;
+    : getGalaxySectorDisplayLabel(getGalaxySectorAtPosition(x, y), warState);
 }
 
 export function getGalaxySectorMidAngleDeg(sector: GalaxySectorConfig): number {

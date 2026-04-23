@@ -253,6 +253,7 @@ try {
       missionPlanet,
       homeworldPlanets,
       galaxy,
+      war: window.__loeSession?.getFactionWarState?.() ?? null,
       galaxySummary: galaxy
         ? {
             systemCountsBySector: galaxy.systems.reduce((counts, system) => {
@@ -351,12 +352,15 @@ try {
   });
   const systemsById = new Map((hubMapState.galaxy?.systems ?? []).map((system) => [system.id, system]));
   const zonesById = new Map((hubMapState.galaxy?.zones ?? []).map((zone) => [zone.id, zone]));
+  const zoneNamePattern = /^[A-Z]{3}-[1-5][A-Z]+$/;
   const zoneAreaBySector = new Map();
   (hubMapState.galaxy?.systems ?? []).forEach((system) => {
     assert(typeof system.zoneId === "string" && system.zoneId.length > 0,
       `Generated system ${system.id} is missing a zone id`);
   });
   (hubMapState.galaxy?.zones ?? []).forEach((zone) => {
+    assert(zoneNamePattern.test(zone.name),
+      `Zone ${zone.id} should have a compact readable code, got '${zone.name}'`);
     const system = systemsById.get(zone.systemId);
     assert(system, `Zone ${zone.id} points to a missing system ${zone.systemId}`);
     assert(zone.id === system.zoneId, `Zone ${zone.id} does not match system zone id ${system.zoneId}`);
@@ -380,6 +384,19 @@ try {
     const zoneArea = getPolygonArea(zone.territoryPoints);
     zoneAreaBySector.set(zone.sectorId, (zoneAreaBySector.get(zone.sectorId) ?? 0) + zoneArea);
   });
+
+  const sectorLabels = new Map((hubMapState.mapDebug?.sectorLabels ?? []).map((entry) => [entry.id, entry.label]));
+  const homeworldSectorByRace = new Map((hubMapState.galaxy?.homeworlds ?? []).map((homeworld) => [homeworld.raceId, homeworld.sectorId]));
+  if (hubMapState.war) {
+    const empireSectorId = homeworldSectorByRace.get(hubMapState.war.empireRaceId);
+    assert(empireSectorId && sectorLabels.get(empireSectorId) === "Galactic Empire",
+      `Empire sector label should read 'Galactic Empire': ${JSON.stringify([...sectorLabels.entries()])}`);
+    hubMapState.war.republicRaceIds.forEach((raceId) => {
+      const sectorId = homeworldSectorByRace.get(raceId);
+      assert(sectorId && /Republic$/.test(sectorLabels.get(sectorId) ?? ""),
+        `Republic-aligned sector ${sectorId} should end with 'Republic': ${JSON.stringify([...sectorLabels.entries()])}`);
+    });
+  }
   Object.entries(SECTOR_ARCS).forEach(([sectorId]) => {
     const actualArea = zoneAreaBySector.get(sectorId) ?? 0;
     const expectedArea = getExpectedSectorArea(sectorId);
