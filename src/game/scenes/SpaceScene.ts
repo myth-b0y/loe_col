@@ -29,8 +29,10 @@ import {
   advanceFactionForceProduction,
   getFactionForceDebugSnapshot,
   markFactionForceShipDestroyed,
+  type FactionForceFleetMode,
   type FactionForceAssignmentKind,
   type FactionForceShipRole,
+  type FactionForceShipSlotKind,
   type FactionForceState,
 } from "../content/factionForces";
 import {
@@ -123,10 +125,16 @@ type SpaceFieldObjectState = {
 type SpaceFactionShip = {
   id: string;
   factionId: SpaceFactionId;
+  assetId: string;
   originRaceId: RaceId | null;
   shipRole: FactionForceShipRole | null;
   assignmentKind: FactionForceAssignmentKind | null;
   assignmentZoneId: string | null;
+  slotKind: FactionForceShipSlotKind | null;
+  fleetId: string | null;
+  fleetGroupId: string | null;
+  fleetMode: FactionForceFleetMode | null;
+  captureIntent: boolean;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -166,10 +174,16 @@ type SpaceFactionShipState = {
   id: string;
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
+  assetId: string;
   originRaceId: RaceId | null;
   shipRole: FactionForceShipRole | null;
   assignmentKind: FactionForceAssignmentKind | null;
   assignmentZoneId: string | null;
+  slotKind: FactionForceShipSlotKind | null;
+  fleetId: string | null;
+  fleetGroupId: string | null;
+  fleetMode: FactionForceFleetMode | null;
+  captureIntent: boolean;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -1387,10 +1401,16 @@ export class SpaceScene extends Phaser.Scene {
       id: seed.id,
       cellKey: seed.cellKey,
       factionId: seed.factionId,
+      assetId: seed.assetId,
       originRaceId: seed.originRaceId ?? null,
       shipRole: seed.shipRole ?? null,
       assignmentKind: seed.assignmentKind ?? null,
       assignmentZoneId: seed.assignmentZoneId ?? null,
+      slotKind: seed.slotKind ?? null,
+      fleetId: seed.fleetId ?? null,
+      fleetGroupId: seed.fleetGroupId ?? null,
+      fleetMode: seed.fleetMode ?? null,
+      captureIntent: Boolean(seed.captureIntent),
       sectorId: seed.sectorId,
       groupId: seed.groupId,
       leaderId: seed.leaderId,
@@ -1676,6 +1696,7 @@ export class SpaceScene extends Phaser.Scene {
     nextState: SpaceFactionShipState,
   ): boolean {
     return ship.factionId !== nextState.factionId
+      || ship.assetId !== nextState.assetId
       || ship.originRaceId !== nextState.originRaceId
       || ship.shipRole !== nextState.shipRole
       || ship.radius !== nextState.radius
@@ -1689,10 +1710,16 @@ export class SpaceScene extends Phaser.Scene {
     nextState: SpaceFactionShipState,
   ): void {
     ship.factionId = nextState.factionId;
+    ship.assetId = nextState.assetId;
     ship.originRaceId = nextState.originRaceId;
     ship.shipRole = nextState.shipRole;
     ship.assignmentKind = nextState.assignmentKind;
     ship.assignmentZoneId = nextState.assignmentZoneId;
+    ship.slotKind = nextState.slotKind;
+    ship.fleetId = nextState.fleetId;
+    ship.fleetGroupId = nextState.fleetGroupId;
+    ship.fleetMode = nextState.fleetMode;
+    ship.captureIntent = nextState.captureIntent;
     ship.sectorId = nextState.sectorId;
     ship.groupId = nextState.groupId;
     ship.leaderId = nextState.leaderId;
@@ -1989,10 +2016,16 @@ export class SpaceScene extends Phaser.Scene {
       id: ship.id,
       cellKey: getSpaceCellKeyAtPosition(ship.root.x, ship.root.y, SPACE_WORLD_CONFIG),
       factionId: ship.factionId,
+      assetId: ship.assetId,
       originRaceId: ship.originRaceId,
       shipRole: ship.shipRole,
       assignmentKind: ship.assignmentKind,
       assignmentZoneId: ship.assignmentZoneId,
+      slotKind: ship.slotKind,
+      fleetId: ship.fleetId,
+      fleetGroupId: ship.fleetGroupId,
+      fleetMode: ship.fleetMode,
+      captureIntent: ship.captureIntent,
       sectorId: ship.sectorId,
       groupId: ship.groupId,
       leaderId: ship.leaderId,
@@ -2136,7 +2169,6 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createFactionShip(state: SpaceFactionShipState): SpaceFactionShip {
-    const faction = this.getShipCombatConfig(state);
     const palette = this.getShipPalette(state);
     const roleProfile = getSpaceShipRoleCombatProfile(state.shipRole);
     const bodyRadius = state.radius;
@@ -2253,10 +2285,16 @@ export class SpaceScene extends Phaser.Scene {
     return {
       id: state.id,
       factionId: state.factionId,
+      assetId: state.assetId,
       originRaceId: state.originRaceId,
       shipRole: state.shipRole,
       assignmentKind: state.assignmentKind,
       assignmentZoneId: state.assignmentZoneId,
+      slotKind: state.slotKind,
+      fleetId: state.fleetId,
+      fleetGroupId: state.fleetGroupId,
+      fleetMode: state.fleetMode,
+      captureIntent: state.captureIntent,
       sectorId: state.sectorId,
       groupId: state.groupId,
       leaderId: state.leaderId,
@@ -2279,7 +2317,7 @@ export class SpaceScene extends Phaser.Scene {
       originPoolKind: state.originPoolKind,
       originZoneId: state.originZoneId,
       originSystemId: state.originSystemId,
-      radius: faction.radius,
+      radius: state.radius,
       hp: state.hp,
       maxHp: state.maxHp,
       flash: state.flash,
@@ -5539,6 +5577,7 @@ export class SpaceScene extends Phaser.Scene {
           raceId: raceState.raceId,
           alignment: getRaceAllianceStatus(this.warState, raceState.raceId),
           activeTargetZoneId: raceState.activeTargetZoneId,
+          activeTargetZoneIds: [...raceState.activeTargetZoneIds],
           retargetCooldownRemainingMs: Math.round(raceState.retargetCooldownRemainingMs),
         })),
         contestedZones: this.galaxyDefinition.zones

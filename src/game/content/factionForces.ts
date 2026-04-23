@@ -1,15 +1,57 @@
-import { GALAXY_SECTORS, type GalaxyDefinition, type GalaxyZoneRecord } from "./galaxy";
+import { GALAXY_SECTORS, getGalaxySystemById, type GalaxyDefinition, type GalaxyZoneRecord } from "./galaxy";
+import {
+  getFactionAssetBuildTimeMs,
+  getFactionAssetDefinition,
+  getFactionAssetDefinitionForShipRole,
+  getFactionAssetMobilityValue,
+  getFactionAssetShipRole,
+  getFactionAssetStrategicPriority,
+  isFactionAssetCaptureEligible,
+  isFactionAssetCommandEligible,
+} from "./factionAssets";
 import { type RaceId } from "./items";
 
 export type FactionForcePoolKind = "zone" | "prime-world";
 export type FactionForceShipRole = "base-fighter" | "support-fighter" | "attack-warship" | "defense-warship";
 export type FactionForceAssignmentKind = "defend" | "invade" | "reclaim";
+export type FactionForceFleetMode =
+  | "solo-ship"
+  | "patrol-group"
+  | "single-fleet"
+  | "multi-fleet"
+  | "hold-position"
+  | "regroup"
+  | "retreat"
+  | "capture-force"
+  | "defensive-response-force";
+export type FactionForceShipSlotKind = "command" | "escort";
 
 export type FactionForceActiveShipState = {
   id: string;
+  assetId: string;
   role: FactionForceShipRole;
   assignmentKind: FactionForceAssignmentKind;
   assignmentZoneId: string | null;
+  slotKind: FactionForceShipSlotKind;
+  fleetId: string | null;
+  fleetGroupId: string | null;
+  fleetMode: FactionForceFleetMode;
+  travelFromSystemId: string;
+  travelToSystemId: string;
+  travelProgress: number;
+  captureIntent: boolean;
+};
+
+export type FactionForceFleetRecord = {
+  id: string;
+  poolId: string;
+  raceId: RaceId;
+  originZoneId: string;
+  assignmentZoneId: string | null;
+  mode: FactionForceFleetMode;
+  commandShipId: string | null;
+  escortShipIds: string[];
+  fleetGroupId: string | null;
 };
 
 export type FactionForcePoolRecord = {
@@ -28,13 +70,23 @@ export type FactionForcePoolRecord = {
 
 export type FactionForceState = {
   pools: FactionForcePoolRecord[];
+  fleets: FactionForceFleetRecord[];
 };
 
 export type FactionForceActiveShipRecord = {
   shipId: string;
+  assetId: string;
   role: FactionForceShipRole;
   assignmentKind: FactionForceAssignmentKind;
   assignmentZoneId: string | null;
+  slotKind: FactionForceShipSlotKind;
+  fleetId: string | null;
+  fleetGroupId: string | null;
+  fleetMode: FactionForceFleetMode;
+  travelFromSystemId: string;
+  travelToSystemId: string;
+  travelProgress: number;
+  captureIntent: boolean;
   poolId: string;
   kind: FactionForcePoolKind;
   raceId: RaceId;
@@ -60,19 +112,39 @@ export type FactionForcePoolDebugRecord = {
   controlledZoneCount: number;
 };
 
+export type FactionForceFleetDebugRecord = {
+  id: string;
+  poolId: string;
+  raceId: RaceId;
+  originZoneId: string;
+  assignmentZoneId: string | null;
+  mode: FactionForceFleetMode;
+  commandShipId: string | null;
+  escortShipIds: string[];
+  fleetGroupId: string | null;
+};
+
 export type FactionForceDebugSnapshot = {
   zoneShipPoolCap: number;
   primeWorldBaseShipPoolCap: number;
   primeWorldZoneBonusPerControlledZone: number;
   primeWorldDefenseTarget: number;
   zoneDefenseTarget: number;
+  startingZoneShips: number;
+  startingPrimeWorldShips: number;
+  fleetSlots: {
+    command: number;
+    escort: number;
+  };
   respawnCooldownsMs: {
     zone: Record<FactionForceShipRole, number>;
     primeWorld: Record<FactionForceShipRole, number>;
   };
   totalPools: number;
   totalActiveShips: number;
+  totalFleets: number;
   pools: FactionForcePoolDebugRecord[];
+  fleets: FactionForceFleetDebugRecord[];
 };
 
 export const ZONE_SHIP_POOL_CAP = 5;
@@ -80,45 +152,44 @@ export const PRIME_WORLD_BASE_SHIP_POOL_CAP = 10;
 export const PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE = 1;
 export const PRIME_WORLD_DEFENSE_TARGET = 3;
 export const ZONE_DEFENSE_TARGET = 3;
+export const STARTING_ZONE_SHIP_COUNT = 1;
+export const STARTING_PRIME_WORLD_SHIP_COUNT = 5;
+export const FLEET_COMMAND_SLOT_COUNT = 1;
+export const FLEET_ESCORT_SLOT_COUNT = 4;
 
-const BASE_RESPAWN_COOLDOWNS_MS: Record<FactionForceShipRole, number> = {
-  "base-fighter": 22000,
-  "support-fighter": 28000,
-  "attack-warship": 46000,
-  "defense-warship": 40000,
-};
+const BASE_FLEET_TRAVEL_DURATION_MS = 22000;
+const MIN_FLEET_TRAVEL_DURATION_MS = 5500;
 
-const PRIME_WORLD_PRODUCTION_MULTIPLIER = 0.7;
+const PRIME_WORLD_DEFENSE_ROSTER: readonly string[] = [
+  "ship/attack-warship",
+  "ship/defense-warship",
+  "ship/support-fighter",
+  "ship/base-fighter",
+  "ship/base-fighter",
+] as const;
 
-const PRIME_WORLD_DEFENSE_ROSTER: readonly FactionForceShipRole[] = [
-  "attack-warship",
-  "support-fighter",
-  "defense-warship",
-  "base-fighter",
-];
+const ZONE_DEFENSE_ROSTER: readonly string[] = [
+  "ship/base-fighter",
+  "ship/defense-warship",
+  "ship/support-fighter",
+  "ship/base-fighter",
+  "ship/attack-warship",
+] as const;
 
-const ZONE_DEFENSE_ROSTER: readonly FactionForceShipRole[] = [
-  "base-fighter",
-  "defense-warship",
-  "support-fighter",
-  "attack-warship",
-  "base-fighter",
-];
+const PRIME_WORLD_RESERVE_ROSTER: readonly string[] = [
+  "ship/attack-warship",
+  "ship/base-fighter",
+  "ship/support-fighter",
+  "ship/attack-warship",
+  "ship/defense-warship",
+  "ship/base-fighter",
+] as const;
 
-const PRIME_WORLD_RESERVE_ROSTER: readonly FactionForceShipRole[] = [
-  "attack-warship",
-  "base-fighter",
-  "support-fighter",
-  "attack-warship",
-  "defense-warship",
-  "base-fighter",
-];
-
-const ZONE_RESERVE_ROSTER: readonly FactionForceShipRole[] = [
-  "base-fighter",
-  "support-fighter",
-  "defense-warship",
-];
+const ZONE_RESERVE_ROSTER: readonly string[] = [
+  "ship/base-fighter",
+  "ship/support-fighter",
+  "ship/defense-warship",
+] as const;
 
 function isRaceId(value: unknown): value is RaceId {
   return typeof value === "string" && GALAXY_SECTORS.some((sector) => sector.raceId === value);
@@ -132,9 +203,23 @@ function isFactionForceShipRole(value: unknown): value is FactionForceShipRole {
 }
 
 function isFactionForceAssignmentKind(value: unknown): value is FactionForceAssignmentKind {
-  return value === "defend"
-    || value === "invade"
-    || value === "reclaim";
+  return value === "defend" || value === "invade" || value === "reclaim";
+}
+
+function isFactionForceShipSlotKind(value: unknown): value is FactionForceShipSlotKind {
+  return value === "command" || value === "escort";
+}
+
+function isFactionForceFleetMode(value: unknown): value is FactionForceFleetMode {
+  return value === "solo-ship"
+    || value === "patrol-group"
+    || value === "single-fleet"
+    || value === "multi-fleet"
+    || value === "hold-position"
+    || value === "regroup"
+    || value === "retreat"
+    || value === "capture-force"
+    || value === "defensive-response-force";
 }
 
 function getFallbackRaceForZone(zone: GalaxyZoneRecord): RaceId {
@@ -151,87 +236,101 @@ function createShipId(poolId: string, serial: number): string {
   return `${poolId}:ship:${serial}`;
 }
 
-function getPoolDefenseRoster(kind: FactionForcePoolKind): readonly FactionForceShipRole[] {
+function getPoolDefenseRoster(kind: FactionForcePoolKind): readonly string[] {
   return kind === "prime-world" ? PRIME_WORLD_DEFENSE_ROSTER : ZONE_DEFENSE_ROSTER;
 }
 
-function getPoolReserveRoster(kind: FactionForcePoolKind): readonly FactionForceShipRole[] {
+function getPoolReserveRoster(kind: FactionForcePoolKind): readonly string[] {
   return kind === "prime-world" ? PRIME_WORLD_RESERVE_ROSTER : ZONE_RESERVE_ROSTER;
 }
 
-function getDesiredDefenseRoles(
-  kind: FactionForcePoolKind,
-  desiredDefenseShips: number,
-): FactionForceShipRole[] {
+function getDesiredDefenseAssets(kind: FactionForcePoolKind, desiredDefenseShips: number): string[] {
   const roster = getPoolDefenseRoster(kind);
   if (desiredDefenseShips <= 0 || roster.length <= 0) {
     return [];
   }
 
-  const roles: FactionForceShipRole[] = [];
+  const assets: string[] = [];
   for (let index = 0; index < desiredDefenseShips; index += 1) {
-    roles.push(roster[index % roster.length] ?? roster[0]);
+    assets.push(roster[index % roster.length] ?? roster[0]);
   }
-  return roles;
+  return assets;
 }
 
-function getDesiredReserveRoles(
-  kind: FactionForcePoolKind,
-  desiredReserveShips: number,
-): FactionForceShipRole[] {
+function getDesiredReserveAssets(kind: FactionForcePoolKind, desiredReserveShips: number): string[] {
   const roster = getPoolReserveRoster(kind);
   if (desiredReserveShips <= 0 || roster.length <= 0) {
     return [];
   }
 
-  const roles: FactionForceShipRole[] = [];
+  const assets: string[] = [];
   for (let index = 0; index < desiredReserveShips; index += 1) {
-    roles.push(roster[index % roster.length] ?? roster[0]);
+    assets.push(roster[index % roster.length] ?? roster[0]);
   }
-  return roles;
+  return assets;
 }
 
-function getRoleCounts(ships: readonly Pick<FactionForceActiveShipState, "role">[]): Record<FactionForceShipRole, number> {
-  return ships.reduce<Record<FactionForceShipRole, number>>((counts, ship) => {
-    counts[ship.role] += 1;
+function getAssetCounts(ships: readonly Pick<FactionForceActiveShipState, "assetId">[]): Record<string, number> {
+  return ships.reduce<Record<string, number>>((counts, ship) => {
+    counts[ship.assetId] = (counts[ship.assetId] ?? 0) + 1;
     return counts;
-  }, {
-    "base-fighter": 0,
-    "support-fighter": 0,
-    "attack-warship": 0,
-    "defense-warship": 0,
-  });
+  }, {});
 }
 
-function getNextDefenseRole(pool: Pick<FactionForcePoolRecord, "kind" | "desiredDefenseShips" | "activeShips">): FactionForceShipRole {
-  const desiredRoles = getDesiredDefenseRoles(pool.kind, pool.desiredDefenseShips);
-  if (desiredRoles.length <= 0) {
-    return pool.kind === "prime-world" ? "attack-warship" : "base-fighter";
+function pickMissingAssetId(
+  desiredAssetIds: readonly string[],
+  activeShips: readonly Pick<FactionForceActiveShipState, "assetId">[],
+): string | null {
+  if (desiredAssetIds.length <= 0) {
+    return null;
   }
-
-  const activeRoleCounts = getRoleCounts(pool.activeShips);
-  const desiredRoleCounts = getRoleCounts(desiredRoles.map((role) => ({ role })));
-  const missingRole = desiredRoles.find((role) => activeRoleCounts[role] < desiredRoleCounts[role]);
-  return missingRole ?? desiredRoles[desiredRoles.length - 1] ?? desiredRoles[0];
+  const activeCounts = getAssetCounts(activeShips);
+  const desiredCounts = desiredAssetIds.reduce<Record<string, number>>((counts, assetId) => {
+    counts[assetId] = (counts[assetId] ?? 0) + 1;
+    return counts;
+  }, {});
+  return desiredAssetIds.find((assetId) => (activeCounts[assetId] ?? 0) < (desiredCounts[assetId] ?? 0)) ?? null;
 }
 
-function getNextReserveRole(
+function getNextDefenseAssetId(pool: Pick<FactionForcePoolRecord, "kind" | "desiredDefenseShips" | "activeShips">): string {
+  const desiredAssets = getDesiredDefenseAssets(pool.kind, pool.desiredDefenseShips);
+  return pickMissingAssetId(desiredAssets, pool.activeShips) ?? desiredAssets[desiredAssets.length - 1] ?? "ship/base-fighter";
+}
+
+function getNextReserveAssetId(
   pool: Pick<FactionForcePoolRecord, "kind" | "desiredReserveShips" | "desiredDefenseShips" | "activeShips">,
-): FactionForceShipRole {
-  const desiredRoles = getDesiredReserveRoles(pool.kind, pool.desiredReserveShips);
-  if (desiredRoles.length <= 0) {
-    return pool.kind === "prime-world" ? "attack-warship" : "base-fighter";
-  }
-
+): string {
+  const desiredAssets = getDesiredReserveAssets(pool.kind, pool.desiredReserveShips);
   const activeReserveShips = pool.activeShips.slice(Math.min(pool.desiredDefenseShips, pool.activeShips.length));
-  const activeRoleCounts = getRoleCounts(activeReserveShips);
-  const desiredRoleCounts = getRoleCounts(desiredRoles.map((role) => ({ role })));
-  const missingRole = desiredRoles.find((role) => activeRoleCounts[role] < desiredRoleCounts[role]);
-  return missingRole ?? desiredRoles[desiredRoles.length - 1] ?? desiredRoles[0];
+  return pickMissingAssetId(desiredAssets, activeReserveShips) ?? desiredAssets[desiredAssets.length - 1] ?? "ship/base-fighter";
+}
+
+function createActiveShipState(
+  pool: Pick<FactionForcePoolRecord, "originZoneId" | "originSystemId">,
+  shipId: string,
+  assetId: string,
+  assignmentKind: FactionForceAssignmentKind,
+  assignmentZoneId: string | null,
+): FactionForceActiveShipState {
+  return {
+    id: shipId,
+    assetId,
+    role: getFactionAssetShipRole(assetId),
+    assignmentKind,
+    assignmentZoneId,
+    slotKind: isFactionAssetCommandEligible(assetId) ? "command" : "escort",
+    fleetId: null,
+    fleetGroupId: null,
+    fleetMode: "hold-position",
+    travelFromSystemId: pool.originSystemId,
+    travelToSystemId: pool.originSystemId,
+    travelProgress: 1,
+    captureIntent: false,
+  };
 }
 
 function createZonePool(zone: GalaxyZoneRecord): FactionForcePoolRecord {
-  return {
+  const pool: FactionForcePoolRecord = {
     id: `zone-pool:${zone.id}`,
     kind: "zone",
     raceId: getRaceForZoneController(zone),
@@ -244,6 +343,17 @@ function createZonePool(zone: GalaxyZoneRecord): FactionForcePoolRecord {
     desiredDefenseShips: ZONE_DEFENSE_TARGET,
     desiredReserveShips: 0,
   };
+
+  const startingAssets = getDesiredDefenseAssets("zone", STARTING_ZONE_SHIP_COUNT);
+  pool.activeShips = startingAssets.map((assetId, index) => createActiveShipState(
+    pool,
+    createShipId(pool.id, index + 1),
+    assetId,
+    "defend",
+    zone.id,
+  ));
+  pool.nextShipSerial = pool.activeShips.length + 1;
+  return pool;
 }
 
 function createPrimeWorldPool(galaxy: GalaxyDefinition, raceId: RaceId): FactionForcePoolRecord | null {
@@ -257,83 +367,78 @@ function createPrimeWorldPool(galaxy: GalaxyDefinition, raceId: RaceId): Faction
     return null;
   }
 
-  const poolId = `prime-pool:${raceId}`;
-  const activeShips = getDesiredDefenseRoles("prime-world", PRIME_WORLD_DEFENSE_TARGET).map((role, index) => ({
-    id: createShipId(poolId, index + 1),
-    role,
-    assignmentKind: "defend" as const,
-    assignmentZoneId: zone.id,
-  }));
-
-  return {
-    id: poolId,
+  const pool: FactionForcePoolRecord = {
+    id: `prime-pool:${raceId}`,
     kind: "prime-world",
     raceId,
     sectorId: homeworld.sectorId,
     originZoneId: zone.id,
     originSystemId: homeworld.systemId,
-    activeShips,
-    nextShipSerial: activeShips.length + 1,
+    activeShips: [],
+    nextShipSerial: 1,
     spawnCooldownRemainingMs: 0,
     desiredDefenseShips: PRIME_WORLD_DEFENSE_TARGET,
     desiredReserveShips: 0,
   };
+
+  const startingAssets = getDesiredDefenseAssets("prime-world", STARTING_PRIME_WORLD_SHIP_COUNT);
+  pool.activeShips = startingAssets.map((assetId, index) => createActiveShipState(
+    pool,
+    createShipId(pool.id, index + 1),
+    assetId,
+    "defend",
+    zone.id,
+  ));
+  pool.nextShipSerial = pool.activeShips.length + 1;
+  return pool;
 }
 
-function sanitizeUniqueActiveShips(
-  activeShips: unknown[],
-  fallbackRoles: FactionForceShipRole[],
+function sanitizeActiveShipRecord(
+  candidate: Partial<FactionForceActiveShipState>,
+  fallbackAssetId: string,
   fallbackAssignmentZoneId: string,
-  maxCount: number,
-  usedIds: Set<string>,
-): FactionForceActiveShipState[] {
-  const sanitized: FactionForceActiveShipState[] = [];
-  activeShips.forEach((candidate, index) => {
-    if (sanitized.length >= maxCount || !candidate || typeof candidate !== "object") {
-      return;
-    }
+  fallbackOriginSystemId: string,
+): FactionForceActiveShipState | null {
+  if (typeof candidate.id !== "string" || candidate.id.length <= 0) {
+    return null;
+  }
 
-    const record = candidate as Partial<FactionForceActiveShipState>;
-    if (typeof record.id !== "string" || record.id.length <= 0 || usedIds.has(record.id)) {
-      return;
-    }
+  const assetId = typeof candidate.assetId === "string" && candidate.assetId.length > 0
+    ? candidate.assetId
+    : fallbackAssetId;
+  const role = isFactionForceShipRole(candidate.role)
+    ? candidate.role
+    : getFactionAssetShipRole(assetId);
+  const assignmentKind = isFactionForceAssignmentKind(candidate.assignmentKind)
+    ? candidate.assignmentKind
+    : "defend";
+  const assignmentZoneId = typeof candidate.assignmentZoneId === "string" && candidate.assignmentZoneId.length > 0
+    ? candidate.assignmentZoneId
+    : fallbackAssignmentZoneId;
 
-    usedIds.add(record.id);
-    sanitized.push({
-      id: record.id,
-      role: isFactionForceShipRole(record.role) ? record.role : (fallbackRoles[index] ?? fallbackRoles[fallbackRoles.length - 1] ?? "base-fighter"),
-      assignmentKind: isFactionForceAssignmentKind(record.assignmentKind) ? record.assignmentKind : "defend",
-      assignmentZoneId: typeof record.assignmentZoneId === "string" && record.assignmentZoneId.length > 0
-        ? record.assignmentZoneId
-        : fallbackAssignmentZoneId,
-    });
-  });
-
-  return sanitized;
-}
-
-function sanitizeLegacyActiveShipIds(
-  activeShipIds: unknown[],
-  fallbackRoles: FactionForceShipRole[],
-  fallbackAssignmentZoneId: string,
-  maxCount: number,
-  usedIds: Set<string>,
-): FactionForceActiveShipState[] {
-  const sanitized: FactionForceActiveShipState[] = [];
-  activeShipIds.forEach((candidate, index) => {
-    if (sanitized.length >= maxCount || typeof candidate !== "string" || candidate.length <= 0 || usedIds.has(candidate)) {
-      return;
-    }
-
-    usedIds.add(candidate);
-    sanitized.push({
-      id: candidate,
-      role: fallbackRoles[index] ?? fallbackRoles[fallbackRoles.length - 1] ?? "base-fighter",
-      assignmentKind: "defend",
-      assignmentZoneId: fallbackAssignmentZoneId,
-    });
-  });
-  return sanitized;
+  return {
+    id: candidate.id,
+    assetId,
+    role,
+    assignmentKind,
+    assignmentZoneId,
+    slotKind: isFactionForceShipSlotKind(candidate.slotKind)
+      ? candidate.slotKind
+      : (isFactionAssetCommandEligible(assetId) ? "command" : "escort"),
+    fleetId: typeof candidate.fleetId === "string" && candidate.fleetId.length > 0 ? candidate.fleetId : null,
+    fleetGroupId: typeof candidate.fleetGroupId === "string" && candidate.fleetGroupId.length > 0 ? candidate.fleetGroupId : null,
+    fleetMode: isFactionForceFleetMode(candidate.fleetMode) ? candidate.fleetMode : "hold-position",
+    travelFromSystemId: typeof candidate.travelFromSystemId === "string" && candidate.travelFromSystemId.length > 0
+      ? candidate.travelFromSystemId
+      : fallbackOriginSystemId,
+    travelToSystemId: typeof candidate.travelToSystemId === "string" && candidate.travelToSystemId.length > 0
+      ? candidate.travelToSystemId
+      : fallbackOriginSystemId,
+    travelProgress: typeof candidate.travelProgress === "number" && Number.isFinite(candidate.travelProgress)
+      ? Math.max(0, Math.min(1, candidate.travelProgress))
+      : 1,
+    captureIntent: typeof candidate.captureIntent === "boolean" ? candidate.captureIntent : false,
+  };
 }
 
 function comparePoolPriority(left: FactionForcePoolRecord, right: FactionForcePoolRecord): number {
@@ -362,10 +467,7 @@ export function getFactionForcePoolCapacity(galaxy: GalaxyDefinition, pool: Pick
 }
 
 export function getFactionForceRespawnCooldownMs(kind: FactionForcePoolKind, role: FactionForceShipRole): number {
-  const baseCooldown = BASE_RESPAWN_COOLDOWNS_MS[role];
-  return kind === "prime-world"
-    ? Math.max(5000, Math.round(baseCooldown * PRIME_WORLD_PRODUCTION_MULTIPLIER))
-    : baseCooldown;
+  return getFactionAssetBuildTimeMs(kind, getFactionAssetDefinitionForShipRole(role).id);
 }
 
 function isZoneSpawnSuppressed(
@@ -386,15 +488,260 @@ function isZoneSpawnSuppressed(
     || zone.zoneCaptureProgress > 0;
 }
 
+function getShipTravelDurationMs(
+  galaxy: GalaxyDefinition,
+  fromSystemId: string,
+  toSystemId: string,
+  assetId: string,
+): number {
+  if (fromSystemId === toSystemId) {
+    return 0;
+  }
+  const fromSystem = getGalaxySystemById(galaxy, fromSystemId);
+  const toSystem = getGalaxySystemById(galaxy, toSystemId);
+  if (!fromSystem || !toSystem) {
+    return BASE_FLEET_TRAVEL_DURATION_MS;
+  }
+  const distance = Math.sqrt(((toSystem.x - fromSystem.x) ** 2) + ((toSystem.y - fromSystem.y) ** 2));
+  const mobility = Math.max(0.55, getFactionAssetMobilityValue(assetId));
+  return Math.max(
+    MIN_FLEET_TRAVEL_DURATION_MS,
+    Math.round((distance / 1800) * (BASE_FLEET_TRAVEL_DURATION_MS / mobility)),
+  );
+}
+
+export function advanceFactionForceTravel(
+  forceState: FactionForceState,
+  galaxy: GalaxyDefinition,
+  deltaMs: number,
+): boolean {
+  const safeDeltaMs = Math.max(0, Math.round(deltaMs));
+  if (safeDeltaMs <= 0) {
+    return false;
+  }
+
+  let changed = false;
+  forceState.pools.forEach((pool) => {
+    pool.activeShips.forEach((ship) => {
+      const assignmentZone = ship.assignmentZoneId
+        ? galaxy.zones.find((zone) => zone.id === ship.assignmentZoneId) ?? null
+        : null;
+      const nextDestinationSystemId = assignmentZone?.systemId ?? pool.originSystemId;
+      if (ship.travelToSystemId !== nextDestinationSystemId) {
+        ship.travelFromSystemId = ship.travelProgress >= 1 ? ship.travelToSystemId : ship.travelFromSystemId;
+        ship.travelToSystemId = nextDestinationSystemId;
+        ship.travelProgress = ship.travelFromSystemId === ship.travelToSystemId ? 1 : 0;
+        changed = true;
+      }
+
+      if (ship.travelProgress >= 1 || ship.travelFromSystemId === ship.travelToSystemId) {
+        if (ship.travelProgress !== 1) {
+          ship.travelProgress = 1;
+          changed = true;
+        }
+        return;
+      }
+
+      const durationMs = getShipTravelDurationMs(galaxy, ship.travelFromSystemId, ship.travelToSystemId, ship.assetId);
+      if (durationMs <= 0) {
+        ship.travelProgress = 1;
+        changed = true;
+        return;
+      }
+      const nextProgress = Math.max(0, Math.min(1, ship.travelProgress + (safeDeltaMs / durationMs)));
+      if (nextProgress !== ship.travelProgress) {
+        ship.travelProgress = nextProgress;
+        changed = true;
+      }
+      if (nextProgress >= 1) {
+        ship.travelFromSystemId = ship.travelToSystemId;
+      }
+    });
+  });
+
+  return changed;
+}
+
+function buildFleetMode(
+  assignmentKind: FactionForceAssignmentKind,
+  assignmentZoneId: string | null,
+  originZoneId: string,
+  shipCount: number,
+  hasCommandShip: boolean,
+  fleetCountInGroup: number,
+): FactionForceFleetMode {
+  if (assignmentKind === "invade" || assignmentKind === "reclaim") {
+    return hasCommandShip ? "capture-force" : "regroup";
+  }
+  if (assignmentZoneId && assignmentZoneId !== originZoneId) {
+    return shipCount <= 1 ? "regroup" : "defensive-response-force";
+  }
+  if (shipCount <= 1) {
+    return "solo-ship";
+  }
+  if (!hasCommandShip) {
+    return "patrol-group";
+  }
+  if (fleetCountInGroup > 1) {
+    return "multi-fleet";
+  }
+  return "hold-position";
+}
+
+function sortShipsForFleetLayout(ships: readonly FactionForceActiveShipState[]): FactionForceActiveShipState[] {
+  return [...ships].sort((left, right) => {
+    const commandDelta = Number(isFactionAssetCommandEligible(right.assetId)) - Number(isFactionAssetCommandEligible(left.assetId));
+    if (commandDelta !== 0) {
+      return commandDelta;
+    }
+    const priorityDelta = getFactionAssetStrategicPriority(left.assetId) - getFactionAssetStrategicPriority(right.assetId);
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+export function rebuildFactionCommanderFleets(forceState: FactionForceState): boolean {
+  let changed = false;
+  const nextFleets: FactionForceFleetRecord[] = [];
+
+  const shipsByPoolAndAssignment = new Map<string, { pool: FactionForcePoolRecord; ships: FactionForceActiveShipState[] }>();
+  forceState.pools.forEach((pool) => {
+    pool.activeShips.forEach((ship) => {
+      ship.fleetId = null;
+      ship.fleetGroupId = null;
+      ship.captureIntent = false;
+      const groupKey = `${pool.id}:${ship.assignmentKind}:${ship.assignmentZoneId ?? pool.originZoneId}`;
+      const existing = shipsByPoolAndAssignment.get(groupKey);
+      if (existing) {
+        existing.ships.push(ship);
+        return;
+      }
+      shipsByPoolAndAssignment.set(groupKey, { pool, ships: [ship] });
+    });
+  });
+
+  shipsByPoolAndAssignment.forEach(({ pool, ships }, groupKey) => {
+    const sorted = sortShipsForFleetLayout(ships);
+    const commandShips = sorted.filter((ship) => isFactionAssetCommandEligible(ship.assetId));
+    const escortShips = sorted.filter((ship) => !isFactionAssetCommandEligible(ship.assetId));
+    const leftoverCommandShips = [...commandShips];
+    const leftoverEscortShips = [...escortShips];
+    const fleetGroupId = sorted.length > (FLEET_COMMAND_SLOT_COUNT + FLEET_ESCORT_SLOT_COUNT)
+      ? `fleet-group:${groupKey}`
+      : null;
+    const fleetRecords: FactionForceFleetRecord[] = [];
+
+    while (leftoverCommandShips.length > 0 || leftoverEscortShips.length > 0) {
+      const commandShip = leftoverCommandShips.shift() ?? null;
+      const escorts: FactionForceActiveShipState[] = [];
+      while (escorts.length < FLEET_ESCORT_SLOT_COUNT && leftoverEscortShips.length > 0) {
+        escorts.push(leftoverEscortShips.shift()!);
+      }
+      while (escorts.length < FLEET_ESCORT_SLOT_COUNT && leftoverCommandShips.length > 0) {
+        escorts.push(leftoverCommandShips.shift()!);
+      }
+
+      const members = [commandShip, ...escorts].filter((candidate): candidate is FactionForceActiveShipState => candidate !== null);
+      const fleetId = `fleet:${groupKey}:${fleetRecords.length}`;
+      const mode = buildFleetMode(
+        members[0]?.assignmentKind ?? "defend",
+        members[0]?.assignmentZoneId ?? pool.originZoneId,
+        pool.originZoneId,
+        members.length,
+        commandShip !== null,
+        1,
+      );
+      const fleetRecord: FactionForceFleetRecord = {
+        id: fleetId,
+        poolId: pool.id,
+        raceId: pool.raceId,
+        originZoneId: pool.originZoneId,
+        assignmentZoneId: members[0]?.assignmentZoneId ?? pool.originZoneId,
+        mode,
+        commandShipId: commandShip?.id ?? null,
+        escortShipIds: escorts.map((ship) => ship.id),
+        fleetGroupId,
+      };
+      fleetRecords.push(fleetRecord);
+
+      members.forEach((ship) => {
+        const previousFleetId = ship.fleetId;
+        const previousGroupId = ship.fleetGroupId;
+        const previousMode = ship.fleetMode;
+        const previousSlotKind = ship.slotKind;
+        ship.fleetId = fleetId;
+        ship.fleetGroupId = fleetGroupId;
+        ship.fleetMode = mode;
+        ship.slotKind = commandShip && ship.id === commandShip.id ? "command" : "escort";
+        ship.captureIntent = mode === "capture-force"
+          && fleetRecord.commandShipId !== null
+          && isFactionAssetCaptureEligible(ship.assetId);
+        if (
+          previousFleetId !== ship.fleetId
+          || previousGroupId !== ship.fleetGroupId
+          || previousMode !== ship.fleetMode
+          || previousSlotKind !== ship.slotKind
+        ) {
+          changed = true;
+        }
+      });
+    }
+
+    const fleetCountInGroup = fleetRecords.length;
+    fleetRecords.forEach((fleet) => {
+      const nextMode = buildFleetMode(
+        ships.find((ship) => ship.fleetId === fleet.id)?.assignmentKind ?? "defend",
+        fleet.assignmentZoneId,
+        pool.originZoneId,
+        Number(Boolean(fleet.commandShipId)) + fleet.escortShipIds.length,
+        Boolean(fleet.commandShipId),
+        fleetCountInGroup,
+      );
+      fleet.mode = nextMode;
+      ships
+        .filter((ship) => ship.fleetId === fleet.id)
+        .forEach((ship) => {
+          ship.fleetMode = nextMode;
+          ship.captureIntent = nextMode === "capture-force"
+            && fleet.commandShipId !== null
+            && isFactionAssetCaptureEligible(ship.assetId);
+        });
+    });
+    nextFleets.push(...fleetRecords);
+  });
+
+  const sameFleetShape = forceState.fleets.length === nextFleets.length
+    && forceState.fleets.every((fleet, index) => {
+      const nextFleet = nextFleets[index];
+      return nextFleet
+        && fleet.id === nextFleet.id
+        && fleet.mode === nextFleet.mode
+        && fleet.commandShipId === nextFleet.commandShipId
+        && fleet.assignmentZoneId === nextFleet.assignmentZoneId
+        && fleet.fleetGroupId === nextFleet.fleetGroupId
+        && fleet.escortShipIds.join("|") === nextFleet.escortShipIds.join("|");
+    });
+  if (!sameFleetShape) {
+    changed = true;
+  }
+  forceState.fleets = nextFleets;
+  return changed;
+}
+
 export function createFactionForceState(galaxy: GalaxyDefinition): FactionForceState {
   const zonePools = galaxy.zones.map((zone) => createZonePool(zone));
   const primePools = galaxy.homeworlds
     .map((homeworld) => createPrimeWorldPool(galaxy, homeworld.raceId))
     .filter((pool): pool is FactionForcePoolRecord => pool !== null);
 
-  return {
+  const state: FactionForceState = {
     pools: [...zonePools, ...primePools].sort(comparePoolPriority),
+    fleets: [],
   };
+  rebuildFactionCommanderFleets(state);
+  return state;
 }
 
 export function normalizeFactionForceState(
@@ -406,15 +753,15 @@ export function normalizeFactionForceState(
     return fallback;
   }
 
-  const sourcePools = new Map<string, Partial<FactionForcePoolRecord> & { activeShipIds?: unknown[] }>();
+  const sourcePools = new Map<string, Partial<FactionForcePoolRecord>>();
   forceState.pools.forEach((pool) => {
     if (pool && typeof pool.id === "string" && pool.id.length > 0) {
-      sourcePools.set(pool.id, pool as Partial<FactionForcePoolRecord> & { activeShipIds?: unknown[] });
+      sourcePools.set(pool.id, pool as Partial<FactionForcePoolRecord>);
     }
   });
 
   const usedShipIds = new Set<string>();
-  return {
+  const normalized: FactionForceState = {
     pools: fallback.pools.map((defaultPool) => {
       const sourcePool = sourcePools.get(defaultPool.id);
       const capacity = getFactionForcePoolCapacity(galaxy, defaultPool);
@@ -424,13 +771,25 @@ export function normalizeFactionForceState(
       const desiredReserveShips = typeof sourcePool?.desiredReserveShips === "number" && Number.isFinite(sourcePool.desiredReserveShips)
         ? Math.max(0, Math.round(sourcePool.desiredReserveShips))
         : defaultPool.desiredReserveShips;
-      const fallbackRoles = [
-        ...getDesiredDefenseRoles(defaultPool.kind, Math.max(desiredDefenseShips, capacity)),
-        ...getDesiredReserveRoles(defaultPool.kind, Math.max(desiredReserveShips, capacity)),
+      const fallbackAssets = [
+        ...getDesiredDefenseAssets(defaultPool.kind, Math.max(desiredDefenseShips, capacity)),
+        ...getDesiredReserveAssets(defaultPool.kind, Math.max(desiredReserveShips, capacity)),
       ];
+
       const activeShips = Array.isArray(sourcePool?.activeShips)
-        ? sanitizeUniqueActiveShips(sourcePool.activeShips, fallbackRoles, defaultPool.originZoneId, capacity, usedShipIds)
-        : sanitizeLegacyActiveShipIds(Array.isArray(sourcePool?.activeShipIds) ? sourcePool.activeShipIds : defaultPool.activeShips.map((ship) => ship.id), fallbackRoles, defaultPool.originZoneId, capacity, usedShipIds);
+        ? (sourcePool.activeShips as Partial<FactionForceActiveShipState>[])
+          .map((candidate, index) => sanitizeActiveShipRecord(
+            candidate,
+            fallbackAssets[index] ?? fallbackAssets[fallbackAssets.length - 1] ?? "ship/base-fighter",
+            defaultPool.originZoneId,
+            defaultPool.originSystemId,
+          ))
+          .filter((ship): ship is FactionForceActiveShipState => ship !== null && !usedShipIds.has(ship.id))
+          .slice(0, capacity)
+        : defaultPool.activeShips;
+
+      activeShips.forEach((ship) => usedShipIds.add(ship.id));
+
       return {
         ...defaultPool,
         activeShips,
@@ -444,7 +803,11 @@ export function normalizeFactionForceState(
         desiredReserveShips,
       };
     }),
+    fleets: [],
   };
+
+  rebuildFactionCommanderFleets(normalized);
+  return normalized;
 }
 
 export function advanceFactionForceProduction(
@@ -482,21 +845,27 @@ export function advanceFactionForceProduction(
       return;
     }
 
-    const role = pool.activeShips.length < desiredDefenseShips
-      ? getNextDefenseRole(pool)
-      : getNextReserveRole(pool);
+    const assetId = pool.activeShips.length < desiredDefenseShips
+      ? getNextDefenseAssetId(pool)
+      : getNextReserveAssetId(pool);
+    const definition = getFactionAssetDefinition(assetId);
     const shipId = createShipId(pool.id, pool.nextShipSerial);
-    pool.activeShips.push({
-      id: shipId,
-      role,
-      assignmentKind: "defend",
-      assignmentZoneId: pool.originZoneId,
-    });
+    pool.activeShips.push(createActiveShipState(
+      pool,
+      shipId,
+      definition.id,
+      "defend",
+      pool.originZoneId,
+    ));
     pool.nextShipSerial += 1;
-    pool.spawnCooldownRemainingMs = getFactionForceRespawnCooldownMs(pool.kind, role);
+    pool.spawnCooldownRemainingMs = getFactionAssetBuildTimeMs(pool.kind, definition.id);
     spawnedShipIds.push(shipId);
     changed = true;
   });
+
+  if (rebuildFactionCommanderFleets(forceState)) {
+    changed = true;
+  }
 
   return { changed, spawnedShipIds };
 }
@@ -514,8 +883,9 @@ export function markFactionForceShipDestroyed(
     const [removedShip] = pool.activeShips.splice(shipIndex, 1);
     pool.spawnCooldownRemainingMs = Math.max(
       pool.spawnCooldownRemainingMs,
-      getFactionForceRespawnCooldownMs(pool.kind, removedShip?.role ?? "base-fighter"),
+      getFactionAssetBuildTimeMs(pool.kind, removedShip?.assetId ?? "ship/base-fighter"),
     );
+    rebuildFactionCommanderFleets(forceState);
     return true;
   }
 
@@ -525,9 +895,18 @@ export function markFactionForceShipDestroyed(
 export function getActiveFactionForceShips(forceState: FactionForceState): FactionForceActiveShipRecord[] {
   return forceState.pools.flatMap((pool) => pool.activeShips.map((ship) => ({
     shipId: ship.id,
+    assetId: ship.assetId,
     role: ship.role,
     assignmentKind: ship.assignmentKind,
     assignmentZoneId: ship.assignmentZoneId,
+    slotKind: ship.slotKind,
+    fleetId: ship.fleetId,
+    fleetGroupId: ship.fleetGroupId,
+    fleetMode: ship.fleetMode,
+    travelFromSystemId: ship.travelFromSystemId,
+    travelToSystemId: ship.travelToSystemId,
+    travelProgress: ship.travelProgress,
+    captureIntent: ship.captureIntent,
     poolId: pool.id,
     kind: pool.kind,
     raceId: pool.raceId,
@@ -566,6 +945,12 @@ export function getFactionForceDebugSnapshot(
     primeWorldZoneBonusPerControlledZone: PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE,
     primeWorldDefenseTarget: PRIME_WORLD_DEFENSE_TARGET,
     zoneDefenseTarget: ZONE_DEFENSE_TARGET,
+    startingZoneShips: STARTING_ZONE_SHIP_COUNT,
+    startingPrimeWorldShips: STARTING_PRIME_WORLD_SHIP_COUNT,
+    fleetSlots: {
+      command: FLEET_COMMAND_SLOT_COUNT,
+      escort: FLEET_ESCORT_SLOT_COUNT,
+    },
     respawnCooldownsMs: {
       zone: {
         "base-fighter": getFactionForceRespawnCooldownMs("zone", "base-fighter"),
@@ -582,6 +967,8 @@ export function getFactionForceDebugSnapshot(
     },
     totalPools: pools.length,
     totalActiveShips: pools.reduce((count, pool) => count + pool.activeShipCount, 0),
+    totalFleets: forceState.fleets.length,
     pools,
+    fleets: forceState.fleets.map((fleet) => ({ ...fleet, escortShipIds: [...fleet.escortShipIds] })),
   };
 }

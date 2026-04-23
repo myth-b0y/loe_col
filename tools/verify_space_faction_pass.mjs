@@ -97,6 +97,8 @@ try {
         zoneShipPoolCap: debug.production.zoneShipPoolCap,
         primeWorldBaseShipPoolCap: debug.production.primeWorldBaseShipPoolCap,
         primeWorldZoneBonusPerControlledZone: debug.production.primeWorldZoneBonusPerControlledZone,
+        startingZoneShips: debug.production.startingZoneShips,
+        startingPrimeWorldShips: debug.production.startingPrimeWorldShips,
         primePools: primePools.map((pool) => ({
           raceId: pool.raceId,
           capacity: pool.capacity,
@@ -130,6 +132,8 @@ try {
   assert(initialSummary.production.zoneShipPoolCap === 5, `Zone pool cap must remain 5: ${JSON.stringify(initialSummary.production)}`);
   assert(initialSummary.production.primeWorldBaseShipPoolCap === 10, `Prime pool base cap must remain 10: ${JSON.stringify(initialSummary.production)}`);
   assert(initialSummary.production.primeWorldZoneBonusPerControlledZone === 1, `Prime zone bonus must remain +1 per controlled zone: ${JSON.stringify(initialSummary.production)}`);
+  assert(initialSummary.production.startingZoneShips === 1, `Zone pools should start slower at 1 active ship: ${JSON.stringify(initialSummary.production)}`);
+  assert(initialSummary.production.startingPrimeWorldShips === 5, `Prime Worlds should start at 5 active ships: ${JSON.stringify(initialSummary.production)}`);
   assert(initialSummary.production.primePools.some((pool) => pool.raceId === initialSummary.war.empireRaceId && pool.desiredReserveShips > 0),
     `Empire Prime World should be building reserve attack capacity: ${JSON.stringify(initialSummary.production.primePools)}`);
   assert(initialSummary.production.zonePoolSample.every((pool) => pool.desiredReserveShips === 0),
@@ -176,7 +180,7 @@ try {
 
   assert(naturalWarSummary.empireHeldForeignZoneCount > 0 || naturalWarSummary.contestedZones.length > 0,
     `Empire should be contesting or holding foreign territory after war fast-forward: ${JSON.stringify(naturalWarSummary)}`);
-  assert(naturalWarSummary.empirePrimeAssignments.some((ship) => ship.assignmentKind === "invade"),
+  assert(naturalWarSummary.empirePrimeAssignments.some((ship) => ship.assignmentKind === "invade" || ship.captureIntent === true || ship.fleetMode === "capture-force"),
     `Empire Prime World reserve should launch invasion assignments: ${JSON.stringify(naturalWarSummary.empirePrimeAssignments)}`);
 
   const republicResistanceSummary = await page.evaluate(() => {
@@ -196,15 +200,16 @@ try {
     }
 
     const ownerRaceId = zoneCoreRaceBySectorId[targetZone.coreSectorId];
+    space.galaxyDefinition.zones.forEach((zone) => {
+      zone.currentControllerId = zoneCoreRaceBySectorId[zone.coreSectorId];
+      zone.zoneState = "stable";
+      zone.zoneCaptureProgress = 0;
+      zone.captureAttackerRaceId = null;
+    });
     targetZone.currentControllerId = war.empireRaceId;
-    targetZone.zoneState = "stable";
-    targetZone.zoneCaptureProgress = 0;
-    targetZone.captureAttackerRaceId = null;
     war.raceStates.forEach((raceState) => {
-      if (!war.republicRaceIds.includes(raceState.raceId)) {
-        return;
-      }
       raceState.activeTargetZoneId = null;
+      raceState.activeTargetZoneIds = [];
       raceState.retargetCooldownRemainingMs = 0;
     });
 
@@ -243,7 +248,7 @@ try {
       sawTargetingResponse,
       sawReclaimAssignments,
       sawFrontlineContest,
-      finalControllerRaceId: targetZone.currentControllerId,
+      finalControllerRaceId: (space.galaxyDefinition.zones.find((zone) => zone.id === targetZone.id)?.currentControllerId) ?? null,
       finalRaceTargets: finalDebug?.war?.raceTargets ?? [],
       finalContestedZones: finalDebug?.war?.contestedZones ?? [],
     };
@@ -600,9 +605,17 @@ try {
     }
 
     empireRaceState.activeTargetZoneId = targetZone.id;
+    empireRaceState.activeTargetZoneIds = [targetZone.id];
     empireRaceState.retargetCooldownRemainingMs = 999999;
     empirePrimePool.activeShips = Array.from({ length: 12 }, (_value, index) => ({
       id: `verify-capture:${index + 1}`,
+      assetId: index === 0 || index === 4
+        ? "ship/attack-warship"
+        : index === 1
+          ? "ship/support-fighter"
+          : index === 2
+            ? "ship/defense-warship"
+            : "ship/base-fighter",
       role: index === 0 || index === 4
         ? "attack-warship"
         : index === 1
@@ -612,6 +625,14 @@ try {
             : "base-fighter",
       assignmentKind: "invade",
       assignmentZoneId: targetZone.id,
+      slotKind: index === 0 ? "command" : "escort",
+      fleetId: "verify-capture-fleet",
+      fleetGroupId: null,
+      fleetMode: "capture-force",
+      travelFromSystemId: empirePrimePool.originSystemId,
+      travelToSystemId: targetZone.systemId,
+      travelProgress: 1,
+      captureIntent: index === 0 || index === 4 || index === 2,
     }));
     empirePrimePool.nextShipSerial = 13;
     empirePrimePool.spawnCooldownRemainingMs = 0;

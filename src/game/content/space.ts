@@ -11,10 +11,13 @@ import {
   type GalaxySectorConfig,
 } from "./galaxy";
 import {
+  FLEET_ESCORT_SLOT_COUNT,
   getActiveFactionForceShips,
   type FactionForceActiveShipRecord,
   type FactionForceAssignmentKind,
+  type FactionForceFleetMode,
   type FactionForceShipRole,
+  type FactionForceShipSlotKind,
   type FactionForceState,
 } from "./factionForces";
 import {
@@ -144,9 +147,15 @@ export type SpaceFactionShipSeed = {
   id: string;
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
+  assetId: string;
   shipRole?: FactionForceShipRole | null;
   assignmentKind?: FactionForceAssignmentKind | null;
   assignmentZoneId?: string | null;
+  slotKind?: FactionForceShipSlotKind | null;
+  fleetId?: string | null;
+  fleetGroupId?: string | null;
+  fleetMode?: FactionForceFleetMode | null;
+  captureIntent?: boolean;
   sectorId: string;
   groupId: string;
   leaderId: string | null;
@@ -998,16 +1007,17 @@ function createFormationOffsets(
   if (factionId === "homeguard") {
     const baseOffsets = [
       { x: 0, y: 0 },
-      { x: -92, y: 102 },
-      { x: 92, y: 102 },
-      { x: 0, y: 198 },
+      { x: -124, y: 116 },
+      { x: 124, y: 116 },
+      { x: -74, y: 228 },
+      { x: 74, y: 228 },
     ].slice(0, groupSize);
     return scaleFormationOffsets(baseOffsets, getSpaceRaceDefenseProfile(raceId).formationSpacingMultiplier);
   }
 
   const offsets: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
-  const wingSpacing = 126;
-  const trailSpacing = 138;
+  const wingSpacing = 148;
+  const trailSpacing = 164;
   let rank = 1;
 
   while (offsets.length < groupSize) {
@@ -1023,6 +1033,26 @@ function createFormationOffsets(
     offsets[3] = { x: 0, y: trailSpacing * 2.26 };
   }
 
+  return offsets;
+}
+
+function createFleetGroupOffsets(groupCount: number): Array<{ x: number; y: number }> {
+  if (groupCount <= 1) {
+    return [{ x: 0, y: 0 }];
+  }
+
+  const offsets: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
+  const spacingX = 340;
+  const spacingY = 300;
+  let rank = 1;
+  while (offsets.length < groupCount) {
+    offsets.push({ x: -spacingX * rank, y: spacingY * rank * 0.85 });
+    if (offsets.length >= groupCount) {
+      break;
+    }
+    offsets.push({ x: spacingX * rank, y: spacingY * rank * 0.85 });
+    rank += 1;
+  }
   return offsets;
 }
 
@@ -1438,12 +1468,57 @@ function getForcePatrolHeading(anchor: GalaxyPoint, patrolAnchor: GalaxyPoint, f
   return Math.atan2(headingDeltaY, headingDeltaX);
 }
 
+function getShipTravelAnchor(
+  ship: FactionForceActiveShipRecord,
+  galaxyDefinition: GalaxyDefinition,
+): {
+  anchor: GalaxyPoint;
+  patrolAnchor: GalaxyPoint;
+  heading: number;
+  guardAnchor: GalaxyPoint;
+  sectorId: string;
+} | null {
+  const destinationSystem = getGalaxySystemById(galaxyDefinition, ship.travelToSystemId ?? ship.originSystemId);
+  if (!destinationSystem) {
+    return null;
+  }
+
+  const fromSystem = getGalaxySystemById(galaxyDefinition, ship.travelFromSystemId ?? ship.originSystemId) ?? destinationSystem;
+  const toSystem = destinationSystem;
+  const progress = Math.max(0, Math.min(1, ship.travelProgress));
+  const easedProgress = progress >= 1 ? 1 : Math.pow(progress, 0.9);
+  const x = fromSystem.x + ((toSystem.x - fromSystem.x) * easedProgress);
+  const y = fromSystem.y + ((toSystem.y - fromSystem.y) * easedProgress);
+  const heading = Math.atan2(toSystem.y - fromSystem.y, toSystem.x - fromSystem.x);
+  if (progress < 0.995 && (Math.abs(toSystem.x - fromSystem.x) > 1 || Math.abs(toSystem.y - fromSystem.y) > 1)) {
+    return {
+      anchor: { x, y },
+      patrolAnchor: {
+        x: x + (Math.cos(heading) * 420),
+        y: y + (Math.sin(heading) * 420),
+      },
+      heading,
+      guardAnchor: { x: toSystem.x, y: toSystem.y },
+      sectorId: toSystem.sectorId,
+    };
+  }
+
+  return {
+    anchor: { x: toSystem.x, y: toSystem.y },
+    patrolAnchor: { x: toSystem.x, y: toSystem.y },
+    heading,
+    guardAnchor: { x: toSystem.x, y: toSystem.y },
+    sectorId: toSystem.sectorId,
+  };
+}
+
 function createSeededGuardFormation(
   groupShips: FactionForceActiveShipRecord[],
   galaxyDefinition: GalaxyDefinition,
   warState: FactionWarState | null,
   config: SpaceWorldConfig,
   existingSeeds: SpaceFactionShipSeed[],
+  fleetGroupOffset: { x: number; y: number } = { x: 0, y: 0 },
   groupSalt = 0,
 ): SpaceFactionShipSeed[] {
   if (groupShips.length <= 0) {
@@ -1452,8 +1527,9 @@ function createSeededGuardFormation(
 
   const leader = groupShips[0];
   const originSystem = getGalaxySystemById(galaxyDefinition, leader.originSystemId);
-  const originSector = originSystem ? getGalaxySectorById(originSystem.sectorId) : getGalaxySectorById(leader.sectorId);
-  if (!originSystem || !originSector) {
+  const travelAnchor = getShipTravelAnchor(leader, galaxyDefinition);
+  const anchorSector = getGalaxySectorById(travelAnchor?.sectorId ?? originSystem?.sectorId ?? leader.sectorId);
+  if (!originSystem || !anchorSector || !travelAnchor) {
     return [];
   }
 
@@ -1471,23 +1547,32 @@ function createSeededGuardFormation(
 
   for (let attempt = 0; attempt < 16; attempt += 1) {
     const orbitAngle = rng.range(0, Math.PI * 2);
-    const baseOrbitRadius = leader.kind === "prime-world"
-      ? 440 + (attempt * 18) + rng.range(0, 120)
-      : 320 + (attempt * 16) + rng.range(0, 96);
-    const orbitRadius = baseOrbitRadius * raceProfile.guardRadiusMultiplier;
+    const isTraveling = leader.travelProgress < 0.995 && leader.travelToSystemId !== leader.travelFromSystemId;
+    const baseOrbitRadius = isTraveling
+      ? 96 + (attempt * 14)
+      : leader.kind === "prime-world"
+        ? 440 + (attempt * 18) + rng.range(0, 120)
+        : 320 + (attempt * 16) + rng.range(0, 96);
+    const orbitRadius = baseOrbitRadius * raceProfile.formationSpacingMultiplier;
     const anchor = {
-      x: originSystem.x + (Math.cos(orbitAngle) * orbitRadius),
-      y: originSystem.y + (Math.sin(orbitAngle) * orbitRadius),
+      x: travelAnchor.anchor.x + fleetGroupOffset.x + (Math.cos(orbitAngle) * orbitRadius),
+      y: travelAnchor.anchor.y + fleetGroupOffset.y + (Math.sin(orbitAngle) * orbitRadius),
     };
-    const patrolAngle = orbitAngle + rng.range(0.86, 1.34);
-    const patrolRadius = orbitRadius + (rng.range(80, 170) * raceProfile.formationSpacingMultiplier);
+    const patrolAngle = isTraveling ? travelAnchor.heading : orbitAngle + rng.range(0.86, 1.34);
+    const patrolRadius = isTraveling
+      ? 420 + (rng.range(20, 120) * raceProfile.formationSpacingMultiplier)
+      : orbitRadius + (rng.range(80, 170) * raceProfile.formationSpacingMultiplier);
     const patrolAnchor = {
-      x: originSystem.x + (Math.cos(patrolAngle) * patrolRadius),
-      y: originSystem.y + (Math.sin(patrolAngle) * patrolRadius),
+      x: isTraveling
+        ? anchor.x + (Math.cos(patrolAngle) * patrolRadius)
+        : travelAnchor.guardAnchor.x + (Math.cos(patrolAngle) * patrolRadius),
+      y: isTraveling
+        ? anchor.y + (Math.sin(patrolAngle) * patrolRadius)
+        : travelAnchor.guardAnchor.y + (Math.sin(patrolAngle) * patrolRadius),
     };
-    const heading = getForcePatrolHeading(anchor, patrolAnchor, orbitAngle);
+    const heading = isTraveling ? travelAnchor.heading : getForcePatrolHeading(anchor, patrolAnchor, orbitAngle);
     const formationPoints = formationOffsets.map((offset) => rotateFormationOffset(anchor, heading, offset.x, offset.y));
-    if (!canPlaceGuardFormation(existingSeeds, formationPoints, originSector, config, largestMemberRadius)) {
+    if (!canPlaceGuardFormation(existingSeeds, formationPoints, anchorSector, config, largestMemberRadius)) {
       continue;
     }
 
@@ -1501,11 +1586,17 @@ function createSeededGuardFormation(
         id: ship.shipId,
         cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
         factionId,
+        assetId: ship.assetId,
         shipRole: ship.role,
         assignmentKind: ship.assignmentKind,
         assignmentZoneId: ship.assignmentZoneId,
-        sectorId: originSystem.sectorId,
-        groupId: `force-group:${leader.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? leader.originZoneId}`,
+        slotKind: ship.slotKind,
+        fleetId: ship.fleetId,
+        fleetGroupId: ship.fleetGroupId,
+        fleetMode: ship.fleetMode,
+        captureIntent: ship.captureIntent,
+        sectorId: travelAnchor.sectorId,
+        groupId: ship.fleetGroupId ?? ship.fleetId ?? `force-group:${leader.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? leader.originZoneId}`,
         leaderId: memberIndex === 0 ? null : leader.shipId,
         formationOffsetX: offset.x,
         formationOffsetY: offset.y,
@@ -1516,12 +1607,14 @@ function createSeededGuardFormation(
         rotation: heading + Math.PI * 0.5,
         patrolX: patrolPoint.x,
         patrolY: patrolPoint.y,
-        customColor: originSector.color,
-        customTrimColor: originSector.borderColor,
-        customGlowColor: originSector.borderColor,
-        guardAnchorX: originSystem.x,
-        guardAnchorY: originSystem.y,
-        guardRadius: orbitRadius + (leader.kind === "prime-world" ? 260 : 190) + raceProfile.interceptPadding,
+        customColor: anchorSector.color,
+        customTrimColor: anchorSector.borderColor,
+        customGlowColor: anchorSector.borderColor,
+        guardAnchorX: travelAnchor.guardAnchor.x,
+        guardAnchorY: travelAnchor.guardAnchor.y,
+        guardRadius: isTraveling
+          ? 420 + raceProfile.interceptPadding
+          : orbitRadius + (leader.kind === "prime-world" ? 260 : 190) + raceProfile.interceptPadding,
         originPoolId: ship.poolId,
         originPoolKind: ship.kind,
         originZoneId: ship.originZoneId,
@@ -1545,11 +1638,17 @@ function createSeededGuardFormation(
       id: ship.shipId,
       cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
       factionId,
+      assetId: ship.assetId,
       shipRole: ship.role,
       assignmentKind: ship.assignmentKind,
       assignmentZoneId: ship.assignmentZoneId,
-      sectorId: originSystem.sectorId,
-      groupId: `force-group:${leader.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? leader.originZoneId}:fallback`,
+      slotKind: ship.slotKind,
+      fleetId: ship.fleetId,
+      fleetGroupId: ship.fleetGroupId,
+      fleetMode: ship.fleetMode,
+      captureIntent: ship.captureIntent,
+      sectorId: anchorSector.id,
+      groupId: ship.fleetGroupId ?? ship.fleetId ?? `force-group:${leader.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? leader.originZoneId}:fallback`,
       leaderId: memberIndex === 0 ? null : leader.shipId,
       formationOffsetX: offset.x,
       formationOffsetY: offset.y,
@@ -1560,11 +1659,11 @@ function createSeededGuardFormation(
       rotation: Math.PI * 0.5,
       patrolX: point.x,
       patrolY: point.y,
-      customColor: originSector.color,
-      customTrimColor: originSector.borderColor,
-      customGlowColor: originSector.borderColor,
-      guardAnchorX: originSystem.x,
-      guardAnchorY: originSystem.y,
+      customColor: anchorSector.color,
+      customTrimColor: anchorSector.borderColor,
+      customGlowColor: anchorSector.borderColor,
+      guardAnchorX: travelAnchor.guardAnchor.x,
+      guardAnchorY: travelAnchor.guardAnchor.y,
       guardRadius: ((leader.kind === "prime-world" ? 560 : 420) * raceProfile.guardRadiusMultiplier) + raceProfile.interceptPadding,
       originPoolId: ship.poolId,
       originPoolKind: ship.kind,
@@ -1588,7 +1687,7 @@ export function createSpaceForceShipSeeds(
 
   const activeForceShips = getActiveFactionForceShips(forceState);
   const groupedShips = activeForceShips.reduce<Map<string, FactionForceActiveShipRecord[]>>((lookup, ship) => {
-    const groupKey = `${ship.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? ship.originZoneId}`;
+    const groupKey = ship.fleetId ?? `${ship.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? ship.originZoneId}`;
     const bucket = lookup.get(groupKey);
     if (bucket) {
       bucket.push(ship);
@@ -1597,21 +1696,48 @@ export function createSpaceForceShipSeeds(
     lookup.set(groupKey, [ship]);
     return lookup;
   }, new Map());
+  const fleetGroupLookup = new Map<string, string[]>();
+  activeForceShips.forEach((ship) => {
+    if (!ship.fleetGroupId || !ship.fleetId) {
+      return;
+    }
+    const bucket = fleetGroupLookup.get(ship.fleetGroupId);
+    if (bucket) {
+      if (!bucket.includes(ship.fleetId)) {
+        bucket.push(ship.fleetId);
+      }
+      return;
+    }
+    fleetGroupLookup.set(ship.fleetGroupId, [ship.fleetId]);
+  });
 
   const seeds: SpaceFactionShipSeed[] = [];
   groupedShips.forEach((poolShips, poolId) => {
     const sortedShips = [...poolShips].sort((left, right) => {
+      const commandDelta = Number(right.slotKind === "command") - Number(left.slotKind === "command");
+      if (commandDelta !== 0) {
+        return commandDelta;
+      }
       const priorityDelta = getSpaceShipRoleCombatProfile(left.role).leadPriority - getSpaceShipRoleCombatProfile(right.role).leadPriority;
       if (priorityDelta !== 0) {
         return priorityDelta;
       }
       return left.shipId.localeCompare(right.shipId);
     });
-    for (let groupStart = 0; groupStart < sortedShips.length; groupStart += 4) {
-      const groupShips = sortedShips.slice(groupStart, groupStart + 4);
-      const groupSeeds = createSeededGuardFormation(groupShips, galaxyDefinition, warState, config, seeds, groupSalt ^ hashStringToSeed(`${poolId}:${groupStart}`));
-      seeds.push(...groupSeeds);
-    }
+    const fleetGroupId = sortedShips[0]?.fleetGroupId ?? null;
+    const fleetGroupIds = fleetGroupId ? (fleetGroupLookup.get(fleetGroupId) ?? [poolId]) : [poolId];
+    const fleetIndex = Math.max(0, fleetGroupIds.indexOf(poolId));
+    const fleetGroupOffset = createFleetGroupOffsets(fleetGroupIds.length)[fleetIndex] ?? { x: 0, y: 0 };
+    const groupSeeds = createSeededGuardFormation(
+      sortedShips.slice(0, FLEET_ESCORT_SLOT_COUNT + 1),
+      galaxyDefinition,
+      warState,
+      config,
+      seeds,
+      fleetGroupOffset,
+      groupSalt ^ hashStringToSeed(`${poolId}:0`),
+    );
+    seeds.push(...groupSeeds);
   });
 
   return seeds;
@@ -1670,6 +1796,7 @@ function createSpaceFactionShipSeedsInternal(
               id: shipId,
               cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
               factionId,
+              assetId: "ship/base-fighter",
               sectorId: sectorConfig.id,
               groupId,
               leaderId: memberIndex === 0 ? null : leaderShipId,

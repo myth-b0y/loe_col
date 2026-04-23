@@ -8,12 +8,20 @@ import {
 import {
   PRIME_WORLD_DEFENSE_TARGET,
   ZONE_DEFENSE_TARGET,
+  advanceFactionForceTravel,
   getFactionForcePoolCapacity,
+  rebuildFactionCommanderFleets,
   type FactionForceActiveShipState,
   type FactionForcePoolRecord,
   type FactionForceShipRole,
   type FactionForceState,
 } from "./factionForces";
+import {
+  getFactionAssetDefenseValue,
+  getFactionAssetWarPower,
+  isFactionAssetCaptureEligible,
+  isFactionAssetCommandEligible,
+} from "./factionAssets";
 import { type RaceId } from "./items";
 
 export type RaceAllianceStatus = "empire" | "neutral" | "republic";
@@ -22,6 +30,7 @@ export type FactionWarAssignmentKind = "defend" | "invade" | "reclaim";
 export type FactionWarRaceState = {
   raceId: RaceId;
   activeTargetZoneId: string | null;
+  activeTargetZoneIds: string[];
   retargetCooldownRemainingMs: number;
 };
 
@@ -37,13 +46,21 @@ export type FactionWarAdvanceResult = {
 };
 
 export type FactionWarZoneAdjacency = Record<string, string[]>;
+export type FactionCommanderDoctrine = {
+  defenseBias: number;
+  expansionBias: number;
+  regroupBias: number;
+  splitTolerance: number;
+  maxConcurrentFronts: number;
+  pressureShiftBias: number;
+};
 
 const EMPIRE_RETARGET_COOLDOWN_MS = 18000;
 const REPUBLIC_RETARGET_COOLDOWN_MS = 24000;
 const NEUTRAL_RETARGET_COOLDOWN_MS = 30000;
-const EMPIRE_ATTACK_READY_SHIPS = 6;
-const REPUBLIC_RECLAIM_READY_SHIPS = 5;
-const NEUTRAL_RECLAIM_READY_SHIPS = 4;
+const EMPIRE_ATTACK_READY_SHIPS = 2;
+const REPUBLIC_RECLAIM_READY_SHIPS = 2;
+const NEUTRAL_RECLAIM_READY_SHIPS = 1;
 const BASE_ZONE_CAPTURE_DURATION_MS = 120000;
 const MIN_CAPTURE_PRESSURE = 0.28;
 const BASE_ZONE_DEFENSE_POWER = 0.25;
@@ -59,6 +76,10 @@ const ZONE_DEFENSE_REINFORCEMENT_MAX_DISTANCE = 18000;
 const PRIME_WORLD_DEFENSE_REINFORCEMENT_MAX_DISTANCE = 26000;
 const MIN_DEFENSE_REINFORCEMENT_DEFICIT = 0.45;
 const REPUBLIC_COALITION_SUPPORT_DEMAND_BONUS = 2.05;
+const MAX_EMPIRE_STARTING_BONUS_ZONES = 6;
+const MIN_EMPIRE_STARTING_BONUS_ZONES = 4;
+const MAX_RACE_ACTIVE_FRONTS = 3;
+const DEFENSE_RECOVERY_RATE = 1.1;
 
 class SeededRandom {
   private seed: number;
@@ -90,6 +111,7 @@ function getRaceStateById(warState: FactionWarState, raceId: RaceId): FactionWar
     ?? {
       raceId,
       activeTargetZoneId: null,
+      activeTargetZoneIds: [],
       retargetCooldownRemainingMs: 0,
     };
 }
@@ -118,6 +140,54 @@ function getRetargetCooldownMs(alignment: RaceAllianceStatus): number {
       return REPUBLIC_RETARGET_COOLDOWN_MS;
     default:
       return NEUTRAL_RETARGET_COOLDOWN_MS;
+  }
+}
+
+function getCommanderDoctrine(warState: FactionWarState, raceId: RaceId): FactionCommanderDoctrine {
+  const alignment = getRaceAllianceStatus(warState, raceId);
+  const base: FactionCommanderDoctrine = alignment === "empire"
+    ? {
+        defenseBias: 0.84,
+        expansionBias: 1.42,
+        regroupBias: 0.74,
+        splitTolerance: 1.24,
+        maxConcurrentFronts: 3,
+        pressureShiftBias: 1.22,
+      }
+    : alignment === "republic"
+      ? {
+          defenseBias: 1.2,
+          expansionBias: 0.96,
+          regroupBias: 1.08,
+          splitTolerance: 1.02,
+          maxConcurrentFronts: 2,
+          pressureShiftBias: 1.04,
+        }
+      : {
+          defenseBias: 1.16,
+          expansionBias: 0.62,
+          regroupBias: 1.16,
+          splitTolerance: 0.72,
+          maxConcurrentFronts: 1,
+          pressureShiftBias: 0.76,
+        };
+
+  switch (raceId) {
+    case "ashari":
+      return { ...base, expansionBias: base.expansionBias * 1.08, defenseBias: base.defenseBias * 0.96 };
+    case "svarin":
+      return { ...base, splitTolerance: base.splitTolerance * 1.08, pressureShiftBias: base.pressureShiftBias * 1.08 };
+    case "nevari":
+    case "aaruian":
+      return { ...base, defenseBias: base.defenseBias * 1.08, regroupBias: base.regroupBias * 1.08 };
+    case "olydran":
+      return { ...base, pressureShiftBias: base.pressureShiftBias * 1.06 };
+    case "rakkan":
+      return { ...base, expansionBias: base.expansionBias * 1.04 };
+    case "elsari":
+      return { ...base, splitTolerance: base.splitTolerance * 1.04 };
+    default:
+      return base;
   }
 }
 
@@ -359,13 +429,13 @@ function chooseBestDefenseTargetZone(
 function getShipRoleWarPower(role: FactionForceShipRole): number {
   switch (role) {
     case "support-fighter":
-      return 0.9;
+      return getFactionAssetWarPower("ship/support-fighter");
     case "attack-warship":
-      return 1.65;
+      return getFactionAssetWarPower("ship/attack-warship");
     case "defense-warship":
-      return 1.35;
+      return getFactionAssetWarPower("ship/defense-warship");
     default:
-      return 1;
+      return getFactionAssetWarPower("ship/base-fighter");
   }
 }
 
@@ -406,6 +476,7 @@ function chooseFallbackWarState(galaxy: GalaxyDefinition): FactionWarState {
     raceStates: getRaceIds().map((raceId) => ({
       raceId,
       activeTargetZoneId: null,
+      activeTargetZoneIds: [],
       retargetCooldownRemainingMs: 0,
     })),
   };
@@ -569,6 +640,45 @@ function chooseBestWarTargetZone(
   return scoredCandidates[0]?.zone.id ?? null;
 }
 
+function chooseWarTargetZoneIds(
+  galaxy: GalaxyDefinition,
+  forceState: FactionForceState,
+  warState: FactionWarState,
+  adjacency: FactionWarZoneAdjacency,
+  raceId: RaceId,
+  preferredZoneIds: readonly string[],
+  maxTargets: number,
+): string[] {
+  const chosen: string[] = [];
+  const preferred = preferredZoneIds.filter((zoneId, index, values) => zoneId && values.indexOf(zoneId) === index);
+  preferred.forEach((zoneId) => {
+    if (chosen.length >= maxTargets) {
+      return;
+    }
+    const validated = validateRaceTarget(galaxy, warState, adjacency, raceId, zoneId);
+    if (validated && !chosen.includes(validated)) {
+      chosen.push(validated);
+    }
+  });
+
+  while (chosen.length < maxTargets) {
+    const nextTarget = chooseBestWarTargetZone(
+      galaxy,
+      forceState,
+      warState,
+      adjacency,
+      raceId,
+      chosen[0] ?? preferred[0] ?? null,
+    );
+    if (!nextTarget || chosen.includes(nextTarget)) {
+      break;
+    }
+    chosen.push(nextTarget);
+  }
+
+  return chosen;
+}
+
 function chooseBestEmpirePoolTargetZone(
   galaxy: GalaxyDefinition,
   forceState: FactionForceState,
@@ -674,6 +784,9 @@ function setPrimePoolAssignments(
   const raceAlignment = getRaceAllianceStatus(warState, pool.raceId);
   const raceState = getRaceStateById(warState, pool.raceId);
   const holdShips = getPrimeWorldHoldShips(raceAlignment);
+  const targetZoneIds = raceState.activeTargetZoneIds.length > 0
+    ? raceState.activeTargetZoneIds
+    : (raceState.activeTargetZoneId ? [raceState.activeTargetZoneId] : []);
 
   let changed = false;
   if (defenseTargetZoneId) {
@@ -688,16 +801,17 @@ function setPrimePoolAssignments(
 
   const availableAttackers = Math.max(0, pool.activeShips.length - pool.desiredDefenseShips - holdShips);
   const readyShipThreshold = getReadyShipThreshold(raceAlignment);
-  const canLaunch = Boolean(raceState.activeTargetZoneId) && availableAttackers >= readyShipThreshold;
+  const canLaunch = targetZoneIds.length > 0 && availableAttackers >= readyShipThreshold;
 
   pool.activeShips.forEach((ship, index) => {
-    if (index < (pool.desiredDefenseShips + holdShips) || !canLaunch || !raceState.activeTargetZoneId) {
+    if (index < (pool.desiredDefenseShips + holdShips) || !canLaunch || targetZoneIds.length <= 0) {
       changed = setShipAssignment(ship, "defend", primeZoneId) || changed;
       return;
     }
 
     const assignmentKind: FactionWarAssignmentKind = raceAlignment === "empire" ? "invade" : "reclaim";
-    changed = setShipAssignment(ship, assignmentKind, raceState.activeTargetZoneId) || changed;
+    const targetIndex = Math.max(0, index - (pool.desiredDefenseShips + holdShips)) % targetZoneIds.length;
+    changed = setShipAssignment(ship, assignmentKind, targetZoneIds[targetIndex] ?? targetZoneIds[0]) || changed;
   });
 
   return changed;
@@ -746,9 +860,17 @@ function refreshRaceTargets(
     }
 
     const alignment = getRaceAllianceStatus(warState, raceState.raceId);
+    const validatedTargets = raceState.activeTargetZoneIds
+      .map((zoneId) => validateRaceTarget(galaxy, warState, adjacency, raceState.raceId, zoneId))
+      .filter((zoneId): zoneId is string => Boolean(zoneId));
     const validatedTarget = validateRaceTarget(galaxy, warState, adjacency, raceState.raceId, raceState.activeTargetZoneId);
-    if (validatedTarget !== raceState.activeTargetZoneId) {
-      raceState.activeTargetZoneId = validatedTarget;
+    const nextPrimaryTarget = validatedTargets[0] ?? validatedTarget ?? null;
+    if (
+      nextPrimaryTarget !== raceState.activeTargetZoneId
+      || validatedTargets.join("|") !== raceState.activeTargetZoneIds.join("|")
+    ) {
+      raceState.activeTargetZoneId = nextPrimaryTarget;
+      raceState.activeTargetZoneIds = validatedTargets.slice(0, MAX_RACE_ACTIVE_FRONTS);
       changed = true;
     }
 
@@ -763,16 +885,32 @@ function refreshRaceTargets(
       return;
     }
 
-    const nextTargetZoneId = chooseBestWarTargetZone(
+    const doctrine = getCommanderDoctrine(warState, raceState.raceId);
+    const deployableFrontCount = Math.max(
+      1,
+      Math.min(
+        MAX_RACE_ACTIVE_FRONTS,
+        Math.round(
+          doctrine.maxConcurrentFronts * Math.max(0.5, Math.min(1.2, activePrimeShips / Math.max(1, threshold))),
+        ),
+      ),
+    );
+    const nextTargetZoneIds = chooseWarTargetZoneIds(
       galaxy,
       forceState,
       warState,
       adjacency,
       raceState.raceId,
-      raceState.activeTargetZoneId,
+      raceState.activeTargetZoneIds,
+      deployableFrontCount,
     );
-    if (nextTargetZoneId !== raceState.activeTargetZoneId) {
+    const nextTargetZoneId = nextTargetZoneIds[0] ?? null;
+    if (
+      nextTargetZoneId !== raceState.activeTargetZoneId
+      || nextTargetZoneIds.join("|") !== raceState.activeTargetZoneIds.join("|")
+    ) {
       raceState.activeTargetZoneId = nextTargetZoneId;
+      raceState.activeTargetZoneIds = nextTargetZoneIds;
       raceState.retargetCooldownRemainingMs = nextTargetZoneId ? getRetargetCooldownMs(alignment) : 0;
       changed = true;
     }
@@ -888,6 +1026,7 @@ function applyPoolStrategy(
     const capacity = getFactionForcePoolCapacity(galaxy, pool);
     const alignment = getRaceAllianceStatus(warState, pool.raceId);
     const raceState = getRaceStateById(warState, pool.raceId);
+    const doctrine = getCommanderDoctrine(warState, pool.raceId);
     const defenseTargetZoneId = chooseBestDefenseTargetZone(
       galaxy,
       warState,
@@ -905,7 +1044,10 @@ function applyPoolStrategy(
       0,
       Math.min(
         capacity - pool.desiredDefenseShips,
-        getReserveTargetShips(alignment, controlledZoneCount, Boolean(raceState.activeTargetZoneId || defenseTargetZoneId), lostOwnedZones),
+        Math.round(
+          getReserveTargetShips(alignment, controlledZoneCount, Boolean(raceState.activeTargetZoneId || defenseTargetZoneId), lostOwnedZones)
+          * doctrine.expansionBias,
+        ),
       ),
     );
     if (pool.desiredReserveShips !== desiredReserveShips) {
@@ -925,34 +1067,51 @@ function applyPoolStrategy(
   return changed;
 }
 
-function getAttackPowerByZone(forceState: FactionForceState): Map<string, Map<RaceId, number>> {
-  const pressureByZone = new Map<string, Map<RaceId, number>>();
+type ZoneCommanderPresence = {
+  powerByRaceId: Map<RaceId, number>;
+  commandPresenceByRaceId: Map<RaceId, number>;
+  capturePresenceByRaceId: Map<RaceId, number>;
+};
+
+function getZoneCommanderPresence(forceState: FactionForceState): Map<string, ZoneCommanderPresence> {
+  const presenceByZone = new Map<string, ZoneCommanderPresence>();
   forceState.pools.forEach((pool) => {
     pool.activeShips.forEach((ship) => {
-      if (ship.assignmentKind === "defend" || !ship.assignmentZoneId) {
+      const zoneId = ship.assignmentZoneId;
+      if (!zoneId || ship.travelProgress < 0.995) {
         return;
       }
 
-      const zonePressure = pressureByZone.get(ship.assignmentZoneId) ?? new Map<RaceId, number>();
-      const nextPower = (zonePressure.get(pool.raceId) ?? 0) + getShipRoleWarPower(ship.role);
-      zonePressure.set(pool.raceId, nextPower);
-      pressureByZone.set(ship.assignmentZoneId, zonePressure);
+      const presence = presenceByZone.get(zoneId) ?? {
+        powerByRaceId: new Map<RaceId, number>(),
+        commandPresenceByRaceId: new Map<RaceId, number>(),
+        capturePresenceByRaceId: new Map<RaceId, number>(),
+      };
+      const warPower = getFactionAssetWarPower(ship.assetId);
+      presence.powerByRaceId.set(pool.raceId, (presence.powerByRaceId.get(pool.raceId) ?? 0) + warPower);
+      if (ship.slotKind === "command" || isFactionAssetCommandEligible(ship.assetId)) {
+        presence.commandPresenceByRaceId.set(pool.raceId, (presence.commandPresenceByRaceId.get(pool.raceId) ?? 0) + 1);
+      }
+      if (ship.captureIntent && isFactionAssetCaptureEligible(ship.assetId)) {
+        presence.capturePresenceByRaceId.set(pool.raceId, (presence.capturePresenceByRaceId.get(pool.raceId) ?? 0) + warPower);
+      }
+      presenceByZone.set(zoneId, presence);
     });
   });
-  return pressureByZone;
+  return presenceByZone;
 }
 
 function getDefensePowerByZone(forceState: FactionForceState): Map<string, number> {
   const defenseByZone = new Map<string, number>();
   forceState.pools.forEach((pool) => {
     pool.activeShips.forEach((ship) => {
-      if (ship.assignmentKind !== "defend" || !ship.assignmentZoneId) {
+      if (ship.assignmentKind !== "defend" || !ship.assignmentZoneId || ship.travelProgress < 0.995) {
         return;
       }
 
       defenseByZone.set(
         ship.assignmentZoneId,
-        (defenseByZone.get(ship.assignmentZoneId) ?? 0) + getShipRoleWarPower(ship.role),
+        (defenseByZone.get(ship.assignmentZoneId) ?? 0) + getFactionAssetDefenseValue(ship.assetId),
       );
     });
   });
@@ -978,21 +1137,26 @@ function advanceZoneCaptures(
   deltaMs: number,
 ): FactionWarAdvanceResult {
   const capturedZoneIds: string[] = [];
-  const attackPowerByZone = getAttackPowerByZone(forceState);
+  const attackPresenceByZone = getZoneCommanderPresence(forceState);
   const defensePowerByZone = getDefensePowerByZone(forceState);
   let changed = false;
 
   galaxy.zones.forEach((zone) => {
     const defendingRaceId = getZoneControllerRaceId(zone, warState);
-    const zoneAttackers = [...(attackPowerByZone.get(zone.id)?.entries() ?? [])]
-      .filter(([raceId]) => raceId !== defendingRaceId)
+    const presence = attackPresenceByZone.get(zone.id);
+    const zoneAttackers = [...(presence?.capturePresenceByRaceId.entries() ?? [])]
+      .filter(([raceId, attackPower]) => (
+        raceId !== defendingRaceId
+        && attackPower > 0
+        && (presence?.commandPresenceByRaceId.get(raceId) ?? 0) > 0
+      ))
       .sort((left, right) => right[1] - left[1]);
     const strongestAttacker = zoneAttackers[0] ?? null;
     const defendingPower = (defensePowerByZone.get(zone.id) ?? 0) + (zone.isPrimeWorldZone ? 1.35 : 0);
 
     if (!strongestAttacker) {
       if (zone.zoneCaptureProgress > 0 || zone.zoneState !== "stable" || zone.captureAttackerRaceId) {
-        zone.zoneCaptureProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * 1.6);
+        zone.zoneCaptureProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * DEFENSE_RECOVERY_RATE);
         zone.zoneState = zone.zoneCaptureProgress > 0 ? "contested" : "stable";
         if (zone.zoneCaptureProgress <= 0) {
           zone.captureAttackerRaceId = null;
@@ -1004,6 +1168,15 @@ function advanceZoneCaptures(
 
     const [attackerRaceId, attackPower] = strongestAttacker;
     const defenseFloor = BASE_ZONE_DEFENSE_POWER + (zone.isPrimeWorldZone ? PRIME_WORLD_DEFENSE_POWER : 0);
+    const activeDefendersPresent = (presence?.powerByRaceId.get(defendingRaceId) ?? 0) > 0.01;
+    if (activeDefendersPresent) {
+      if (zone.zoneState !== "contested") {
+        zone.zoneState = zone.zoneCaptureProgress > 0 ? "contested" : "stable";
+        changed = true;
+      }
+      return;
+    }
+
     const capturePressure = attackPower - (defendingPower + defenseFloor);
     if (capturePressure <= MIN_CAPTURE_PRESSURE) {
       const nextProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * 0.95);
@@ -1057,8 +1230,73 @@ function advanceZoneCaptures(
   };
 }
 
+function chooseEmpireStartingBonusZones(
+  galaxy: GalaxyDefinition,
+  warState: FactionWarState,
+  adjacency: FactionWarZoneAdjacency,
+): string[] {
+  const primeZone = galaxy.zones.find((zone) => zone.isPrimeWorldZone && getZoneCoreRaceId(zone) === warState.empireRaceId);
+  if (!primeZone) {
+    return [];
+  }
+  const primeSystem = getGalaxySystemById(galaxy, primeZone.systemId);
+  if (!primeSystem) {
+    return [];
+  }
+
+  const controlledFrontier = new Set<string>([primeZone.id]);
+  const candidates = galaxy.zones
+    .filter((zone) => zone.id !== primeZone.id && !zone.isPrimeWorldZone)
+    .filter((zone) => getZoneControllerRaceId(zone, warState) !== warState.empireRaceId)
+    .filter((zone) => {
+      const neighbors = adjacency[zone.id] ?? [];
+      return neighbors.some((neighborId) => controlledFrontier.has(neighborId) || getZoneControllerRaceId(getGalaxyZoneById(galaxy, neighborId) ?? zone, warState) === warState.empireRaceId);
+    })
+    .map((zone) => {
+      const system = getGalaxySystemById(galaxy, zone.systemId);
+      if (!system) {
+        return null;
+      }
+      const distance = Math.sqrt(((system.x - primeSystem.x) ** 2) + ((system.y - primeSystem.y) ** 2));
+      const randomBias = ((galaxy.seed ^ distance) % 97) / 97;
+      return {
+        zone,
+        score: distance + (randomBias * 850),
+      };
+    })
+    .filter((entry): entry is { zone: GalaxyZoneRecord; score: number } => entry !== null)
+    .sort((left, right) => left.score - right.score);
+
+  return candidates
+    .slice(0, Math.min(MAX_EMPIRE_STARTING_BONUS_ZONES, Math.max(MIN_EMPIRE_STARTING_BONUS_ZONES, 4 + ((galaxy.seed >>> 3) % 3))))
+    .map((entry) => entry.zone.id);
+}
+
+export function applyFactionWarStartingOwnership(
+  galaxy: GalaxyDefinition,
+  warState: FactionWarState,
+  adjacency: FactionWarZoneAdjacency = buildFactionWarZoneAdjacency(galaxy),
+): boolean {
+  const bonusZoneIds = chooseEmpireStartingBonusZones(galaxy, warState, adjacency);
+  let changed = false;
+  bonusZoneIds.forEach((zoneId) => {
+    const zone = getGalaxyZoneById(galaxy, zoneId);
+    if (!zone || zone.currentControllerId === warState.empireRaceId) {
+      return;
+    }
+    zone.currentControllerId = warState.empireRaceId;
+    zone.zoneState = "stable";
+    zone.zoneCaptureProgress = 0;
+    zone.captureAttackerRaceId = null;
+    changed = true;
+  });
+  return changed;
+}
+
 export function createFactionWarState(galaxy: GalaxyDefinition): FactionWarState {
-  return chooseFallbackWarState(galaxy);
+  const warState = chooseFallbackWarState(galaxy);
+  applyFactionWarStartingOwnership(galaxy, warState);
+  return warState;
 }
 
 export function normalizeFactionWarState(
@@ -1089,6 +1327,11 @@ export function normalizeFactionWarState(
         activeTargetZoneId: typeof sourceRaceState?.activeTargetZoneId === "string" && sourceRaceState.activeTargetZoneId.length > 0
           ? sourceRaceState.activeTargetZoneId
           : null,
+        activeTargetZoneIds: Array.isArray(sourceRaceState?.activeTargetZoneIds)
+          ? sourceRaceState.activeTargetZoneIds.filter((zoneId): zoneId is string => typeof zoneId === "string" && zoneId.length > 0).slice(0, MAX_RACE_ACTIVE_FRONTS)
+          : (typeof sourceRaceState?.activeTargetZoneId === "string" && sourceRaceState.activeTargetZoneId.length > 0
+            ? [sourceRaceState.activeTargetZoneId]
+            : []),
         retargetCooldownRemainingMs: typeof sourceRaceState?.retargetCooldownRemainingMs === "number" && Number.isFinite(sourceRaceState.retargetCooldownRemainingMs)
           ? Math.max(0, Math.round(sourceRaceState.retargetCooldownRemainingMs))
           : 0,
@@ -1185,6 +1428,7 @@ export function advanceFactionWarState(
   changed = syncZonePoolOwnership(forceState, galaxy, warState) || changed;
   changed = refreshRaceTargets(warState, galaxy, forceState, adjacency, safeDeltaMs) || changed;
   changed = applyPoolStrategy(forceState, galaxy, warState, adjacency) || changed;
+  changed = rebuildFactionCommanderFleets(forceState) || changed;
 
   if (safeDeltaMs <= 0) {
     return {
@@ -1193,12 +1437,15 @@ export function advanceFactionWarState(
     };
   }
 
+  changed = advanceFactionForceTravel(forceState, galaxy, safeDeltaMs) || changed;
+  changed = rebuildFactionCommanderFleets(forceState) || changed;
   const captureResult = advanceZoneCaptures(warState, galaxy, forceState, safeDeltaMs);
   changed = captureResult.changed || changed;
   if (captureResult.capturedZoneIds.length > 0) {
     changed = syncZonePoolOwnership(forceState, galaxy, warState) || changed;
     changed = refreshRaceTargets(warState, galaxy, forceState, adjacency, 0) || changed;
     changed = applyPoolStrategy(forceState, galaxy, warState, adjacency) || changed;
+    changed = rebuildFactionCommanderFleets(forceState) || changed;
   }
 
   return {

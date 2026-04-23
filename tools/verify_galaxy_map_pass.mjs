@@ -352,8 +352,13 @@ try {
   });
   const systemsById = new Map((hubMapState.galaxy?.systems ?? []).map((system) => [system.id, system]));
   const zonesById = new Map((hubMapState.galaxy?.zones ?? []).map((zone) => [zone.id, zone]));
+  const homeworldSectorByRace = new Map((hubMapState.galaxy?.homeworlds ?? []).map((homeworld) => [homeworld.raceId, homeworld.sectorId]));
+  const empireCoreSectorId = hubMapState.war?.empireRaceId
+    ? homeworldSectorByRace.get(hubMapState.war.empireRaceId) ?? null
+    : null;
   const zoneNamePattern = /^[A-Z]{3}-[1-5][A-Z]+$/;
   const zoneAreaBySector = new Map();
+  const empireStartingBonusZoneIds = [];
   (hubMapState.galaxy?.systems ?? []).forEach((system) => {
     assert(typeof system.zoneId === "string" && system.zoneId.length > 0,
       `Generated system ${system.id} is missing a zone id`);
@@ -373,8 +378,18 @@ try {
       "svarin-span": "svarin",
       "ashari-crown": "ashari",
     }[zone.sectorId];
-    assert(zone.currentControllerId === sectorController,
-      `Zone ${zone.id} should start owned by its sector race, got ${zone.currentControllerId}`);
+    const isEmpireBonusZone = Boolean(
+      hubMapState.war?.empireRaceId
+      && zone.currentControllerId === hubMapState.war.empireRaceId
+      && empireCoreSectorId
+      && zone.coreSectorId !== empireCoreSectorId,
+    );
+    if (!isEmpireBonusZone) {
+      assert(zone.currentControllerId === sectorController,
+        `Zone ${zone.id} should start owned by its sector race unless it is part of the Empire opening bonus, got ${zone.currentControllerId}`);
+    } else {
+      empireStartingBonusZoneIds.push(zone.id);
+    }
     assert(zone.zoneState === "stable", `Zone ${zone.id} should start stable, got ${zone.zoneState}`);
     assert(zone.zoneCaptureProgress === 0, `Zone ${zone.id} should start with zero capture progress, got ${zone.zoneCaptureProgress}`);
     assert(Array.isArray(zone.territoryPoints) && zone.territoryPoints.length >= 3,
@@ -386,8 +401,9 @@ try {
   });
 
   const sectorLabels = new Map((hubMapState.mapDebug?.sectorLabels ?? []).map((entry) => [entry.id, entry.label]));
-  const homeworldSectorByRace = new Map((hubMapState.galaxy?.homeworlds ?? []).map((homeworld) => [homeworld.raceId, homeworld.sectorId]));
   if (hubMapState.war) {
+    assert(empireStartingBonusZoneIds.length >= 1 && empireStartingBonusZoneIds.length <= 6,
+      `Empire should begin with a limited nearby starting bonus, got zones=${empireStartingBonusZoneIds.length}`);
     const empireSectorId = homeworldSectorByRace.get(hubMapState.war.empireRaceId);
     assert(empireSectorId && sectorLabels.get(empireSectorId) === "Galactic Empire",
       `Empire sector label should read 'Galactic Empire': ${JSON.stringify([...sectorLabels.entries()])}`);

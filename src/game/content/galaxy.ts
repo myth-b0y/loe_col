@@ -227,10 +227,10 @@ const GALAXY_MOON_CHANCE = 0.54;
 const GALAXY_HOMEWORLD_RADIUS_SCALE = 1.24;
 const GALAXY_HOMEWORLD_SECTOR_EDGE_MARGIN_DEG = 7;
 const GALAXY_HOMEWORLD_RING_EDGE_MARGIN = 520;
-const GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR = 0.42;
-const GALAXY_PRIME_WORLD_ZONE_WEIGHT_ATTEMPTS = 18;
-const GALAXY_PRIME_WORLD_ZONE_WEIGHT_GROWTH = 1.24;
-const GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY = 0.72;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR = 0.68;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_ATTEMPTS = 28;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_GROWTH = 1.33;
+const GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY = 0.78;
 const GALAXY_ZONE_POLYGON_STEPS = 28;
 const GALAXY_ZONE_CLIP_EPSILON = 0.0001;
 const GALAXY_PLANET_ORBIT_DEGREES_PER_SECOND = 0.12;
@@ -1429,7 +1429,13 @@ function getZoneAnchorWeight(
     return 0;
   }
 
-  return Math.round(nearestDistanceSq * weightFactor);
+  const placementRingId: Exclude<GalaxyRingId, "deep-space"> = system.ringId === "deep-space" ? "outer" : system.ringId;
+  const placementSpacing = getSystemPlacementMinDistance(placementRingId);
+  const effectiveDistanceSq = Math.max(
+    nearestDistanceSq,
+    (placementSpacing * placementSpacing) * 1.18,
+  );
+  return Math.round(effectiveDistanceSq * weightFactor);
 }
 
 function getSectorPolygonPointObjects(sector: GalaxySectorConfig): GalaxyPoint[] {
@@ -1729,7 +1735,10 @@ function createZonesForSystems(
     const zoneAnchorWeights = new Map<string, number>();
     const sectorZoneGeometry = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
     let bestValidGeometry = new Map<string, Pick<GalaxyZoneRecord, "territoryPoints" | "anchorWeight" | "isPrimeWorldZone">>();
+    let bestPrimeZoneRatio = Number.NEGATIVE_INFINITY;
     let weightFactor = GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR;
+    let validWeightFloor = 0;
+    let invalidWeightCeiling: number | null = null;
 
     for (let attempt = 0; attempt < GALAXY_PRIME_WORLD_ZONE_WEIGHT_ATTEMPTS; attempt += 1) {
       zoneAnchorWeights.clear();
@@ -1752,30 +1761,46 @@ function createZonesForSystems(
       });
 
       if (allAnchorsContained) {
-        bestValidGeometry = new Map(
-          [...sectorZoneGeometry.entries()].map(([systemId, geometry]) => ([systemId, {
-            territoryPoints: geometry.territoryPoints.map((point) => ({ ...point })),
-            anchorWeight: geometry.anchorWeight,
-            isPrimeWorldZone: geometry.isPrimeWorldZone,
-          }] as const)),
-        );
-
         const averageZoneArea = sectorSystems.length > 0
           ? sectorSystems.reduce((sum, system) => sum + getZonePolygonArea(sectorZoneGeometry.get(system.id)?.territoryPoints ?? []), 0) / sectorSystems.length
           : 0;
-        const primeZonesLargeEnough = sectorSystems
+        const primeZoneAreas = sectorSystems
           .filter((system) => homeworldSystemIds.has(system.id))
-          .every((system) => getZonePolygonArea(sectorZoneGeometry.get(system.id)?.territoryPoints ?? []) > averageZoneArea * 1.02);
+          .map((system) => getZonePolygonArea(sectorZoneGeometry.get(system.id)?.territoryPoints ?? []));
+        const smallestPrimeZoneRatio = averageZoneArea > 0 && primeZoneAreas.length > 0
+          ? Math.min(...primeZoneAreas.map((area) => area / averageZoneArea))
+          : Number.NEGATIVE_INFINITY;
+
+        if (smallestPrimeZoneRatio > bestPrimeZoneRatio) {
+          bestPrimeZoneRatio = smallestPrimeZoneRatio;
+          bestValidGeometry = new Map(
+            [...sectorZoneGeometry.entries()].map(([systemId, geometry]) => ([systemId, {
+              territoryPoints: geometry.territoryPoints.map((point) => ({ ...point })),
+              anchorWeight: geometry.anchorWeight,
+              isPrimeWorldZone: geometry.isPrimeWorldZone,
+            }] as const)),
+          );
+        }
+
+        const primeZonesLargeEnough = smallestPrimeZoneRatio > 1.02;
 
         if (primeZonesLargeEnough) {
           break;
         }
 
-        weightFactor *= GALAXY_PRIME_WORLD_ZONE_WEIGHT_GROWTH;
+        validWeightFloor = Math.max(validWeightFloor, weightFactor);
+        weightFactor = invalidWeightCeiling !== null
+          ? (validWeightFloor + invalidWeightCeiling) * 0.5
+          : weightFactor * GALAXY_PRIME_WORLD_ZONE_WEIGHT_GROWTH;
         continue;
       }
 
-      weightFactor *= GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY;
+      invalidWeightCeiling = invalidWeightCeiling === null
+        ? weightFactor
+        : Math.min(invalidWeightCeiling, weightFactor);
+      weightFactor = validWeightFloor > 0
+        ? (validWeightFloor + invalidWeightCeiling) * 0.5
+        : Math.max(GALAXY_PRIME_WORLD_ZONE_WEIGHT_FACTOR * GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY, weightFactor * GALAXY_PRIME_WORLD_ZONE_WEIGHT_RECOVERY);
     }
 
     if (bestValidGeometry.size > 0) {
