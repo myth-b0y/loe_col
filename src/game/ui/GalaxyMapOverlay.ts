@@ -20,6 +20,7 @@ import {
   type GalaxySectorConfig,
   type GalaxySystemRecord,
 } from "../content/galaxy";
+import { isZoneActivelyContested } from "../content/factionWar";
 import { getMissionContract } from "../content/missions";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
@@ -506,10 +507,10 @@ export class GalaxyMapOverlay {
       return MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
     }
     const hasVisibleContestedZones = this.cachedGalaxy.zones.some((zone) => (
-      (zone.zoneState !== "stable" || zone.captureAttackerRaceId !== null)
+      isZoneActivelyContested(zone)
       && (!this.selectedSectorId || zone.sectorId === this.selectedSectorId)
     ));
-    return hasVisibleContestedZones ? 320 : MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
+    return hasVisibleContestedZones ? 220 : MAP_SNAPSHOT_REDRAW_INTERVAL_MS;
   }
 
   private getCachedGalaxySnapshot(): GalaxyDefinition {
@@ -615,7 +616,7 @@ export class GalaxyMapOverlay {
       }
 
       const controllerIds = [...new Set(zones.map((zone) => zone.currentControllerId))];
-      const contestedZones = zones.filter((zone) => zone.zoneState !== "stable" || zone.captureAttackerRaceId);
+      const contestedZones = zones.filter((zone) => isZoneActivelyContested(zone));
       if (controllerIds.length === 1) {
         const palette = getGalaxyControllerPalette(controllerIds[0], sector.id);
         const polygon = getGalaxySectorPolygonPoints(sector);
@@ -642,9 +643,9 @@ export class GalaxyMapOverlay {
       contestedZones.forEach((zone) => {
         const invaderPalette = getGalaxyControllerPalette(zone.captureAttackerRaceId ?? zone.currentControllerId, zone.coreSectorId);
         const mapped = this.mapPointPolygon(zone.territoryPoints, viewBounds);
-        const pulse = 0.5 + (Math.sin((orbitTimeMs / 900) + (zone.id.length * 0.27)) * 0.5);
-        const fillAlpha = (selectedSectorId ? 0.18 : 0.11) + (pulse * (selectedSectorId ? 0.22 : 0.14));
-        const strokeAlpha = 0.36 + (pulse * 0.44);
+        const pulse = 0.5 + (Math.sin((orbitTimeMs / 450) + (zone.id.length * 0.27)) * 0.5);
+        const fillAlpha = (selectedSectorId ? 0.2 : 0.13) + (pulse * (selectedSectorId ? 0.26 : 0.17));
+        const strokeAlpha = 0.42 + (pulse * 0.5);
         this.staticMap.fillStyle(invaderPalette.color, fillAlpha);
         this.staticMap.fillPoints(mapped, true);
         this.staticMap.lineStyle(selectedSectorId ? 2.4 : 1.8, invaderPalette.borderColor, strokeAlpha);
@@ -1129,7 +1130,7 @@ export class GalaxyMapOverlay {
         label: getGalaxySectorDisplayLabel(sector, warState),
       })),
       contestedZones: galaxy.zones
-        .filter((zone) => zone.zoneState !== "stable" || zone.captureAttackerRaceId !== null)
+        .filter((zone) => isZoneActivelyContested(zone))
         .map((zone) => ({
           id: zone.id,
           name: zone.name,

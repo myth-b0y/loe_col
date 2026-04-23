@@ -38,10 +38,10 @@ export type FactionWarAdvanceResult = {
 
 export type FactionWarZoneAdjacency = Record<string, string[]>;
 
-const EMPIRE_RETARGET_COOLDOWN_MS = 26000;
+const EMPIRE_RETARGET_COOLDOWN_MS = 18000;
 const REPUBLIC_RETARGET_COOLDOWN_MS = 24000;
 const NEUTRAL_RETARGET_COOLDOWN_MS = 30000;
-const EMPIRE_ATTACK_READY_SHIPS = 7;
+const EMPIRE_ATTACK_READY_SHIPS = 6;
 const REPUBLIC_RECLAIM_READY_SHIPS = 5;
 const NEUTRAL_RECLAIM_READY_SHIPS = 4;
 const BASE_ZONE_CAPTURE_DURATION_MS = 120000;
@@ -51,7 +51,7 @@ const PRIME_WORLD_DEFENSE_POWER = 1.75;
 const EMPIRE_PRIME_WORLD_HOLD_SHIPS = 1;
 const REPUBLIC_PRIME_WORLD_HOLD_SHIPS = 1;
 const NEUTRAL_PRIME_WORLD_HOLD_SHIPS = 1;
-const EMPIRE_POST_CAPTURE_COOLDOWN_MULTIPLIER = 1.05;
+const EMPIRE_POST_CAPTURE_COOLDOWN_MULTIPLIER = 0.88;
 const REPUBLIC_POST_CAPTURE_COOLDOWN_MULTIPLIER = 1.12;
 const NEUTRAL_POST_CAPTURE_COOLDOWN_MULTIPLIER = 1.18;
 const K_NEAREST_ZONE_NEIGHBORS = 5;
@@ -140,7 +140,7 @@ function getReserveTargetShips(
 ): number {
   switch (alignment) {
     case "empire":
-      return Math.max(7, Math.min(15, 6 + Math.floor(controlledZoneCount * 0.2)));
+      return Math.max(8, Math.min(17, 7 + Math.floor(controlledZoneCount * 0.24)));
     case "republic":
       return hasActiveTarget || lostOwnedZones > 0
         ? Math.max(6, Math.min(11, 4 + Math.floor(controlledZoneCount * 0.18)))
@@ -179,6 +179,12 @@ function isZoneUnderCapturePressure(zone: Pick<GalaxyZoneRecord, "zoneState" | "
   return zone.zoneState !== "stable"
     || zone.zoneCaptureProgress > 0
     || zone.captureAttackerRaceId !== null;
+}
+
+export function isZoneActivelyContested(
+  zone: Pick<GalaxyZoneRecord, "zoneState" | "captureAttackerRaceId">,
+): boolean {
+  return zone.zoneState === "capturing" && zone.captureAttackerRaceId !== null;
 }
 
 function getZoneSystemDistance(
@@ -503,12 +509,32 @@ function chooseBestWarTargetZone(
   const scoredCandidates = candidates.map((zone) => {
     const coreRaceId = getZoneCoreRaceId(zone);
     const controllerRaceId = getZoneControllerRaceId(zone, warState);
+    const adjacentZoneIds = adjacency[zone.id] ?? [];
+    const friendlyNeighborCount = adjacentZoneIds.reduce((count, adjacentZoneId) => {
+      const adjacentZone = getGalaxyZoneById(galaxy, adjacentZoneId);
+      if (!adjacentZone) {
+        return count;
+      }
+      return count + (getZoneControllerRaceId(adjacentZone, warState) === raceId ? 1 : 0);
+    }, 0);
+    const hostileNeighborCount = adjacentZoneIds.reduce((count, adjacentZoneId) => {
+      const adjacentZone = getGalaxyZoneById(galaxy, adjacentZoneId);
+      if (!adjacentZone) {
+        return count;
+      }
+      return count + (getZoneControllerRaceId(adjacentZone, warState) === raceId ? 0 : 1);
+    }, 0);
+    const defenseEstimate = getTargetDefenseEstimate(forceState, zone, warState);
     let score = 1000;
 
     if (alignment === "empire") {
-      score += getRaceAllianceStatus(warState, controllerRaceId) === "republic" ? 160 : 100;
-      score += zone.isPrimeWorldZone ? 110 : 0;
+      const controllerAlignment = getRaceAllianceStatus(warState, controllerRaceId);
+      score += controllerAlignment === "republic" ? 148 : 118;
+      score += zone.isPrimeWorldZone ? 118 : 0;
       score += zone.ringId === "second" ? 36 : zone.ringId === "third" ? 28 : 16;
+      score += friendlyNeighborCount * 28;
+      score += hostileNeighborCount * 12;
+      score += Math.max(0, 7.4 - defenseEstimate) * 24;
     } else if (alignment === "republic") {
       score += coreRaceId === raceId ? 180 : getRaceAllianceStatus(warState, coreRaceId) === "republic" ? 120 : 70;
       score += zone.isPrimeWorldZone ? 80 : 24;
@@ -529,7 +555,7 @@ function chooseBestWarTargetZone(
       score += 50;
     }
 
-    score -= getTargetDefenseEstimate(forceState, zone, warState) * (alignment === "republic" ? 40 : 48);
+    score -= defenseEstimate * (alignment === "republic" ? 40 : alignment === "empire" ? 34 : 48);
     return { zone, score };
   });
 
@@ -541,6 +567,57 @@ function chooseBestWarTargetZone(
   });
 
   return scoredCandidates[0]?.zone.id ?? null;
+}
+
+function chooseBestEmpirePoolTargetZone(
+  galaxy: GalaxyDefinition,
+  forceState: FactionForceState,
+  warState: FactionWarState,
+  adjacency: FactionWarZoneAdjacency,
+  raceId: RaceId,
+  originZoneId: string,
+): string | null {
+  const frontierZones = [...new Set(adjacency[originZoneId] ?? [])]
+    .map((zoneId) => getGalaxyZoneById(galaxy, zoneId))
+    .filter((zone): zone is GalaxyZoneRecord => zone !== null)
+    .filter((zone) => getZoneControllerRaceId(zone, warState) !== raceId);
+  if (frontierZones.length <= 0) {
+    return null;
+  }
+
+  const scoredZones = frontierZones.map((zone) => {
+    const controllerRaceId = getZoneControllerRaceId(zone, warState);
+    const controllerAlignment = getRaceAllianceStatus(warState, controllerRaceId);
+    const adjacentZoneIds = adjacency[zone.id] ?? [];
+    const empireNeighborCount = adjacentZoneIds.reduce((count, adjacentZoneId) => {
+      const adjacentZone = getGalaxyZoneById(galaxy, adjacentZoneId);
+      if (!adjacentZone) {
+        return count;
+      }
+      return count + (getZoneControllerRaceId(adjacentZone, warState) === raceId ? 1 : 0);
+    }, 0);
+    const defenseEstimate = getTargetDefenseEstimate(forceState, zone, warState);
+    let score = 1000;
+    score += controllerAlignment === "republic" ? 165 : 118;
+    score += zone.isPrimeWorldZone ? 108 : 0;
+    score += empireNeighborCount * 34;
+    score += Math.max(0, 7.8 - defenseEstimate) * 28;
+    if (zone.captureAttackerRaceId === raceId) {
+      score += 180;
+    }
+    if (zone.zoneState === "capturing" && zone.captureAttackerRaceId !== raceId) {
+      score -= 40;
+    }
+    return { zone, score };
+  });
+
+  scoredZones.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    return left.zone.id.localeCompare(right.zone.id);
+  });
+  return scoredZones[0]?.zone.id ?? null;
 }
 
 function validateRaceTarget(
@@ -759,6 +836,7 @@ function applyPoolStrategy(
   movableZonePools.forEach((pool) => {
     const zone = getGalaxyZoneById(galaxy, pool.originZoneId);
     const controllerRaceId = zone ? getZoneControllerRaceId(zone, warState) : pool.raceId;
+    const alignment = getRaceAllianceStatus(warState, pool.raceId);
     const availablePower = controllerRaceId === pool.raceId ? getPoolActiveWarPower(pool) : 0;
     const defenseTargetZoneId = controllerRaceId === pool.raceId
       ? chooseBestDefenseTargetZone(
@@ -773,14 +851,35 @@ function applyPoolStrategy(
           null,
         )
       : null;
+    const canEmpirePressure = alignment === "empire"
+      && controllerRaceId === pool.raceId
+      && !defenseTargetZoneId
+      && pool.activeShips.length >= 4
+      && availablePower >= 3.1;
+    const pressureTargetZoneId = canEmpirePressure
+      ? chooseBestEmpirePoolTargetZone(galaxy, forceState, warState, _adjacency, pool.raceId, pool.originZoneId)
+      : null;
     const assignmentZoneId = defenseTargetZoneId ?? pool.originZoneId;
     pool.activeShips.forEach((ship) => {
+      if (pressureTargetZoneId) {
+        const holdShips = 1;
+        const shipIndex = pool.activeShips.indexOf(ship);
+        if (shipIndex >= holdShips) {
+          changed = setShipAssignment(ship, "invade", pressureTargetZoneId) || changed;
+          return;
+        }
+      }
       changed = setShipAssignment(ship, "defend", assignmentZoneId) || changed;
     });
     if (defenseTargetZoneId) {
       plannedDefensePowerByZone.set(
         defenseTargetZoneId,
         (plannedDefensePowerByZone.get(defenseTargetZoneId) ?? 0) + availablePower,
+      );
+    } else if (pressureTargetZoneId) {
+      plannedDefensePowerByZone.set(
+        pressureTargetZoneId,
+        (plannedDefensePowerByZone.get(pressureTargetZoneId) ?? 0) + Math.max(0, availablePower - 1),
       );
     }
   });

@@ -74,21 +74,57 @@ try {
   await page.waitForTimeout(260);
   await capture(page, "space-start.png");
 
-  const stationTarget = await page.evaluate(() => {
+  const stationTargets = await page.evaluate(() => {
     const galaxy = window.__loeSession?.getGalaxyDefinition?.() ?? null;
-    const station = galaxy?.stations?.[0] ?? null;
-    return station
-      ? {
-          id: station.id,
-          name: station.name,
-          x: station.x,
-          y: station.y,
-          radius: station.radius,
-        }
-      : null;
+    const war = window.__loeSession?.getFactionWarState?.() ?? null;
+    const getControllerRaceId = (station) => {
+      const nearestZone = (galaxy?.zones ?? [])
+        .filter((zone) => zone.sectorId === station.sectorId)
+        .map((zone) => {
+          const system = (galaxy?.systems ?? []).find((candidate) => candidate.id === zone.systemId);
+          if (!system) {
+            return null;
+          }
+          const dx = system.x - station.x;
+          const dy = system.y - station.y;
+          return {
+            zone,
+            distanceSq: (dx * dx) + (dy * dy),
+          };
+        })
+        .filter(Boolean)
+        .sort((left, right) => left.distanceSq - right.distanceSq)[0]?.zone ?? null;
+      return nearestZone?.currentControllerId ?? null;
+    };
+    const getAlignment = (controllerRaceId) => {
+      if (!war || !controllerRaceId) {
+        return "neutral";
+      }
+      if (war.empireRaceId === controllerRaceId) {
+        return "empire";
+      }
+      if (Array.isArray(war.republicRaceIds) && war.republicRaceIds.includes(controllerRaceId)) {
+        return "republic";
+      }
+      return "neutral";
+    };
+    const stations = (galaxy?.stations ?? []).map((station) => ({
+      id: station.id,
+      name: station.name,
+      x: station.x,
+      y: station.y,
+      radius: station.radius,
+      sectorId: station.sectorId,
+      alignment: getAlignment(getControllerRaceId(station)),
+    }));
+    return {
+      usable: stations.find((station) => station.alignment !== "empire") ?? stations[0] ?? null,
+      restricted: stations.find((station) => station.alignment === "empire") ?? null,
+    };
   });
 
-  assert(stationTarget, "Could not resolve a generated station for verification");
+  const stationTarget = stationTargets?.usable ?? null;
+  assert(stationTarget, "Could not resolve a generated usable station for verification");
 
   await page.evaluate((station) => {
     const space = window.__loeGame?.scene.keys.space;
@@ -218,6 +254,54 @@ try {
   assert(overlayClosedState.visible === false, "Station overlay did not close after pressing Leave");
   assert(overlayClosedState.snapshot?.stationOverlayVisible === false,
     `Space debug snapshot still thinks the station overlay is visible: ${JSON.stringify(overlayClosedState.snapshot)}`);
+
+  if (stationTargets?.restricted) {
+    await page.evaluate((station) => {
+      const space = window.__loeGame?.scene.keys.space;
+      if (!space || !station) {
+        return;
+      }
+
+      const playerX = Math.round(station.x - (station.radius + 100));
+      const playerY = Math.round(station.y);
+      space.shipRoot.x = playerX;
+      space.shipRoot.y = playerY;
+      space.shipVelocity.set(0, 0);
+      window.__loeSession?.setShipSpacePosition?.(playerX, playerY);
+      space.syncActiveWorld?.(true);
+      space.refreshHud?.();
+    }, stationTargets.restricted);
+    await page.waitForTimeout(240);
+
+    const restrictedBefore = await page.evaluate(() => {
+      const space = window.__loeGame?.scene.keys.space;
+      return {
+        nearestStation: space?.getDebugSnapshot?.()?.nearestStation ?? null,
+        overlayVisible: space?.stationOverlay?.isVisible?.() ?? false,
+      };
+    });
+    assert(restrictedBefore.nearestStation?.inRange === true,
+      `Restricted Empire station should still be physically in range: ${JSON.stringify(restrictedBefore)}`);
+
+    await page.evaluate(() => {
+      const space = window.__loeGame?.scene.keys.space;
+      space?.tryHandlePrimaryInteraction?.();
+      space?.refreshHud?.();
+    });
+    await page.waitForTimeout(140);
+
+    const restrictedAfter = await page.evaluate(() => {
+      const space = window.__loeGame?.scene.keys.space;
+      return {
+        overlayVisible: space?.stationOverlay?.isVisible?.() ?? false,
+        statusLines: space?.statusMessages?.map?.((message) => message.text) ?? [],
+      };
+    });
+    assert(restrictedAfter.overlayVisible === false,
+      `Empire station should not open station comms for the player: ${JSON.stringify(restrictedAfter)}`);
+    assert(restrictedAfter.statusLines.some((line) => line.includes("denied access") || line.includes("denied")),
+      `Empire station denial should be surfaced to the player: ${JSON.stringify(restrictedAfter)}`);
+  }
 
   const smugglerRouteState = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
