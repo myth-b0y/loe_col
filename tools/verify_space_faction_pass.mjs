@@ -89,15 +89,29 @@ try {
     const debug = space.getDebugSnapshot();
     const primePools = debug.production.pools.filter((pool) => pool.kind === "prime-world");
     const zonePools = debug.production.pools.filter((pool) => pool.kind === "zone");
+    const zoneCoreRaceBySectorId = Object.fromEntries(space.galaxyDefinition.homeworlds.map((homeworld) => [homeworld.sectorId, homeworld.raceId]));
     return {
       factionCounts: debug.factionCounts,
       worldFactionCounts: debug.worldFactionCounts,
       war: debug.war,
+      zones: space.galaxyDefinition.zones.map((zone) => ({
+        id: zone.id,
+        name: zone.name,
+        sectorId: zone.sectorId,
+        coreSectorId: zone.coreSectorId,
+        coreRaceId: zoneCoreRaceBySectorId[zone.coreSectorId],
+        currentControllerId: zone.currentControllerId,
+        zoneState: zone.zoneState,
+        zoneCaptureProgress: zone.zoneCaptureProgress,
+        zoneConflictProgress: zone.zoneConflictProgress,
+        captureAttackerRaceId: zone.captureAttackerRaceId,
+      })),
       production: {
         zoneShipPoolCap: debug.production.zoneShipPoolCap,
         primeWorldBaseShipPoolCap: debug.production.primeWorldBaseShipPoolCap,
         primeWorldZoneBonusPerControlledZone: debug.production.primeWorldZoneBonusPerControlledZone,
         startingZoneShips: debug.production.startingZoneShips,
+        startingZoneShipsByAlignment: debug.production.startingZoneShipsByAlignment,
         startingPrimeWorldShips: debug.production.startingPrimeWorldShips,
         primePools: primePools.map((pool) => ({
           raceId: pool.raceId,
@@ -106,6 +120,15 @@ try {
           desiredReserveShips: pool.desiredReserveShips,
           activeShipCount: pool.activeShipCount,
           activeShips: pool.activeShips,
+        })),
+        zonePools: zonePools.map((pool) => ({
+          id: pool.id,
+          raceId: pool.raceId,
+          originZoneId: pool.originZoneId,
+          capacity: pool.capacity,
+          desiredDefenseShips: pool.desiredDefenseShips,
+          desiredReserveShips: pool.desiredReserveShips,
+          activeShipCount: pool.activeShipCount,
         })),
         zonePoolSample: zonePools.slice(0, 10).map((pool) => ({
           id: pool.id,
@@ -133,7 +156,34 @@ try {
   assert(initialSummary.production.primeWorldBaseShipPoolCap === 10, `Prime pool base cap must remain 10: ${JSON.stringify(initialSummary.production)}`);
   assert(initialSummary.production.primeWorldZoneBonusPerControlledZone === 1, `Prime zone bonus must remain +1 per controlled zone: ${JSON.stringify(initialSummary.production)}`);
   assert(initialSummary.production.startingZoneShips === 1, `Zone pools should start slower at 1 active ship: ${JSON.stringify(initialSummary.production)}`);
+  assert(initialSummary.production.startingZoneShipsByAlignment?.neutral === 1
+    && initialSummary.production.startingZoneShipsByAlignment?.republic === 2
+    && initialSummary.production.startingZoneShipsByAlignment?.empire === 3,
+    `Zone starting counts must be affiliation-specific: ${JSON.stringify(initialSummary.production)}`);
   assert(initialSummary.production.startingPrimeWorldShips === 5, `Prime Worlds should start at 5 active ships: ${JSON.stringify(initialSummary.production)}`);
+  const expectedStartingShipsForRace = (raceId) => (
+    raceId === initialSummary.war.empireRaceId
+      ? 3
+      : initialSummary.war.republicRaceIds.includes(raceId)
+        ? 2
+        : 1
+  );
+  const invalidStartingZonePools = initialSummary.production.zonePools.filter((pool) => (
+    pool.activeShipCount !== expectedStartingShipsForRace(pool.raceId)
+  ));
+  assert(invalidStartingZonePools.length === 0,
+    `Zone pools should initialize by current controller affiliation: ${JSON.stringify(invalidStartingZonePools.slice(0, 8))}`);
+  const empireHeldForeignZones = initialSummary.zones.filter((zone) => (
+    zone.currentControllerId === initialSummary.war.empireRaceId
+    && zone.coreRaceId !== initialSummary.war.empireRaceId
+  ));
+  assert(empireHeldForeignZones.length > 0,
+    `Empire should start with a small number of true foreign captured zones: ${JSON.stringify(initialSummary.zones.slice(0, 8))}`);
+  const invalidEmpireForeignPools = empireHeldForeignZones
+    .map((zone) => initialSummary.production.zonePools.find((pool) => pool.originZoneId === zone.id))
+    .filter((pool) => !pool || pool.raceId !== initialSummary.war.empireRaceId || pool.activeShipCount !== 3);
+  assert(invalidEmpireForeignPools.length === 0,
+    `Empire-held foreign zones should produce Empire-owned starting ships: ${JSON.stringify({ empireHeldForeignZones, invalidEmpireForeignPools })}`);
   assert(initialSummary.production.primePools.some((pool) => pool.raceId === initialSummary.war.empireRaceId && pool.desiredReserveShips > 0),
     `Empire Prime World should be building reserve attack capacity: ${JSON.stringify(initialSummary.production.primePools)}`);
   assert(initialSummary.production.zonePoolSample.every((pool) => pool.desiredReserveShips === 0),
@@ -210,6 +260,7 @@ try {
       zone.currentControllerId = zoneCoreRaceBySectorId[zone.coreSectorId];
       zone.zoneState = "stable";
       zone.zoneCaptureProgress = 0;
+      zone.zoneConflictProgress = 0;
       zone.captureAttackerRaceId = null;
     });
     targetZone.currentControllerId = war.empireRaceId;
@@ -425,6 +476,7 @@ try {
     targetZone.currentControllerId = war.empireRaceId;
     targetZone.zoneState = "stable";
     targetZone.zoneCaptureProgress = 0;
+    targetZone.zoneConflictProgress = 0;
     targetZone.captureAttackerRaceId = null;
     let sawTargetingResponse = false;
     let sawReclaimAssignments = false;
@@ -485,10 +537,38 @@ try {
     targetZone.currentControllerId = ownerRaceId;
     targetZone.zoneState = "capturing";
     targetZone.zoneCaptureProgress = 0.42;
+    targetZone.zoneConflictProgress = 0;
     targetZone.captureAttackerRaceId = war.empireRaceId;
+    const empirePrimePool = space.forceState.pools.find((pool) => pool.kind === "prime-world" && pool.raceId === war.empireRaceId);
+    if (empirePrimePool && !empirePrimePool.activeShips.some((ship) => ship.id === "verify-active-empire-capture:1")) {
+      Array.from({ length: 4 }, (_value, index) => {
+        empirePrimePool.activeShips.push({
+          id: `verify-active-empire-capture:${index + 1}`,
+          assetId: index === 0 ? "ship/attack-warship" : "ship/base-fighter",
+          role: index === 0 ? "attack-warship" : "base-fighter",
+          assignmentKind: "invade",
+          assignmentZoneId: targetZone.id,
+          slotKind: index === 0 ? "command" : "escort",
+          fleetId: "verify-active-empire-capture-fleet",
+          fleetGroupId: null,
+          fleetMode: "capture-force",
+          travelFromSystemId: empirePrimePool.originSystemId,
+          travelToSystemId: targetZone.systemId,
+          travelProgress: 1,
+          captureIntent: index === 0,
+        });
+      });
+    }
+    const empireRaceState = war.raceStates.find((raceState) => raceState.raceId === war.empireRaceId);
+    if (empireRaceState) {
+      empireRaceState.activeTargetZoneId = targetZone.id;
+      empireRaceState.activeTargetZoneIds = [targetZone.id];
+      empireRaceState.retargetCooldownRemainingMs = 999999;
+    }
     war.raceStates.forEach((raceState) => {
-      if (raceState.raceId === ownerRaceId || war.republicRaceIds.includes(raceState.raceId) || raceState.raceId === war.empireRaceId) {
+      if (raceState.raceId === ownerRaceId || war.republicRaceIds.includes(raceState.raceId)) {
         raceState.activeTargetZoneId = null;
+        raceState.activeTargetZoneIds = [];
         raceState.retargetCooldownRemainingMs = 0;
       }
     });
@@ -548,6 +628,7 @@ try {
     targetZone.currentControllerId = ownerRaceId;
     targetZone.zoneState = "capturing";
     targetZone.zoneCaptureProgress = 0.5;
+    targetZone.zoneConflictProgress = 0;
     targetZone.captureAttackerRaceId = war.empireRaceId;
     pool.activeShips = [];
     pool.spawnCooldownRemainingMs = 0;
@@ -595,6 +676,7 @@ try {
     targetZone.currentControllerId = defenderRaceId;
     targetZone.zoneState = "stable";
     targetZone.zoneCaptureProgress = 0;
+    targetZone.zoneConflictProgress = 0;
     targetZone.captureAttackerRaceId = null;
 
     space.forceState.pools.forEach((pool) => {

@@ -1901,7 +1901,10 @@ export class SpaceScene extends Phaser.Scene {
 
     this.galaxyDefinition.zones.forEach((zone) => {
       const previous = previousZoneStates.get(zone.id);
-      const wasActivelyContested = Boolean(previous?.captureAttackerRaceId && previous.zoneState === "capturing");
+      const wasActivelyContested = Boolean(
+        previous?.captureAttackerRaceId
+        && (previous.zoneState === "capturing" || previous.zoneState === "contested"),
+      );
       const isActivelyContested = isZoneActivelyContested(zone);
 
       if (!wasActivelyContested && !isActivelyContested) {
@@ -1957,7 +1960,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updateForceProduction(deltaMs: number): void {
-    const productionUpdate = advanceFactionForceProduction(this.forceState, this.galaxyDefinition, deltaMs);
+    const productionUpdate = advanceFactionForceProduction(this.forceState, this.galaxyDefinition, deltaMs, this.warState);
     if (!productionUpdate.changed) {
       return;
     }
@@ -5589,6 +5592,7 @@ export class SpaceScene extends Phaser.Scene {
             currentControllerId: zone.currentControllerId,
             zoneState: zone.zoneState,
             zoneCaptureProgress: Number(zone.zoneCaptureProgress.toFixed(3)),
+            zoneConflictProgress: Number(zone.zoneConflictProgress.toFixed(3)),
             captureAttackerRaceId: zone.captureAttackerRaceId,
           })),
       },
@@ -5651,7 +5655,7 @@ export class SpaceScene extends Phaser.Scene {
       destroyedFactionShips: this.destroyedFactionShips,
       factionCounts: worldFactionCounts,
       activeFactionCounts,
-      production: getFactionForceDebugSnapshot(this.forceState, this.galaxyDefinition),
+      production: getFactionForceDebugSnapshot(this.forceState, this.galaxyDefinition, this.warState),
       activeFieldCellKeys: [...this.activeFieldCellKeys],
       activeShipCellKeys: [...this.activeShipCellKeys],
       activeBackdropStarCells: this.activeBackdropStarCells.size,

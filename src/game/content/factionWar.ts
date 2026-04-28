@@ -80,6 +80,8 @@ const MAX_EMPIRE_STARTING_BONUS_ZONES = 4;
 const MIN_EMPIRE_STARTING_BONUS_ZONES = 2;
 const MAX_RACE_ACTIVE_FRONTS = 3;
 const DEFENSE_RECOVERY_RATE = 1.1;
+const STRATEGIC_ZONE_BATTLE_DURATION_MS = 24000;
+const STRATEGIC_ZONE_BATTLE_ADVANTAGE_SCALE = 1.7;
 
 class SeededRandom {
   private seed: number;
@@ -254,7 +256,8 @@ function isZoneUnderCapturePressure(zone: Pick<GalaxyZoneRecord, "zoneState" | "
 export function isZoneActivelyContested(
   zone: Pick<GalaxyZoneRecord, "zoneState" | "captureAttackerRaceId">,
 ): boolean {
-  return zone.zoneState === "capturing" && zone.captureAttackerRaceId !== null;
+  return (zone.zoneState === "capturing" || zone.zoneState === "contested")
+    && zone.captureAttackerRaceId !== null;
 }
 
 function getZoneSystemDistance(
@@ -363,9 +366,14 @@ function chooseBestDefenseTargetZone(
       const controllerRaceId = getZoneControllerRaceId(zone, warState);
       const coreRaceId = getZoneCoreRaceId(zone);
       const distance = getZoneSystemDistance(galaxy, sourceZoneId, zone.id);
-      const effectiveMaxDistance = alignment === "republic" && controllerRaceId !== warState.empireRaceId
-        ? maxDistance * 2.2
-        : maxDistance;
+      const activeEmpireCapture = alignment === "republic"
+        && zone.captureAttackerRaceId === warState.empireRaceId
+        && controllerRaceId !== warState.empireRaceId;
+      const effectiveMaxDistance = activeEmpireCapture
+        ? maxDistance * 5.5
+        : alignment === "republic" && controllerRaceId !== warState.empireRaceId
+          ? maxDistance * 2.2
+          : maxDistance;
       if (distance === null || distance > effectiveMaxDistance) {
         return null;
       }
@@ -395,6 +403,7 @@ function chooseBestDefenseTargetZone(
       score += zone.zoneCaptureProgress * 320;
       score += controllerRaceId === raceId ? 180 : 0;
       score += coreRaceId === raceId ? 140 : 0;
+      score += activeEmpireCapture ? 520 : 0;
       if (alignment === "republic" && controllerRaceId !== raceId && controllerRaceId !== warState.empireRaceId) {
         score += 170;
       }
@@ -1024,7 +1033,7 @@ function applyPoolStrategy(
   });
 
   primePools.forEach((pool) => {
-    const capacity = getFactionForcePoolCapacity(galaxy, pool);
+    const capacity = getFactionForcePoolCapacity(galaxy, pool, warState);
     const alignment = getRaceAllianceStatus(warState, pool.raceId);
     const raceState = getRaceStateById(warState, pool.raceId);
     const doctrine = getCommanderDoctrine(warState, pool.raceId);
@@ -1119,6 +1128,71 @@ function getDefensePowerByZone(forceState: FactionForceState): Map<string, numbe
   return defenseByZone;
 }
 
+function removeStrategicZoneShip(
+  forceState: FactionForceState,
+  zoneId: string,
+  raceId: RaceId,
+): boolean {
+  const candidates: { pool: FactionForcePoolRecord; shipIndex: number; shipId: string; score: number }[] = [];
+  forceState.pools.forEach((pool) => {
+    if (pool.raceId !== raceId) {
+      return;
+    }
+
+    pool.activeShips.forEach((ship, shipIndex) => {
+      if (ship.assignmentZoneId !== zoneId || ship.travelProgress < 0.995) {
+        return;
+      }
+
+      const isCommandShip = ship.slotKind === "command" || isFactionAssetCommandEligible(ship.assetId);
+      const score = (isCommandShip ? 100 : 0)
+        + getFactionAssetWarPower(ship.assetId)
+        + (getFactionAssetDefenseValue(ship.assetId) * 0.4);
+      candidates.push({ pool, shipIndex, shipId: ship.id, score });
+    });
+  });
+
+  const selected = candidates.sort((left, right) => (left.score - right.score) || left.shipId.localeCompare(right.shipId))[0] ?? null;
+  if (!selected) {
+    return false;
+  }
+
+  selected.pool.activeShips.splice(selected.shipIndex, 1);
+  return true;
+}
+
+function advanceStrategicZoneBattle(
+  zone: GalaxyZoneRecord,
+  forceState: FactionForceState,
+  attackerRaceId: RaceId,
+  defendingRaceId: RaceId,
+  attackPower: number,
+  defensePower: number,
+  deltaMs: number,
+): boolean {
+  const totalPower = Math.max(0.25, attackPower + defensePower);
+  const attackerShare = attackPower / totalPower;
+  const advantage = Math.abs(attackerShare - 0.5) * 2;
+  zone.zoneConflictProgress = Math.min(
+    1.25,
+    zone.zoneConflictProgress
+      + (deltaMs / STRATEGIC_ZONE_BATTLE_DURATION_MS) * (1 + (advantage * STRATEGIC_ZONE_BATTLE_ADVANTAGE_SCALE)),
+  );
+
+  if (zone.zoneConflictProgress < 1) {
+    return true;
+  }
+
+  zone.zoneConflictProgress = Math.max(0, zone.zoneConflictProgress - 1);
+  const losingRaceId = attackerShare >= 0.5 ? defendingRaceId : attackerRaceId;
+  if (removeStrategicZoneShip(forceState, zone.id, losingRaceId)) {
+    return true;
+  }
+
+  const fallbackRaceId = losingRaceId === defendingRaceId ? attackerRaceId : defendingRaceId;
+  return removeStrategicZoneShip(forceState, zone.id, fallbackRaceId);
+}
+
 function resolveZoneCaptureControllerRaceId(
   zone: GalaxyZoneRecord,
   warState: FactionWarState,
@@ -1141,6 +1215,7 @@ function advanceZoneCaptures(
   const attackPresenceByZone = getZoneCommanderPresence(forceState);
   const defensePowerByZone = getDefensePowerByZone(forceState);
   let changed = false;
+  let forceLossesChanged = false;
 
   galaxy.zones.forEach((zone) => {
     const defendingRaceId = getZoneControllerRaceId(zone, warState);
@@ -1156,12 +1231,11 @@ function advanceZoneCaptures(
     const defendingPower = (defensePowerByZone.get(zone.id) ?? 0) + (zone.isPrimeWorldZone ? 1.35 : 0);
 
     if (!strongestAttacker) {
-      if (zone.zoneCaptureProgress > 0 || zone.zoneState !== "stable" || zone.captureAttackerRaceId) {
+      if (zone.zoneCaptureProgress > 0 || zone.zoneConflictProgress > 0 || zone.zoneState !== "stable" || zone.captureAttackerRaceId) {
         zone.zoneCaptureProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * DEFENSE_RECOVERY_RATE);
+        zone.zoneConflictProgress = Math.max(0, zone.zoneConflictProgress - (deltaMs / STRATEGIC_ZONE_BATTLE_DURATION_MS) * DEFENSE_RECOVERY_RATE);
         zone.zoneState = zone.zoneCaptureProgress > 0 ? "contested" : "stable";
-        if (zone.zoneCaptureProgress <= 0) {
-          zone.captureAttackerRaceId = null;
-        }
+        zone.captureAttackerRaceId = null;
         changed = true;
       }
       return;
@@ -1169,11 +1243,28 @@ function advanceZoneCaptures(
 
     const [attackerRaceId, attackPower] = strongestAttacker;
     const defenseFloor = BASE_ZONE_DEFENSE_POWER + (zone.isPrimeWorldZone ? PRIME_WORLD_DEFENSE_POWER : 0);
-    const activeDefendersPresent = (presence?.powerByRaceId.get(defendingRaceId) ?? 0) > 0.01;
+    const activeDefenderPower = presence?.powerByRaceId.get(defendingRaceId) ?? 0;
+    const activeDefendersPresent = activeDefenderPower > 0.01;
     if (activeDefendersPresent) {
-      if (zone.zoneState !== "contested") {
-        zone.zoneState = zone.zoneCaptureProgress > 0 ? "contested" : "stable";
+      if (
+        zone.zoneState !== "contested"
+        || zone.captureAttackerRaceId !== attackerRaceId
+      ) {
+        zone.zoneState = "contested";
+        zone.captureAttackerRaceId = attackerRaceId;
         changed = true;
+      }
+      if (advanceStrategicZoneBattle(
+        zone,
+        forceState,
+        attackerRaceId,
+        defendingRaceId,
+        attackPower,
+        activeDefenderPower + defendingPower + defenseFloor,
+        deltaMs,
+      )) {
+        changed = true;
+        forceLossesChanged = true;
       }
       return;
     }
@@ -1181,12 +1272,15 @@ function advanceZoneCaptures(
     const capturePressure = attackPower - (defendingPower + defenseFloor);
     if (capturePressure <= MIN_CAPTURE_PRESSURE) {
       const nextProgress = Math.max(0, zone.zoneCaptureProgress - (deltaMs / BASE_ZONE_CAPTURE_DURATION_MS) * 0.95);
-      if (nextProgress !== zone.zoneCaptureProgress || zone.zoneState !== "contested") {
+      if (
+        nextProgress !== zone.zoneCaptureProgress
+        || zone.zoneState !== "contested"
+        || zone.captureAttackerRaceId !== attackerRaceId
+      ) {
         zone.zoneCaptureProgress = nextProgress;
-        zone.zoneState = nextProgress > 0 ? "contested" : "stable";
-        if (nextProgress <= 0) {
-          zone.captureAttackerRaceId = null;
-        }
+        zone.zoneConflictProgress = Math.max(0, zone.zoneConflictProgress - (deltaMs / STRATEGIC_ZONE_BATTLE_DURATION_MS));
+        zone.zoneState = "contested";
+        zone.captureAttackerRaceId = attackerRaceId;
         changed = true;
       }
       return;
@@ -1199,6 +1293,7 @@ function advanceZoneCaptures(
       zone.zoneCaptureProgress = Math.max(0.05, zone.zoneCaptureProgress * 0.2);
       changed = true;
     }
+    zone.zoneConflictProgress = 0;
     zone.zoneCaptureProgress = Math.min(1, zone.zoneCaptureProgress + progressGain);
     zone.zoneState = "capturing";
     changed = true;
@@ -1212,6 +1307,7 @@ function advanceZoneCaptures(
       zone.currentControllerId = nextControllerRaceId;
     }
     zone.zoneCaptureProgress = 0;
+    zone.zoneConflictProgress = 0;
     zone.zoneState = "stable";
     zone.captureAttackerRaceId = null;
     const attackerRaceState = warState.raceStates.find((candidate) => candidate.raceId === attackerRaceId);
@@ -1224,6 +1320,10 @@ function advanceZoneCaptures(
     }
     capturedZoneIds.push(zone.id);
   });
+
+  if (forceLossesChanged && rebuildFactionCommanderFleets(forceState)) {
+    changed = true;
+  }
 
   return {
     changed,
@@ -1288,6 +1388,7 @@ export function applyFactionWarStartingOwnership(
     zone.currentControllerId = warState.empireRaceId;
     zone.zoneState = "stable";
     zone.zoneCaptureProgress = 0;
+    zone.zoneConflictProgress = 0;
     zone.captureAttackerRaceId = null;
     changed = true;
   });
@@ -1304,11 +1405,11 @@ export function normalizeFactionWarState(
   source: Partial<FactionWarState> | undefined,
   galaxy: GalaxyDefinition,
 ): FactionWarState {
-  const fallback = createFactionWarState(galaxy);
   if (!source) {
-    return fallback;
+    return createFactionWarState(galaxy);
   }
 
+  const fallback = chooseFallbackWarState(galaxy);
   const empireRaceId = isRaceId(source.empireRaceId) ? source.empireRaceId : fallback.empireRaceId;
   const republicRaceIds = Array.isArray(source.republicRaceIds)
     ? source.republicRaceIds.filter((raceId, index, values): raceId is RaceId => isRaceId(raceId) && raceId !== empireRaceId && values.indexOf(raceId) === index).slice(0, 2)

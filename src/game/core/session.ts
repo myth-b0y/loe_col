@@ -473,7 +473,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
     },
     galaxy,
     war,
-    forces: createFactionForceState(galaxy),
+    forces: createFactionForceState(galaxy, war),
     ship: createDefaultShipState(profileRaceId, galaxy),
   };
 }
@@ -578,7 +578,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
     },
     galaxy: normalizedGalaxy,
     war: normalizedWar,
-    forces: normalizeFactionForceState(parsed.forces as Partial<FactionForceState> | undefined, normalizedGalaxy),
+    forces: normalizeFactionForceState(parsed.forces as Partial<FactionForceState> | undefined, normalizedGalaxy, normalizedWar),
     ship: {
       ...createDefaultShipState(profile.raceId, normalizedGalaxy),
       ...parsed.ship,
@@ -820,7 +820,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   setGalaxyDefinition(galaxy: GalaxyDefinition, emit = false): void {
     this.saveData.galaxy = normalizeGalaxyDefinition(galaxy, galaxy.seed);
     this.saveData.war = normalizeFactionWarState(this.saveData.war, this.saveData.galaxy);
-    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy);
+    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
     if (emit) {
       this.emit("save-changed", this.saveData);
     }
@@ -832,6 +832,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   setFactionWarState(warState: FactionWarState, emit = false): void {
     this.saveData.war = normalizeFactionWarState(warState, this.saveData.galaxy);
+    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
     if (emit) {
       this.emit("save-changed", this.saveData);
     }
@@ -842,7 +843,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   setFactionForceState(forceState: FactionForceState, emit = false): void {
-    this.saveData.forces = normalizeFactionForceState(forceState, this.saveData.galaxy);
+    this.saveData.forces = normalizeFactionForceState(forceState, this.saveData.galaxy, this.saveData.war);
     if (emit) {
       this.emit("save-changed", this.saveData);
     }

@@ -12,6 +12,7 @@ import {
 import { type RaceId } from "./items";
 
 export type FactionForcePoolKind = "zone" | "prime-world";
+export type FactionForceAllianceStatus = "empire" | "neutral" | "republic";
 export type FactionForceShipRole = "base-fighter" | "support-fighter" | "attack-warship" | "defense-warship";
 export type FactionForceAssignmentKind = "defend" | "invade" | "reclaim";
 export type FactionForceFleetMode =
@@ -133,6 +134,7 @@ export type FactionForceDebugSnapshot = {
   primeWorldDefenseTarget: number;
   zoneDefenseTarget: number;
   startingZoneShips: number;
+  startingZoneShipsByAlignment: Record<FactionForceAllianceStatus, number>;
   startingPrimeWorldShips: number;
   fleetSlots: {
     command: number;
@@ -154,7 +156,12 @@ export const PRIME_WORLD_BASE_SHIP_POOL_CAP = 10;
 export const PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE = 1;
 export const PRIME_WORLD_DEFENSE_TARGET = 3;
 export const ZONE_DEFENSE_TARGET = 3;
-export const STARTING_ZONE_SHIP_COUNT = 1;
+export const STARTING_ZONE_SHIP_COUNTS: Record<FactionForceAllianceStatus, number> = {
+  neutral: 1,
+  republic: 2,
+  empire: 3,
+};
+export const STARTING_ZONE_SHIP_COUNT = STARTING_ZONE_SHIP_COUNTS.neutral;
 export const STARTING_PRIME_WORLD_SHIP_COUNT = 5;
 export const FLEET_COMMAND_SLOT_COUNT = 1;
 export const FLEET_ESCORT_SLOT_COUNT = 4;
@@ -193,6 +200,28 @@ const ZONE_RESERVE_ROSTER: readonly string[] = [
   "ship/defense-warship",
 ] as const;
 
+type FactionForceWarStateLike = {
+  empireRaceId?: RaceId | null;
+  republicRaceIds?: RaceId[] | readonly RaceId[] | null;
+};
+
+function getForceAllianceStatus(warState: FactionForceWarStateLike | null | undefined, raceId: RaceId): FactionForceAllianceStatus {
+  if (warState?.empireRaceId === raceId) {
+    return "empire";
+  }
+  if (warState?.republicRaceIds?.includes(raceId)) {
+    return "republic";
+  }
+  return "neutral";
+}
+
+function getStartingZoneShipCountForRace(
+  warState: FactionForceWarStateLike | null | undefined,
+  raceId: RaceId,
+): number {
+  return STARTING_ZONE_SHIP_COUNTS[getForceAllianceStatus(warState, raceId)];
+}
+
 function isRaceId(value: unknown): value is RaceId {
   return typeof value === "string" && GALAXY_SECTORS.some((sector) => sector.raceId === value);
 }
@@ -230,8 +259,23 @@ function getFallbackRaceForZone(zone: GalaxyZoneRecord): RaceId {
     ?? GALAXY_SECTORS[0].raceId;
 }
 
-function getRaceForZoneController(zone: GalaxyZoneRecord): RaceId {
-  return isRaceId(zone.currentControllerId) ? zone.currentControllerId : getFallbackRaceForZone(zone);
+function getRaceForZoneController(
+  zone: GalaxyZoneRecord,
+  warState?: FactionForceWarStateLike | null,
+): RaceId {
+  if (isRaceId(zone.currentControllerId)) {
+    return zone.currentControllerId;
+  }
+  if (zone.currentControllerId === "empire" && isRaceId(warState?.empireRaceId)) {
+    return warState.empireRaceId;
+  }
+  if (zone.currentControllerId === "republic") {
+    const coreRaceId = getFallbackRaceForZone(zone);
+    return warState?.republicRaceIds?.includes(coreRaceId)
+      ? coreRaceId
+      : warState?.republicRaceIds?.[0] ?? coreRaceId;
+  }
+  return getFallbackRaceForZone(zone);
 }
 
 function createShipId(poolId: string, serial: number): string {
@@ -331,11 +375,12 @@ function createActiveShipState(
   };
 }
 
-function createZonePool(zone: GalaxyZoneRecord): FactionForcePoolRecord {
+function createZonePool(zone: GalaxyZoneRecord, warState?: FactionForceWarStateLike | null): FactionForcePoolRecord {
+  const raceId = getRaceForZoneController(zone, warState);
   const pool: FactionForcePoolRecord = {
     id: `zone-pool:${zone.id}`,
     kind: "zone",
-    raceId: getRaceForZoneController(zone),
+    raceId,
     sectorId: zone.sectorId,
     originZoneId: zone.id,
     originSystemId: zone.systemId,
@@ -347,7 +392,7 @@ function createZonePool(zone: GalaxyZoneRecord): FactionForcePoolRecord {
     desiredReserveShips: 0,
   };
 
-  const startingAssets = getDesiredDefenseAssets("zone", STARTING_ZONE_SHIP_COUNT);
+  const startingAssets = getDesiredDefenseAssets("zone", getStartingZoneShipCountForRace(warState, raceId));
   pool.activeShips = startingAssets.map((assetId, index) => createActiveShipState(
     pool,
     createShipId(pool.id, index + 1),
@@ -459,13 +504,21 @@ function comparePoolPriority(left: FactionForcePoolRecord, right: FactionForcePo
   return left.id.localeCompare(right.id);
 }
 
-export function getControlledZoneCountForRace(galaxy: GalaxyDefinition, raceId: RaceId): number {
-  return galaxy.zones.reduce((count, zone) => count + (zone.currentControllerId === raceId ? 1 : 0), 0);
+export function getControlledZoneCountForRace(
+  galaxy: GalaxyDefinition,
+  raceId: RaceId,
+  warState?: FactionForceWarStateLike | null,
+): number {
+  return galaxy.zones.reduce((count, zone) => count + (getRaceForZoneController(zone, warState) === raceId ? 1 : 0), 0);
 }
 
-export function getFactionForcePoolCapacity(galaxy: GalaxyDefinition, pool: Pick<FactionForcePoolRecord, "kind" | "raceId">): number {
+export function getFactionForcePoolCapacity(
+  galaxy: GalaxyDefinition,
+  pool: Pick<FactionForcePoolRecord, "kind" | "raceId">,
+  warState?: FactionForceWarStateLike | null,
+): number {
   if (pool.kind === "prime-world") {
-    return PRIME_WORLD_BASE_SHIP_POOL_CAP + (getControlledZoneCountForRace(galaxy, pool.raceId) * PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE);
+    return PRIME_WORLD_BASE_SHIP_POOL_CAP + (getControlledZoneCountForRace(galaxy, pool.raceId, warState) * PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE);
   }
   return ZONE_SHIP_POOL_CAP;
 }
@@ -734,8 +787,11 @@ export function rebuildFactionCommanderFleets(forceState: FactionForceState): bo
   return changed;
 }
 
-export function createFactionForceState(galaxy: GalaxyDefinition): FactionForceState {
-  const zonePools = galaxy.zones.map((zone) => createZonePool(zone));
+export function createFactionForceState(
+  galaxy: GalaxyDefinition,
+  warState?: FactionForceWarStateLike | null,
+): FactionForceState {
+  const zonePools = galaxy.zones.map((zone) => createZonePool(zone, warState));
   const primePools = galaxy.homeworlds
     .map((homeworld) => createPrimeWorldPool(galaxy, homeworld.raceId))
     .filter((pool): pool is FactionForcePoolRecord => pool !== null);
@@ -751,8 +807,9 @@ export function createFactionForceState(galaxy: GalaxyDefinition): FactionForceS
 export function normalizeFactionForceState(
   forceState: Partial<FactionForceState> | undefined,
   galaxy: GalaxyDefinition,
+  warState?: FactionForceWarStateLike | null,
 ): FactionForceState {
-  const fallback = createFactionForceState(galaxy);
+  const fallback = createFactionForceState(galaxy, warState);
   if (!forceState || !Array.isArray(forceState.pools)) {
     return fallback;
   }
@@ -768,7 +825,7 @@ export function normalizeFactionForceState(
   const normalized: FactionForceState = {
     pools: fallback.pools.map((defaultPool) => {
       const sourcePool = sourcePools.get(defaultPool.id);
-      const capacity = getFactionForcePoolCapacity(galaxy, defaultPool);
+      const capacity = getFactionForcePoolCapacity(galaxy, defaultPool, warState);
       const desiredDefenseShips = typeof sourcePool?.desiredDefenseShips === "number" && Number.isFinite(sourcePool.desiredDefenseShips)
         ? Math.max(0, Math.round(sourcePool.desiredDefenseShips))
         : defaultPool.desiredDefenseShips;
@@ -821,6 +878,7 @@ export function advanceFactionForceProduction(
   forceState: FactionForceState,
   galaxy: GalaxyDefinition,
   deltaMs: number,
+  warState?: FactionForceWarStateLike | null,
 ): { changed: boolean; spawnedShipIds: string[] } {
   const safeDeltaMs = Math.max(0, Math.round(deltaMs));
   if (safeDeltaMs <= 0) {
@@ -842,7 +900,7 @@ export function advanceFactionForceProduction(
 
   const orderedPools = [...forceState.pools].sort(comparePoolPriority);
   orderedPools.forEach((pool) => {
-    const capacity = getFactionForcePoolCapacity(galaxy, pool);
+    const capacity = getFactionForcePoolCapacity(galaxy, pool, warState);
     const desiredDefenseShips = Math.min(pool.desiredDefenseShips, capacity);
     const desiredReserveShips = Math.min(pool.desiredReserveShips, Math.max(0, capacity - desiredDefenseShips));
     const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
@@ -876,7 +934,7 @@ export function advanceFactionForceProduction(
   });
 
   orderedPools.forEach((pool) => {
-    const capacity = getFactionForcePoolCapacity(galaxy, pool);
+    const capacity = getFactionForcePoolCapacity(galaxy, pool, warState);
     const desiredDefenseShips = Math.min(pool.desiredDefenseShips, capacity);
     const desiredReserveShips = Math.min(pool.desiredReserveShips, Math.max(0, capacity - desiredDefenseShips));
     const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
@@ -947,6 +1005,7 @@ export function getActiveFactionForceShips(forceState: FactionForceState): Facti
 export function getFactionForceDebugSnapshot(
   forceState: FactionForceState,
   galaxy: GalaxyDefinition,
+  warState?: FactionForceWarStateLike | null,
 ): FactionForceDebugSnapshot {
   const pools = [...forceState.pools]
     .sort(comparePoolPriority)
@@ -960,12 +1019,12 @@ export function getFactionForceDebugSnapshot(
       activeShipCount: pool.activeShips.length,
       activeShipIds: pool.activeShips.map((ship) => ship.id),
       activeShips: pool.activeShips.map((ship) => ({ ...ship })),
-      capacity: getFactionForcePoolCapacity(galaxy, pool),
+      capacity: getFactionForcePoolCapacity(galaxy, pool, warState),
       desiredDefenseShips: pool.desiredDefenseShips,
       desiredReserveShips: pool.desiredReserveShips,
       productionAssetId: pool.productionAssetId,
       spawnCooldownRemainingMs: Math.round(pool.spawnCooldownRemainingMs),
-      controlledZoneCount: getControlledZoneCountForRace(galaxy, pool.raceId),
+      controlledZoneCount: getControlledZoneCountForRace(galaxy, pool.raceId, warState),
     }));
 
   return {
@@ -975,6 +1034,7 @@ export function getFactionForceDebugSnapshot(
     primeWorldDefenseTarget: PRIME_WORLD_DEFENSE_TARGET,
     zoneDefenseTarget: ZONE_DEFENSE_TARGET,
     startingZoneShips: STARTING_ZONE_SHIP_COUNT,
+    startingZoneShipsByAlignment: { ...STARTING_ZONE_SHIP_COUNTS },
     startingPrimeWorldShips: STARTING_PRIME_WORLD_SHIP_COUNT,
     fleetSlots: {
       command: FLEET_COMMAND_SLOT_COUNT,

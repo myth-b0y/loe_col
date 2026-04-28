@@ -667,16 +667,28 @@ try {
 
   const homeworldSpaceState = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
+    const snapshot = space?.getDebugSnapshot?.() ?? null;
+    const homeworldRaceId = space?.galaxyDefinition?.homeworlds?.[0]?.raceId ?? null;
+    const homeworldAlignment = homeworldRaceId ? snapshot?.war?.alignments?.[homeworldRaceId] ?? "neutral" : "neutral";
+    const expectedGuardFactionId = homeworldAlignment === "empire"
+      ? "empire"
+      : homeworldAlignment === "republic"
+        ? "republic"
+        : "homeguard";
     return {
-      snapshot: space?.getDebugSnapshot?.() ?? null,
-      nearestShips: space?.getDebugSnapshot?.()?.nearestShips ?? [],
+      snapshot,
+      expectedGuardFactionId,
+      nearestShips: snapshot?.nearestShips ?? [],
     };
   });
 
   assert((homeworldSpaceState.snapshot?.activeCelestialSystems ?? 0) > 0,
     `Homeworld system did not activate in space: ${JSON.stringify(homeworldSpaceState.snapshot)}`);
-  assert((homeworldSpaceState.snapshot?.activeFactionCounts?.homeguard ?? 0) > 0,
-    `Homeworld guard fleet did not activate near the home system: ${JSON.stringify(homeworldSpaceState.snapshot?.activeFactionCounts)}`);
+  assert((homeworldSpaceState.snapshot?.activeFactionCounts?.[homeworldSpaceState.expectedGuardFactionId] ?? 0) > 0,
+    `Homeworld guard fleet did not activate near the home system: ${JSON.stringify({
+      expectedGuardFactionId: homeworldSpaceState.expectedGuardFactionId,
+      activeFactionCounts: homeworldSpaceState.snapshot?.activeFactionCounts,
+    })}`);
   assert((homeworldRadarState?.contacts ?? []).some((contact) => contact.kind === "star"),
     `Radar did not expose a nearby star contact near the home system: ${JSON.stringify(homeworldRadarState)}`);
   assert((homeworldRadarState?.contacts ?? []).every((contact) => contact.kind !== "planet"),

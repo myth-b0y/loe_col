@@ -69,6 +69,7 @@ async function getSpaceSeeds(page) {
     const fieldSeeds = space.worldDefinition?.fieldSeeds ?? [];
     const liveShips = space.factionShips ?? [];
     const galaxy = window.__loeSession?.getGalaxyDefinition?.() ?? null;
+    const debug = space.getDebugSnapshot?.() ?? null;
     const pickSeed = (factionId) => factionSeeds.find((seed) => seed.factionId === factionId) ?? null;
     const pickLiveShip = (factionId) => {
       const liveShip = liveShips.find((ship) => ship.factionId === factionId) ?? null;
@@ -88,9 +89,16 @@ async function getSpaceSeeds(page) {
     };
     const homeworld = galaxy?.homeworlds?.[0] ?? null;
     const homeSystem = galaxy?.systems?.find?.((system) => system.id === homeworld?.systemId) ?? null;
+    const homeworldAlignment = homeworld?.raceId ? debug?.war?.alignments?.[homeworld.raceId] ?? "neutral" : "neutral";
+    const homeGuardFactionId = homeworldAlignment === "empire"
+      ? "empire"
+      : homeworldAlignment === "republic"
+        ? "republic"
+        : "homeguard";
     return {
       enemy: pickLiveShip("pirate") ?? pickSeed("pirate"),
-      guard: pickLiveShip("homeguard") ?? pickSeed("homeguard"),
+      guard: pickLiveShip(homeGuardFactionId) ?? pickSeed(homeGuardFactionId),
+      homeGuardFactionId,
       neutral: pickLiveShip("smuggler") ?? pickSeed("smuggler"),
       asteroid: fieldSeeds.find((seed) => seed.kind === "asteroid") ?? null,
       largeAsteroid: fieldSeeds.find((seed) => seed.kind === "asteroid" && seed.isLarge) ?? null,
@@ -391,7 +399,7 @@ try {
 
   const guardMoveState = await focusOnFactionShip(
     page,
-    "homeguard",
+    initialSpaceSeeds.homeGuardFactionId,
     "space-radar-homeguard.png",
     initialSpaceSeeds.homeSystem
       ? { x: initialSpaceSeeds.homeSystem.x, y: initialSpaceSeeds.homeSystem.y }

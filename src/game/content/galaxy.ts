@@ -86,6 +86,7 @@ export type GalaxyZoneRecord = {
   currentControllerId: GalaxyZoneControllerId;
   zoneState: GalaxyZoneState;
   zoneCaptureProgress: number;
+  zoneConflictProgress: number;
   captureAttackerRaceId: RaceId | null;
 };
 
@@ -1831,6 +1832,7 @@ function createZonesForSystems(
       currentControllerId: sector.raceId,
       zoneState: "stable",
       zoneCaptureProgress: 0,
+      zoneConflictProgress: 0,
       captureAttackerRaceId: null,
     };
   });
@@ -2009,6 +2011,7 @@ export function normalizeGalaxyDefinition(
         currentControllerId: (getGalaxySectorById(system.sectorId) ?? GALAXY_SECTORS[0]).raceId,
         zoneState: "stable" as const,
         zoneCaptureProgress: 0,
+        zoneConflictProgress: 0,
         captureAttackerRaceId: null,
       };
       const sourceZone = sourceZones.find((zone) => zone.systemId === system.id || zone.id === system.zoneId);
@@ -2038,6 +2041,9 @@ export function normalizeGalaxyDefinition(
         zoneState: normalizeGalaxyZoneState(sourceZone?.zoneState),
         zoneCaptureProgress: typeof sourceZone?.zoneCaptureProgress === "number" && Number.isFinite(sourceZone.zoneCaptureProgress)
           ? Math.max(0, Math.min(1, sourceZone.zoneCaptureProgress))
+          : 0,
+        zoneConflictProgress: typeof sourceZone?.zoneConflictProgress === "number" && Number.isFinite(sourceZone.zoneConflictProgress)
+          ? Math.max(0, Math.min(1, sourceZone.zoneConflictProgress))
           : 0,
         captureAttackerRaceId: isRaceId(sourceZone?.captureAttackerRaceId)
           ? sourceZone.captureAttackerRaceId
