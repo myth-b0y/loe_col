@@ -1,4 +1,5 @@
 import {
+  getGalaxyControllerPalette,
   GALAXY_SECTORS,
   GALAXY_WORLD_CONFIG,
   getGalaxySectorAtPosition,
@@ -1538,6 +1539,7 @@ function createSeededGuardFormation(
   const factionId = warState
     ? getSpaceFactionIdForRace(warState, leader.raceId)
     : "homeguard";
+  const controllerPalette = getGalaxyControllerPalette(leader.raceId);
   const formationOffsets = createFormationOffsets(factionId, groupShips.length, leader.raceId);
   const faction = getSpaceFactionConfig(factionId, leader.raceId);
   const largestMemberRadius = groupShips.reduce((largest, ship) => {
@@ -1607,9 +1609,9 @@ function createSeededGuardFormation(
         rotation: heading + Math.PI * 0.5,
         patrolX: patrolPoint.x,
         patrolY: patrolPoint.y,
-        customColor: anchorSector.color,
-        customTrimColor: anchorSector.borderColor,
-        customGlowColor: anchorSector.borderColor,
+        customColor: controllerPalette.color,
+        customTrimColor: controllerPalette.borderColor,
+        customGlowColor: controllerPalette.borderColor,
         guardAnchorX: travelAnchor.guardAnchor.x,
         guardAnchorY: travelAnchor.guardAnchor.y,
         guardRadius: isTraveling
@@ -1659,9 +1661,9 @@ function createSeededGuardFormation(
       rotation: Math.PI * 0.5,
       patrolX: point.x,
       patrolY: point.y,
-      customColor: anchorSector.color,
-      customTrimColor: anchorSector.borderColor,
-      customGlowColor: anchorSector.borderColor,
+      customColor: controllerPalette.color,
+      customTrimColor: controllerPalette.borderColor,
+      customGlowColor: controllerPalette.borderColor,
       guardAnchorX: travelAnchor.guardAnchor.x,
       guardAnchorY: travelAnchor.guardAnchor.y,
       guardRadius: ((leader.kind === "prime-world" ? 560 : 420) * raceProfile.guardRadiusMultiplier) + raceProfile.interceptPadding,

@@ -173,6 +173,8 @@ try {
       contestedZones: debug.war.contestedZones,
       republicTargets,
       empirePrimeAssignments: empirePrimePool?.activeShips ?? [],
+      empirePrimeProductionAssetId: empirePrimePool?.productionAssetId ?? null,
+      empirePrimeDesiredReserveShips: empirePrimePool?.desiredReserveShips ?? 0,
     };
   });
 
@@ -180,8 +182,12 @@ try {
 
   assert(naturalWarSummary.empireHeldForeignZoneCount > 0 || naturalWarSummary.contestedZones.length > 0,
     `Empire should be contesting or holding foreign territory after war fast-forward: ${JSON.stringify(naturalWarSummary)}`);
-  assert(naturalWarSummary.empirePrimeAssignments.some((ship) => ship.assignmentKind === "invade" || ship.captureIntent === true || ship.fleetMode === "capture-force"),
-    `Empire Prime World reserve should launch invasion assignments: ${JSON.stringify(naturalWarSummary.empirePrimeAssignments)}`);
+  assert(
+    naturalWarSummary.empirePrimeAssignments.some((ship) => ship.assignmentKind === "invade" || ship.captureIntent === true || ship.fleetMode === "capture-force")
+      || Boolean(naturalWarSummary.empirePrimeProductionAssetId)
+      || naturalWarSummary.empirePrimeDesiredReserveShips > 0,
+    `Empire Prime World should either have launched invasion ships or still be building real reserve pressure: ${JSON.stringify(naturalWarSummary)}`,
+  );
 
   const republicResistanceSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;

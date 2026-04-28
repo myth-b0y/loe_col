@@ -13,7 +13,7 @@ import {
   getGalaxySectorAtPosition,
   getGalaxySectorDisplayLabel,
   getGalaxySectorTravelLabel,
-  getGalaxyTerritoryEntryLabel,
+  getGalaxyTerritoryEntryLabelAtPosition,
   isGalaxyDeepSpaceAtPosition,
   type GalaxyDefinition,
   type GalaxyHazeNode,
@@ -701,7 +701,7 @@ export class SpaceScene extends Phaser.Scene {
     this.createPlayerShip();
     this.indexGalaxyCelestials();
     this.currentSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
-    this.currentRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y, this.warState);
+    this.currentRegionLabel = getGalaxyRegionLabelAtPosition(this.galaxyDefinition, this.shipRoot.x, this.shipRoot.y, this.warState);
     this.currentRegionIsDeepSpace = isGalaxyDeepSpaceAtPosition(this.shipRoot.x, this.shipRoot.y);
     this.drawWorldBackdrop();
     this.initializeWorldStates();
@@ -915,7 +915,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private refreshCurrentSector(): void {
     const nextSector = getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y);
-    const nextRegionLabel = getGalaxyRegionLabelAtPosition(this.shipRoot.x, this.shipRoot.y, this.warState);
+    const nextRegionLabel = getGalaxyRegionLabelAtPosition(this.galaxyDefinition, this.shipRoot.x, this.shipRoot.y, this.warState);
     const nextRegionIsDeepSpace = isGalaxyDeepSpaceAtPosition(this.shipRoot.x, this.shipRoot.y);
     if (
       nextSector.id === this.currentSector.id
@@ -935,12 +935,12 @@ export class SpaceScene extends Phaser.Scene {
 
     const sectorEntryKey = nextRegionIsDeepSpace
       ? "deep-space"
-      : `${nextSector.id}:${getGalaxySectorDisplayLabel(nextSector, this.warState)}`;
+      : `${nextSector.id}:${nextRegionLabel}`;
     if (this.lastSectorEntryKey !== sectorEntryKey) {
       if (nextRegionIsDeepSpace) {
         this.pushStatusMessage("Entered Deep Space");
       } else {
-        this.pushStatusMessage(getGalaxyTerritoryEntryLabel(nextSector, this.warState));
+        this.pushStatusMessage(getGalaxyTerritoryEntryLabelAtPosition(this.galaxyDefinition, this.shipRoot.x, this.shipRoot.y, this.warState));
         this.pushStatusMessage(getGalaxySectorTravelLabel(nextSector));
       }
       this.lastSectorEntryKey = sectorEntryKey;
@@ -5046,7 +5046,7 @@ export class SpaceScene extends Phaser.Scene {
 
     return {
       stationName: station.name,
-      sectorLabel: getGalaxyRegionLabelAtPosition(station.x, station.y, this.warState),
+      sectorLabel: getGalaxyRegionLabelAtPosition(this.galaxyDefinition, station.x, station.y, this.warState),
       credits,
       repairCost,
       hasDamage: repairCost > 0,

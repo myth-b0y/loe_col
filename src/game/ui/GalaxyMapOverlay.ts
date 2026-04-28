@@ -938,9 +938,9 @@ export class GalaxyMapOverlay {
   ): void {
     const playerPosition = gameSession.getShipSpacePosition();
     const warState = gameSession.getFactionWarState();
-    const playerRegionLabel = getGalaxyRegionLabelAtPosition(playerPosition.x, playerPosition.y, warState);
-    const homeworldPlanets = this.cachedHomeworlds;
     const galaxy = this.getCachedGalaxySnapshot();
+    const playerRegionLabel = getGalaxyRegionLabelAtPosition(galaxy, playerPosition.x, playerPosition.y, warState);
+    const homeworldPlanets = this.cachedHomeworlds;
     const selectedSector = this.selectedSectorId
       ? GALAXY_SECTORS.find((sector) => sector.id === this.selectedSectorId) ?? null
       : null;
@@ -992,7 +992,7 @@ export class GalaxyMapOverlay {
             `Current route: ${mission?.title ?? missionPlanet.missionId}`,
             `Mission planet: ${missionPlanet.name}`,
             `Planet coords: X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}`,
-            `Planet region: ${getGalaxyRegionLabelAtPosition(missionPlanet.x, missionPlanet.y, warState)}`,
+            `Planet region: ${getGalaxyRegionLabelAtPosition(galaxy, missionPlanet.x, missionPlanet.y, warState)}`,
             `Zones online: ${galaxy.zones.length}`,
             `Major stations online: ${galaxy.stations.length}`,
           ].join("\n")
@@ -1000,7 +1000,7 @@ export class GalaxyMapOverlay {
 
     this.hoverText.setText(this.hoverWorldPoint
       ? (() => {
-          const hoverRegion = getGalaxyRegionLabelAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState);
+          const hoverRegion = getGalaxyRegionLabelAtPosition(galaxy, this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState);
           return [
             `Hover: X ${this.hoverWorldPoint.x}  Y ${this.hoverWorldPoint.y}`,
             `Hover region: ${hoverRegion}`,
@@ -1118,12 +1118,13 @@ export class GalaxyMapOverlay {
       visibleMoons,
       visibleStations,
       shipRegion: getGalaxyRegionLabelAtPosition(
+        galaxy,
         gameSession.getShipSpacePosition().x,
         gameSession.getShipSpacePosition().y,
         warState,
       ),
       hoverRegion: this.hoverWorldPoint
-        ? getGalaxyRegionLabelAtPosition(this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState)
+        ? getGalaxyRegionLabelAtPosition(galaxy, this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState)
         : null,
       sectorLabels: GALAXY_SECTORS.map((sector) => ({
         id: sector.id,

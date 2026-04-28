@@ -2182,6 +2182,47 @@ export function getGalaxySectorAllianceStatus(
   return "neutral";
 }
 
+function getGalaxyZoneControllerAllianceStatus(
+  zone: Pick<GalaxyZoneRecord, "currentControllerId" | "coreSectorId" | "sectorId">,
+  warState?: GalaxyWarStateLike | null,
+): "empire" | "republic" | "neutral" {
+  if (zone.currentControllerId === "empire") {
+    return "empire";
+  }
+  if (zone.currentControllerId === "republic") {
+    return "republic";
+  }
+  if (isRaceId(zone.currentControllerId)) {
+    return getGalaxySectorAllianceStatus(zone.currentControllerId, warState);
+  }
+  return "neutral";
+}
+
+function getGalaxyZoneNeutralDisplayRaceId(
+  zone: Pick<GalaxyZoneRecord, "currentControllerId" | "coreSectorId" | "sectorId">,
+): RaceId {
+  if (isRaceId(zone.currentControllerId)) {
+    return zone.currentControllerId;
+  }
+  return getGalaxySectorById(zone.coreSectorId)?.raceId
+    ?? getGalaxySectorById(zone.sectorId)?.raceId
+    ?? GALAXY_SECTORS[0].raceId;
+}
+
+function getGalaxyZoneRegionLabel(
+  zone: Pick<GalaxyZoneRecord, "currentControllerId" | "coreSectorId" | "sectorId">,
+  warState?: GalaxyWarStateLike | null,
+): string {
+  switch (getGalaxyZoneControllerAllianceStatus(zone, warState)) {
+    case "empire":
+      return "Empire Domain";
+    case "republic":
+      return "Republic Territory";
+    default:
+      return getGalaxySectorDisplayLabel(getGalaxyZoneNeutralDisplayRaceId(zone), warState);
+  }
+}
+
 export function getGalaxySectorDisplayLabel(
   sectorOrRace: GalaxySectorConfig | RaceId,
   warState?: GalaxyWarStateLike | null,
@@ -2222,6 +2263,29 @@ export function getGalaxyTerritoryEntryLabel(
   }
 }
 
+export function getGalaxyTerritoryEntryLabelAtPosition(
+  galaxy: GalaxyDefinition | null | undefined,
+  x: number,
+  y: number,
+  warState?: GalaxyWarStateLike | null,
+): string {
+  if (isGalaxyDeepSpaceAtPosition(x, y)) {
+    return "Entered Deep Space";
+  }
+  const zone = getGalaxyZoneAtPosition(galaxy, x, y);
+  if (!zone) {
+    return getGalaxyTerritoryEntryLabel(getGalaxySectorAtPosition(x, y), warState);
+  }
+  switch (getGalaxyZoneControllerAllianceStatus(zone, warState)) {
+    case "empire":
+      return "Entered Empire Domain";
+    case "republic":
+      return "Entered Republic Territory";
+    default:
+      return "Entered Neutral Territory";
+  }
+}
+
 export function getGalaxyControllerDisplayLabel(
   controllerId: GalaxyZoneControllerId,
   warState?: GalaxyWarStateLike | null,
@@ -2240,9 +2304,18 @@ export function getGalaxyControllerDisplayLabel(
   return getGalaxySectorDisplayLabel(sector, warState);
 }
 
-export function getGalaxyRegionLabelAtPosition(x: number, y: number, warState?: GalaxyWarStateLike | null): string {
-  return isGalaxyDeepSpaceAtPosition(x, y)
-    ? "Deep space"
+export function getGalaxyRegionLabelAtPosition(
+  galaxy: GalaxyDefinition | null | undefined,
+  x: number,
+  y: number,
+  warState?: GalaxyWarStateLike | null,
+): string {
+  if (isGalaxyDeepSpaceAtPosition(x, y)) {
+    return "Deep space";
+  }
+  const zone = getGalaxyZoneAtPosition(galaxy, x, y);
+  return zone
+    ? getGalaxyZoneRegionLabel(zone, warState)
     : getGalaxySectorDisplayLabel(getGalaxySectorAtPosition(x, y), warState);
 }
 
@@ -2353,6 +2426,47 @@ export function getGalaxyZoneBySystemId(galaxy: GalaxyDefinition | null | undefi
     return null;
   }
   return galaxy.zones.find((zone) => zone.systemId === systemId) ?? null;
+}
+
+export function getGalaxyZoneAtPosition(
+  galaxy: GalaxyDefinition | null | undefined,
+  x: number,
+  y: number,
+): GalaxyZoneRecord | null {
+  if (!galaxy) {
+    return null;
+  }
+
+  const point = { x, y };
+  const containingZone = galaxy.zones.find((zone) => (
+    zone.territoryPoints.length >= 3
+    && isPointInsideZonePolygon(point, zone.territoryPoints)
+  ));
+  if (containingZone) {
+    return containingZone;
+  }
+
+  const sector = getGalaxySectorAtPosition(x, y);
+  let nearestZone: GalaxyZoneRecord | null = null;
+  let nearestDistanceSq = Number.POSITIVE_INFINITY;
+  galaxy.zones
+    .filter((zone) => zone.sectorId === sector.id)
+    .forEach((zone) => {
+      const system = getGalaxySystemById(galaxy, zone.systemId);
+      if (!system) {
+        return;
+      }
+      const dx = system.x - x;
+      const dy = system.y - y;
+      const distanceSq = (dx * dx) + (dy * dy);
+      if (distanceSq >= nearestDistanceSq) {
+        return;
+      }
+      nearestDistanceSq = distanceSq;
+      nearestZone = zone;
+    });
+
+  return nearestZone;
 }
 
 export function getGalaxyControllerPalette(

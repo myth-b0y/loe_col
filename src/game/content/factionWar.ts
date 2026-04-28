@@ -76,8 +76,8 @@ const ZONE_DEFENSE_REINFORCEMENT_MAX_DISTANCE = 18000;
 const PRIME_WORLD_DEFENSE_REINFORCEMENT_MAX_DISTANCE = 26000;
 const MIN_DEFENSE_REINFORCEMENT_DEFICIT = 0.45;
 const REPUBLIC_COALITION_SUPPORT_DEMAND_BONUS = 2.05;
-const MAX_EMPIRE_STARTING_BONUS_ZONES = 6;
-const MIN_EMPIRE_STARTING_BONUS_ZONES = 4;
+const MAX_EMPIRE_STARTING_BONUS_ZONES = 4;
+const MIN_EMPIRE_STARTING_BONUS_ZONES = 2;
 const MAX_RACE_ACTIVE_FRONTS = 3;
 const DEFENSE_RECOVERY_RATE = 1.1;
 
@@ -833,6 +833,7 @@ function syncZonePoolOwnership(forceState: FactionForceState, galaxy: GalaxyDefi
     if (pool.raceId !== nextRaceId) {
       pool.raceId = nextRaceId;
       pool.activeShips = [];
+      pool.productionAssetId = null;
       pool.spawnCooldownRemainingMs = 0;
       pool.desiredDefenseShips = ZONE_DEFENSE_TARGET;
       pool.desiredReserveShips = 0;
@@ -1268,7 +1269,7 @@ function chooseEmpireStartingBonusZones(
     .sort((left, right) => left.score - right.score);
 
   return candidates
-    .slice(0, Math.min(MAX_EMPIRE_STARTING_BONUS_ZONES, Math.max(MIN_EMPIRE_STARTING_BONUS_ZONES, 4 + ((galaxy.seed >>> 3) % 3))))
+    .slice(0, Math.min(MAX_EMPIRE_STARTING_BONUS_ZONES, Math.max(MIN_EMPIRE_STARTING_BONUS_ZONES, 2 + ((galaxy.seed >>> 3) % 3))))
     .map((entry) => entry.zone.id);
 }
 

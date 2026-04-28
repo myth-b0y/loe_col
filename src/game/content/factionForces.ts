@@ -63,6 +63,7 @@ export type FactionForcePoolRecord = {
   originSystemId: string;
   activeShips: FactionForceActiveShipState[];
   nextShipSerial: number;
+  productionAssetId: string | null;
   spawnCooldownRemainingMs: number;
   desiredDefenseShips: number;
   desiredReserveShips: number;
@@ -108,6 +109,7 @@ export type FactionForcePoolDebugRecord = {
   capacity: number;
   desiredDefenseShips: number;
   desiredReserveShips: number;
+  productionAssetId: string | null;
   spawnCooldownRemainingMs: number;
   controlledZoneCount: number;
 };
@@ -339,6 +341,7 @@ function createZonePool(zone: GalaxyZoneRecord): FactionForcePoolRecord {
     originSystemId: zone.systemId,
     activeShips: [],
     nextShipSerial: 1,
+    productionAssetId: null,
     spawnCooldownRemainingMs: 0,
     desiredDefenseShips: ZONE_DEFENSE_TARGET,
     desiredReserveShips: 0,
@@ -376,6 +379,7 @@ function createPrimeWorldPool(galaxy: GalaxyDefinition, raceId: RaceId): Faction
     originSystemId: homeworld.systemId,
     activeShips: [],
     nextShipSerial: 1,
+    productionAssetId: null,
     spawnCooldownRemainingMs: 0,
     desiredDefenseShips: PRIME_WORLD_DEFENSE_TARGET,
     desiredReserveShips: 0,
@@ -796,6 +800,9 @@ export function normalizeFactionForceState(
         nextShipSerial: typeof sourcePool?.nextShipSerial === "number" && Number.isFinite(sourcePool.nextShipSerial)
           ? Math.max(activeShips.length + 1, Math.floor(sourcePool.nextShipSerial))
           : Math.max(activeShips.length + 1, defaultPool.nextShipSerial),
+        productionAssetId: typeof sourcePool?.productionAssetId === "string" && sourcePool.productionAssetId.length > 0
+          ? getFactionAssetDefinition(sourcePool.productionAssetId).id
+          : null,
         spawnCooldownRemainingMs: typeof sourcePool?.spawnCooldownRemainingMs === "number" && Number.isFinite(sourcePool.spawnCooldownRemainingMs)
           ? Math.max(0, Math.round(sourcePool.spawnCooldownRemainingMs))
           : 0,
@@ -841,14 +848,18 @@ export function advanceFactionForceProduction(
     const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
       ? Math.min(capacity, pool.activeShips.length)
       : Math.min(capacity, desiredDefenseShips + desiredReserveShips);
-    if (desiredTotalShips <= 0 || pool.activeShips.length >= desiredTotalShips || pool.spawnCooldownRemainingMs > 0) {
+    if (pool.productionAssetId && (desiredTotalShips <= 0 || pool.activeShips.length >= desiredTotalShips)) {
+      pool.productionAssetId = null;
+      pool.spawnCooldownRemainingMs = 0;
+      changed = true;
       return;
     }
 
-    const assetId = pool.activeShips.length < desiredDefenseShips
-      ? getNextDefenseAssetId(pool)
-      : getNextReserveAssetId(pool);
-    const definition = getFactionAssetDefinition(assetId);
+    if (!pool.productionAssetId || pool.spawnCooldownRemainingMs > 0) {
+      return;
+    }
+
+    const definition = getFactionAssetDefinition(pool.productionAssetId);
     const shipId = createShipId(pool.id, pool.nextShipSerial);
     pool.activeShips.push(createActiveShipState(
       pool,
@@ -858,8 +869,28 @@ export function advanceFactionForceProduction(
       pool.originZoneId,
     ));
     pool.nextShipSerial += 1;
-    pool.spawnCooldownRemainingMs = getFactionAssetBuildTimeMs(pool.kind, definition.id);
+    pool.productionAssetId = null;
+    pool.spawnCooldownRemainingMs = 0;
     spawnedShipIds.push(shipId);
+    changed = true;
+  });
+
+  orderedPools.forEach((pool) => {
+    const capacity = getFactionForcePoolCapacity(galaxy, pool);
+    const desiredDefenseShips = Math.min(pool.desiredDefenseShips, capacity);
+    const desiredReserveShips = Math.min(pool.desiredReserveShips, Math.max(0, capacity - desiredDefenseShips));
+    const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
+      ? Math.min(capacity, pool.activeShips.length)
+      : Math.min(capacity, desiredDefenseShips + desiredReserveShips);
+    if (desiredTotalShips <= 0 || pool.activeShips.length >= desiredTotalShips || pool.productionAssetId || pool.spawnCooldownRemainingMs > 0) {
+      return;
+    }
+
+    const assetId = pool.activeShips.length < desiredDefenseShips
+      ? getNextDefenseAssetId(pool)
+      : getNextReserveAssetId(pool);
+    pool.productionAssetId = getFactionAssetDefinition(assetId).id;
+    pool.spawnCooldownRemainingMs = getFactionAssetBuildTimeMs(pool.kind, pool.productionAssetId);
     changed = true;
   });
 
@@ -881,10 +912,7 @@ export function markFactionForceShipDestroyed(
     }
 
     const [removedShip] = pool.activeShips.splice(shipIndex, 1);
-    pool.spawnCooldownRemainingMs = Math.max(
-      pool.spawnCooldownRemainingMs,
-      getFactionAssetBuildTimeMs(pool.kind, removedShip?.assetId ?? "ship/base-fighter"),
-    );
+    void removedShip;
     rebuildFactionCommanderFleets(forceState);
     return true;
   }
@@ -935,6 +963,7 @@ export function getFactionForceDebugSnapshot(
       capacity: getFactionForcePoolCapacity(galaxy, pool),
       desiredDefenseShips: pool.desiredDefenseShips,
       desiredReserveShips: pool.desiredReserveShips,
+      productionAssetId: pool.productionAssetId,
       spawnCooldownRemainingMs: Math.round(pool.spawnCooldownRemainingMs),
       controlledZoneCount: getControlledZoneCountForRace(galaxy, pool.raceId),
     }));
