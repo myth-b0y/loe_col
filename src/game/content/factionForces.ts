@@ -112,6 +112,8 @@ export type FactionForcePoolDebugRecord = {
   desiredReserveShips: number;
   productionAssetId: string | null;
   spawnCooldownRemainingMs: number;
+  productionBuildTimeMs: number;
+  productionProgress: number;
   controlledZoneCount: number;
 };
 
@@ -1024,6 +1026,15 @@ export function getFactionForceDebugSnapshot(
       desiredReserveShips: pool.desiredReserveShips,
       productionAssetId: pool.productionAssetId,
       spawnCooldownRemainingMs: Math.round(pool.spawnCooldownRemainingMs),
+      productionBuildTimeMs: pool.productionAssetId
+        ? getFactionAssetBuildTimeMs(pool.kind, pool.productionAssetId)
+        : 0,
+      productionProgress: pool.productionAssetId
+        ? Number(Math.max(0, Math.min(
+            1,
+            1 - (pool.spawnCooldownRemainingMs / Math.max(1, getFactionAssetBuildTimeMs(pool.kind, pool.productionAssetId))),
+          )).toFixed(3))
+        : 0,
       controlledZoneCount: getControlledZoneCountForRace(galaxy, pool.raceId, warState),
     }));
 

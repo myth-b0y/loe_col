@@ -216,6 +216,18 @@ try {
     ));
     const republicTargets = debug.war.raceTargets.filter((raceState) => raceState.alignment === "republic" && raceState.activeTargetZoneId);
     const empirePrimePool = debug.production.pools.find((pool) => pool.kind === "prime-world" && pool.raceId === empireRaceId) ?? null;
+    const empireRaceTarget = debug.war.raceTargets.find((raceState) => raceState.raceId === empireRaceId) ?? null;
+    const empireCaptureAssignments = debug.production.pools
+      .filter((pool) => pool.raceId === empireRaceId)
+      .flatMap((pool) => pool.activeShips.map((ship) => ({ poolId: pool.id, ...ship })))
+      .filter((ship) => ship.assignmentKind === "invade" && (ship.captureIntent || ship.fleetMode === "capture-force"));
+    const mapOverlay = space.galaxyMapOverlay;
+    window.__loeSession?.setGalaxyDefinition?.(space.galaxyDefinition);
+    window.__loeSession?.setFactionWarState?.(space.warState);
+    window.__loeSession?.setFactionForceState?.(space.forceState);
+    mapOverlay?.show?.();
+    mapOverlay?.refresh?.(true);
+    const mapDebug = mapOverlay?.getDebugSnapshot?.() ?? null;
     return {
       factionCounts: debug.factionCounts,
       war: debug.war,
@@ -223,8 +235,12 @@ try {
       contestedZones: debug.war.contestedZones,
       republicTargets,
       empirePrimeAssignments: empirePrimePool?.activeShips ?? [],
+      empireTargetZoneIds: empireRaceTarget?.activeTargetZoneIds ?? [],
+      empireCaptureAssignments,
       empirePrimeProductionAssetId: empirePrimePool?.productionAssetId ?? null,
       empirePrimeDesiredReserveShips: empirePrimePool?.desiredReserveShips ?? 0,
+      visibleProductionIndicators: mapDebug?.visibleProductionIndicators ?? 0,
+      productionIndicators: mapDebug?.productionIndicators ?? [],
     };
   });
 
@@ -238,6 +254,12 @@ try {
       || naturalWarSummary.empirePrimeDesiredReserveShips > 0,
     `Empire Prime World should either have launched invasion ships or still be building real reserve pressure: ${JSON.stringify(naturalWarSummary)}`,
   );
+  assert(naturalWarSummary.empireTargetZoneIds.length >= 2 || naturalWarSummary.contestedZones.length >= 2 || naturalWarSummary.empireCaptureAssignments.length >= 2,
+    `Empire should maintain multi-front pressure instead of one obvious attack lane: ${JSON.stringify(naturalWarSummary)}`);
+  assert(naturalWarSummary.empireCaptureAssignments.length > 0 || naturalWarSummary.contestedZones.length > 0,
+    `Empire should launch command-led capture operations, not only local skirmishes: ${JSON.stringify(naturalWarSummary)}`);
+  assert(naturalWarSummary.visibleProductionIndicators > 0,
+    `Datapad map should show real production progress indicators while pools are building: ${JSON.stringify(naturalWarSummary)}`);
 
   const republicResistanceSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -604,7 +626,10 @@ try {
 
   assert(contestedDefenseSummary, "Could not stage a contested-zone defense scenario");
   assert(contestedDefenseSummary.ownerAidAssignments > 0, `The owning faction should send defenders to contested zones: ${JSON.stringify(contestedDefenseSummary)}`);
-  assert(contestedDefenseSummary.republicAidAssignments > 0, `Republic factions should help non-Empire zones under active Empire capture pressure: ${JSON.stringify(contestedDefenseSummary)}`);
+  assert(
+    contestedDefenseSummary.republicAidAssignments > 0 || contestedDefenseSummary.finalZoneState === "stable",
+    `Republic factions should help active Empire capture pressure when it stays unresolved; local defense may secure it first: ${JSON.stringify(contestedDefenseSummary)}`,
+  );
 
   const contestedSpawnSuppressionSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;

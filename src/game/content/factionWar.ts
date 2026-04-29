@@ -58,8 +58,8 @@ export type FactionCommanderDoctrine = {
 const EMPIRE_RETARGET_COOLDOWN_MS = 18000;
 const REPUBLIC_RETARGET_COOLDOWN_MS = 24000;
 const NEUTRAL_RETARGET_COOLDOWN_MS = 30000;
-const EMPIRE_ATTACK_READY_SHIPS = 2;
-const REPUBLIC_RECLAIM_READY_SHIPS = 2;
+const EMPIRE_ATTACK_READY_SHIPS = 1;
+const REPUBLIC_RECLAIM_READY_SHIPS = 1;
 const NEUTRAL_RECLAIM_READY_SHIPS = 1;
 const BASE_ZONE_CAPTURE_DURATION_MS = 120000;
 const MIN_CAPTURE_PRESSURE = 0.28;
@@ -78,7 +78,7 @@ const MIN_DEFENSE_REINFORCEMENT_DEFICIT = 0.45;
 const REPUBLIC_COALITION_SUPPORT_DEMAND_BONUS = 2.05;
 const MAX_EMPIRE_STARTING_BONUS_ZONES = 4;
 const MIN_EMPIRE_STARTING_BONUS_ZONES = 2;
-const MAX_RACE_ACTIVE_FRONTS = 3;
+const MAX_RACE_ACTIVE_FRONTS = 4;
 const DEFENSE_RECOVERY_RATE = 1.1;
 const STRATEGIC_ZONE_BATTLE_DURATION_MS = 24000;
 const STRATEGIC_ZONE_BATTLE_ADVANTAGE_SCALE = 1.7;
@@ -153,7 +153,7 @@ function getCommanderDoctrine(warState: FactionWarState, raceId: RaceId): Factio
         expansionBias: 1.42,
         regroupBias: 0.74,
         splitTolerance: 1.24,
-        maxConcurrentFronts: 3,
+        maxConcurrentFronts: 4,
         pressureShiftBias: 1.22,
       }
     : alignment === "republic"
@@ -330,11 +330,11 @@ function getPoolActiveWarPower(pool: Pick<FactionForcePoolRecord, "activeShips">
 
 function getPrimePoolDeployableWarPower(
   pool: FactionForcePoolRecord,
-  alignment: RaceAllianceStatus,
+  _alignment: RaceAllianceStatus,
 ): number {
   const committedHomeShips = Math.min(
     pool.activeShips.length,
-    pool.desiredDefenseShips + getPrimeWorldHoldShips(alignment),
+    pool.desiredDefenseShips,
   );
   return pool.activeShips
     .slice(committedHomeShips)
@@ -370,7 +370,7 @@ function chooseBestDefenseTargetZone(
         && zone.captureAttackerRaceId === warState.empireRaceId
         && controllerRaceId !== warState.empireRaceId;
       const effectiveMaxDistance = activeEmpireCapture
-        ? maxDistance * 5.5
+        ? maxDistance * 12
         : alignment === "republic" && controllerRaceId !== warState.empireRaceId
           ? maxDistance * 2.2
           : maxDistance;
@@ -403,7 +403,7 @@ function chooseBestDefenseTargetZone(
       score += zone.zoneCaptureProgress * 320;
       score += controllerRaceId === raceId ? 180 : 0;
       score += coreRaceId === raceId ? 140 : 0;
-      score += activeEmpireCapture ? 520 : 0;
+      score += activeEmpireCapture ? 980 : 0;
       if (alignment === "republic" && controllerRaceId !== raceId && controllerRaceId !== warState.empireRaceId) {
         score += 170;
       }
@@ -579,9 +579,11 @@ function chooseBestWarTargetZone(
   adjacency: FactionWarZoneAdjacency,
   raceId: RaceId,
   currentTargetZoneId: string | null,
+  excludedZoneIds: ReadonlySet<string> = new Set<string>(),
 ): string | null {
   const alignment = getRaceAllianceStatus(warState, raceId);
-  const candidates = getAvailableTargetZones(galaxy, warState, adjacency, raceId, alignment);
+  const candidates = getAvailableTargetZones(galaxy, warState, adjacency, raceId, alignment)
+    .filter((zone) => !excludedZoneIds.has(zone.id));
   if (candidates.length <= 0) {
     return null;
   }
@@ -678,6 +680,7 @@ function chooseWarTargetZoneIds(
       adjacency,
       raceId,
       chosen[0] ?? preferred[0] ?? null,
+      new Set(chosen),
     );
     if (!nextTarget || chosen.includes(nextTarget)) {
       break;
@@ -784,6 +787,90 @@ function setShipAssignment(
   return true;
 }
 
+function isCaptureLeaderShip(ship: FactionForceActiveShipState): boolean {
+  return isFactionAssetCommandEligible(ship.assetId) && isFactionAssetCaptureEligible(ship.assetId);
+}
+
+function getCaptureLeaderPriority(ship: FactionForceActiveShipState, assignmentKind: FactionWarAssignmentKind): number {
+  if (assignmentKind === "invade") {
+    if (ship.role === "attack-warship") {
+      return 0;
+    }
+    if (ship.role === "defense-warship") {
+      return 1;
+    }
+  }
+
+  if (assignmentKind === "reclaim") {
+    if (ship.role === "defense-warship") {
+      return 0;
+    }
+    if (ship.role === "attack-warship") {
+      return 1;
+    }
+  }
+
+  return ship.role === "attack-warship" || ship.role === "defense-warship" ? 2 : 4;
+}
+
+function buildPrimeCaptureAssignments(
+  pool: FactionForcePoolRecord,
+  assignmentKind: FactionWarAssignmentKind,
+  targetZoneIds: readonly string[],
+  maxDeployableShips: number,
+): Map<string, string> {
+  const assignments = new Map<string, string>();
+  if (targetZoneIds.length <= 0 || maxDeployableShips <= 0) {
+    return assignments;
+  }
+
+  const leaders = pool.activeShips
+    .filter(isCaptureLeaderShip)
+    .sort((left, right) => {
+      const priorityDelta = getCaptureLeaderPriority(left, assignmentKind) - getCaptureLeaderPriority(right, assignmentKind);
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+      return left.id.localeCompare(right.id);
+    });
+  const leaderCount = Math.min(targetZoneIds.length, leaders.length, maxDeployableShips);
+  for (let index = 0; index < leaderCount; index += 1) {
+    const leader = leaders[index];
+    const targetZoneId = targetZoneIds[index % targetZoneIds.length];
+    if (leader && targetZoneId) {
+      assignments.set(leader.id, targetZoneId);
+    }
+  }
+
+  const escortSlots = Math.max(0, maxDeployableShips - assignments.size);
+  if (escortSlots <= 0 || assignments.size <= 0) {
+    return assignments;
+  }
+
+  const escorts = pool.activeShips
+    .filter((ship) => !assignments.has(ship.id))
+    .sort((left, right) => {
+      const commandDelta = Number(isCaptureLeaderShip(left)) - Number(isCaptureLeaderShip(right));
+      if (commandDelta !== 0) {
+        return commandDelta;
+      }
+      return left.id.localeCompare(right.id);
+    });
+  const assignedTargetIds = [...assignments.values()];
+  for (let index = 0; index < escortSlots; index += 1) {
+    const escort = escorts[index];
+    if (!escort) {
+      break;
+    }
+    const targetZoneId = assignedTargetIds[index % assignedTargetIds.length] ?? targetZoneIds[0];
+    if (targetZoneId) {
+      assignments.set(escort.id, targetZoneId);
+    }
+  }
+
+  return assignments;
+}
+
 function setPrimePoolAssignments(
   pool: FactionForcePoolRecord,
   warState: FactionWarState,
@@ -799,10 +886,37 @@ function setPrimePoolAssignments(
 
   let changed = false;
   if (defenseTargetZoneId) {
-    pool.activeShips.forEach((ship, index) => {
-      const assignmentZoneId = index < (pool.desiredDefenseShips + holdShips)
-        ? primeZoneId
-        : defenseTargetZoneId;
+    const minimumHomeShips = Math.min(pool.activeShips.length, pool.desiredDefenseShips);
+    const maxDeployableShips = Math.max(0, pool.activeShips.length - minimumHomeShips);
+    const defendingShipIds = new Set(
+      [...pool.activeShips]
+        .sort((left, right) => {
+          const leftPriority = left.role === "defense-warship"
+            ? 0
+            : left.role === "support-fighter"
+              ? 1
+              : left.role === "attack-warship"
+                ? 2
+                : 3;
+          const rightPriority = right.role === "defense-warship"
+            ? 0
+            : right.role === "support-fighter"
+              ? 1
+              : right.role === "attack-warship"
+                ? 2
+                : 3;
+          if (leftPriority !== rightPriority) {
+            return leftPriority - rightPriority;
+          }
+          return left.id.localeCompare(right.id);
+        })
+        .slice(0, maxDeployableShips)
+        .map((ship) => ship.id),
+    );
+    pool.activeShips.forEach((ship) => {
+      const assignmentZoneId = defendingShipIds.has(ship.id)
+        ? defenseTargetZoneId
+        : primeZoneId;
       changed = setShipAssignment(ship, "defend", assignmentZoneId) || changed;
     });
     return changed;
@@ -810,17 +924,22 @@ function setPrimePoolAssignments(
 
   const availableAttackers = Math.max(0, pool.activeShips.length - pool.desiredDefenseShips - holdShips);
   const readyShipThreshold = getReadyShipThreshold(raceAlignment);
-  const canLaunch = targetZoneIds.length > 0 && availableAttackers >= readyShipThreshold;
+  const minimumHomeShips = Math.min(pool.activeShips.length, pool.desiredDefenseShips);
+  const maxDeployableShips = Math.max(0, pool.activeShips.length - minimumHomeShips);
+  const assignmentKind: FactionWarAssignmentKind = raceAlignment === "empire" ? "invade" : "reclaim";
+  const captureAssignments = targetZoneIds.length > 0 && Math.max(availableAttackers, maxDeployableShips) >= readyShipThreshold
+    ? buildPrimeCaptureAssignments(pool, assignmentKind, targetZoneIds, maxDeployableShips)
+    : new Map<string, string>();
+  const canLaunch = captureAssignments.size > 0;
 
-  pool.activeShips.forEach((ship, index) => {
-    if (index < (pool.desiredDefenseShips + holdShips) || !canLaunch || targetZoneIds.length <= 0) {
+  pool.activeShips.forEach((ship) => {
+    const captureTargetZoneId = captureAssignments.get(ship.id);
+    if (!captureTargetZoneId || !canLaunch) {
       changed = setShipAssignment(ship, "defend", primeZoneId) || changed;
       return;
     }
 
-    const assignmentKind: FactionWarAssignmentKind = raceAlignment === "empire" ? "invade" : "reclaim";
-    const targetIndex = Math.max(0, index - (pool.desiredDefenseShips + holdShips)) % targetZoneIds.length;
-    changed = setShipAssignment(ship, assignmentKind, targetZoneIds[targetIndex] ?? targetZoneIds[0]) || changed;
+    changed = setShipAssignment(ship, assignmentKind, captureTargetZoneId) || changed;
   });
 
   return changed;
@@ -896,8 +1015,9 @@ function refreshRaceTargets(
     }
 
     const doctrine = getCommanderDoctrine(warState, raceState.raceId);
+    const minimumFrontCount = alignment === "empire" && activePrimeShips >= threshold ? 2 : 1;
     const deployableFrontCount = Math.max(
-      1,
+      minimumFrontCount,
       Math.min(
         MAX_RACE_ACTIVE_FRONTS,
         Math.round(
@@ -1002,8 +1122,8 @@ function applyPoolStrategy(
     const canEmpirePressure = alignment === "empire"
       && controllerRaceId === pool.raceId
       && !defenseTargetZoneId
-      && pool.activeShips.length >= 4
-      && availablePower >= 3.1;
+      && pool.activeShips.length >= 3
+      && availablePower >= 2.1;
     const pressureTargetZoneId = canEmpirePressure
       ? chooseBestEmpirePoolTargetZone(galaxy, forceState, warState, _adjacency, pool.raceId, pool.originZoneId)
       : null;

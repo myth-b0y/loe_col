@@ -19,7 +19,9 @@ import {
   getGalaxySectorPolygonPoints,
   type GalaxySectorConfig,
   type GalaxySystemRecord,
+  type GalaxyZoneControllerId,
 } from "../content/galaxy";
+import { getFactionAssetBuildTimeMs } from "../content/factionAssets";
 import { isZoneActivelyContested } from "../content/factionWar";
 import { getMissionContract } from "../content/missions";
 import { gameSession } from "../core/session";
@@ -32,6 +34,16 @@ type GalaxyMapOverlayOptions = {
   onClose: () => void;
   onOpenSettings?: () => void;
   onRequestTab?: (tab: Exclude<MapTab, "map">) => void;
+};
+
+type MapProductionIndicator = {
+  poolId: string;
+  systemId: string;
+  raceId: GalaxyZoneControllerId;
+  kind: "zone" | "prime-world";
+  assetId: string;
+  progress: number;
+  remainingMs: number;
 };
 
 const PANEL_DEPTH = 60;
@@ -828,6 +840,73 @@ export class GalaxyMapOverlay {
     });
   }
 
+  private getVisibleProductionIndicators(viewBounds: Phaser.Geom.Rectangle): MapProductionIndicator[] {
+    const selectedSectorId = this.selectedSectorId;
+    const forceState = gameSession.getFactionForceState();
+    return forceState.pools
+      .filter((pool) => pool.productionAssetId && pool.spawnCooldownRemainingMs > 0)
+      .map((pool): MapProductionIndicator | null => {
+        if (!selectedSectorId && pool.kind !== "prime-world") {
+          return null;
+        }
+        const system = this.cachedSystemsById.get(pool.originSystemId);
+        if (!system) {
+          return null;
+        }
+        if (selectedSectorId && system.sectorId !== selectedSectorId) {
+          return null;
+        }
+        if (!this.isWorldPointVisible(system, viewBounds, 260)) {
+          return null;
+        }
+
+        const assetId = pool.productionAssetId;
+        if (!assetId) {
+          return null;
+        }
+        const totalMs = Math.max(1, getFactionAssetBuildTimeMs(pool.kind, assetId));
+        return {
+          poolId: pool.id,
+          systemId: system.id,
+          raceId: pool.raceId,
+          kind: pool.kind,
+          assetId,
+          progress: Phaser.Math.Clamp(1 - (pool.spawnCooldownRemainingMs / totalMs), 0, 1),
+          remainingMs: Math.round(pool.spawnCooldownRemainingMs),
+        };
+      })
+      .filter((indicator): indicator is MapProductionIndicator => indicator !== null);
+  }
+
+  private drawProductionIndicators(viewBounds: Phaser.Geom.Rectangle): void {
+    this.getVisibleProductionIndicators(viewBounds).forEach((indicator) => {
+      const system = this.cachedSystemsById.get(indicator.systemId);
+      if (!system) {
+        return;
+      }
+
+      const point = this.worldToMapWithBounds(system, viewBounds);
+      const palette = getGalaxyControllerPalette(indicator.raceId, system.sectorId);
+      const detailView = this.selectedSectorId !== null;
+      const radius = indicator.kind === "prime-world"
+        ? detailView ? 15 : 10
+        : detailView ? 11 : 7;
+      const start = -Math.PI / 2;
+      const end = start + (Math.PI * 2 * indicator.progress);
+
+      this.markerMap.lineStyle(detailView ? 2 : 1.4, 0x0b1624, 0.92);
+      this.markerMap.strokeCircle(point.x, point.y, radius + 1.8);
+      this.markerMap.lineStyle(detailView ? 2.2 : 1.6, palette.borderColor, 0.34);
+      this.markerMap.strokeCircle(point.x, point.y, radius);
+      this.markerMap.lineStyle(detailView ? 3.2 : 2.2, palette.color, indicator.kind === "prime-world" ? 0.98 : 0.86);
+      this.markerMap.beginPath();
+      this.markerMap.arc(point.x, point.y, radius, start, end, false);
+      this.markerMap.strokePath();
+      this.markerMap.fillStyle(palette.color, indicator.kind === "prime-world" ? 0.94 : 0.76);
+      this.markerMap.fillCircle(point.x, point.y, detailView ? 2.2 : 1.5);
+    });
+  }
+
   private drawSystemStarGlyph(
     x: number,
     y: number,
@@ -1013,6 +1092,7 @@ export class GalaxyMapOverlay {
       : "This is the same coordinate space used by the playable space map. The datapad adds strategic territorial partitions without turning space into a tile overlay.");
 
     this.markerMap.clear();
+    this.drawProductionIndicators(viewBounds);
     this.homeworldLabel.setVisible(false);
     if (this.isWorldPointVisible(playerPosition, viewBounds)) {
       const playerMarker = this.worldToMapWithBounds(playerPosition, viewBounds);
@@ -1103,6 +1183,7 @@ export class GalaxyMapOverlay {
       (!selectedSectorId || station.sectorId === selectedSectorId)
       && this.isWorldPointVisible(station, viewBounds, station.radius)
     )).length;
+    const productionIndicators = this.getVisibleProductionIndicators(viewBounds);
     const visibleZones = galaxy.zones.filter((zone) => {
       if (selectedSectorId && zone.sectorId !== selectedSectorId) {
         return false;
@@ -1117,6 +1198,16 @@ export class GalaxyMapOverlay {
       visiblePlanets,
       visibleMoons,
       visibleStations,
+      visibleProductionIndicators: productionIndicators.length,
+      productionIndicators: productionIndicators.map((indicator) => ({
+        poolId: indicator.poolId,
+        systemId: indicator.systemId,
+        raceId: indicator.raceId,
+        kind: indicator.kind,
+        assetId: indicator.assetId,
+        progress: Number(indicator.progress.toFixed(3)),
+        remainingMs: indicator.remainingMs,
+      })),
       shipRegion: getGalaxyRegionLabelAtPosition(
         galaxy,
         gameSession.getShipSpacePosition().x,
