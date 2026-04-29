@@ -189,6 +189,68 @@ try {
   assert(initialSummary.production.zonePoolSample.every((pool) => pool.desiredReserveShips === 0),
     `Zone pools should stay defense-only in this pass: ${JSON.stringify(initialSummary.production.zonePoolSample)}`);
 
+  const firstFiveMinuteWarSummary = await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    let firstLaunchAtMs = null;
+    let firstContestedAtMs = null;
+    let firstCapturedAtMs = null;
+    let lastSummary = null;
+    for (let elapsedMs = 1000; elapsedMs <= 300000; elapsedMs += 1000) {
+      const previousEmpireForeignCount = space.galaxyDefinition.zones.filter((zone) => (
+        zone.currentControllerId === space.warState.empireRaceId
+        && zone.coreSectorId !== space.galaxyDefinition.homeworlds.find((homeworld) => homeworld.raceId === space.warState.empireRaceId)?.sectorId
+      )).length;
+      space.updateFactionWar(1000);
+      space.updateForceProduction(1000);
+      const debug = space.getDebugSnapshot();
+      const empireCaptureAssignments = debug.production.pools
+        .filter((pool) => pool.raceId === debug.war.empireRaceId)
+        .flatMap((pool) => pool.activeShips.map((ship) => ({ poolId: pool.id, ...ship })))
+        .filter((ship) => ship.assignmentKind === "invade" && (ship.captureIntent || ship.fleetMode === "capture-force"));
+      const republicReclaimAssignments = debug.production.pools
+        .filter((pool) => debug.war.republicRaceIds.includes(pool.raceId))
+        .flatMap((pool) => pool.activeShips.map((ship) => ({ poolId: pool.id, ...ship })))
+        .filter((ship) => ship.assignmentKind === "reclaim" && (ship.captureIntent || ship.fleetMode === "capture-force"));
+      const contestedZones = debug.war.contestedZones;
+      const nextEmpireForeignCount = space.galaxyDefinition.zones.filter((zone) => (
+        zone.currentControllerId === space.warState.empireRaceId
+        && zone.coreSectorId !== space.galaxyDefinition.homeworlds.find((homeworld) => homeworld.raceId === space.warState.empireRaceId)?.sectorId
+      )).length;
+
+      if (firstLaunchAtMs === null && (empireCaptureAssignments.length > 0 || republicReclaimAssignments.length > 0)) {
+        firstLaunchAtMs = elapsedMs;
+      }
+      if (firstContestedAtMs === null && contestedZones.length > 0) {
+        firstContestedAtMs = elapsedMs;
+      }
+      if (firstCapturedAtMs === null && nextEmpireForeignCount > previousEmpireForeignCount) {
+        firstCapturedAtMs = elapsedMs;
+      }
+      lastSummary = {
+        elapsedMs,
+        firstLaunchAtMs,
+        firstContestedAtMs,
+        firstCapturedAtMs,
+        empireTargetZoneIds: debug.war.raceTargets.find((raceState) => raceState.raceId === debug.war.empireRaceId)?.activeTargetZoneIds ?? [],
+        empireCaptureAssignments,
+        republicReclaimAssignments,
+        contestedZones,
+        empireForeignZoneCount: nextEmpireForeignCount,
+      };
+      if (firstContestedAtMs !== null || firstCapturedAtMs !== null) {
+        break;
+      }
+    }
+    return lastSummary;
+  });
+
+  assert(firstFiveMinuteWarSummary?.firstLaunchAtMs !== null,
+    `Empire/Republic should launch a real capture or reclaim force in the first five minutes: ${JSON.stringify(firstFiveMinuteWarSummary)}`);
+  assert(firstFiveMinuteWarSummary.firstContestedAtMs !== null || firstFiveMinuteWarSummary.firstCapturedAtMs !== null,
+    `A real zone attack/capture attempt should be underway within the first five minutes of first space entry: ${JSON.stringify(firstFiveMinuteWarSummary)}`);
+  assert(firstFiveMinuteWarSummary.empireTargetZoneIds.length >= 2 || firstFiveMinuteWarSummary.empireCaptureAssignments.length >= 2,
+    `Empire should open with multiple simultaneous pressure targets: ${JSON.stringify(firstFiveMinuteWarSummary)}`);
+
   const naturalWarSummary = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     for (let index = 0; index < 18; index += 1) {

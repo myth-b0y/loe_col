@@ -517,6 +517,7 @@ export class SpaceScene extends Phaser.Scene {
   private forceStateDirty = false;
   private forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
   private warStateUpdateTimerMs = 0;
+  private warStateAccumulatedDeltaMs = 0;
   private backdropSectorOverlay?: Phaser.GameObjects.Rectangle;
   private backdropStarSeedsByCell = new Map<SpaceWorldCellKey, GalaxyStarSeed[]>();
   private activeBackdropCellKeys: SpaceWorldCellKey[] = [];
@@ -645,6 +646,7 @@ export class SpaceScene extends Phaser.Scene {
     this.forceStateDirty = initialWarUpdate.changed;
     this.forceStateSyncTimerMs = FORCE_STATE_SYNC_INTERVAL_MS;
     this.warStateUpdateTimerMs = 0;
+    this.warStateAccumulatedDeltaMs = 0;
     this.backdropStarSeedsByCell.clear();
     this.activeBackdropCellKeys = [];
     this.activeBackdropStarCells.clear();
@@ -1858,6 +1860,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updateFactionWar(deltaMs: number): void {
+    this.warStateAccumulatedDeltaMs += Math.max(0, deltaMs);
     this.warStateUpdateTimerMs = Math.max(0, this.warStateUpdateTimerMs - deltaMs);
     if (this.warStateUpdateTimerMs > 0) {
       return;
@@ -1874,8 +1877,9 @@ export class SpaceScene extends Phaser.Scene {
       this.galaxyDefinition,
       this.forceState,
       this.zoneAdjacency,
-      deltaMs,
+      this.warStateAccumulatedDeltaMs,
     );
+    this.warStateAccumulatedDeltaMs = 0;
     this.warStateUpdateTimerMs = WAR_STATE_UPDATE_INTERVAL_MS;
     if (!warUpdate.changed) {
       return;
