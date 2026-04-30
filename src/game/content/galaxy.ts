@@ -306,18 +306,53 @@ const GALAXY_SPECIAL_CONTROLLER_PALETTES: Record<Exclude<GalaxyZoneControllerId,
 
 const GALAXY_MISSION_ASSIGNMENT_RULES: GalaxyMissionAssignmentRule[] = [
   {
-    missionId: "ember-watch",
-    preferredSectorId: "ashari-crown",
+    missionId: "test-travel-survey",
+    preferredSectorId: "olydran-expanse",
     preferredRingIds: ["second", "third"],
   },
   {
-    missionId: "outpost-breach",
+    missionId: "test-comms-checkin",
+    preferredSectorId: "nevari-bloom",
+    preferredRingIds: ["third"],
+  },
+  {
+    missionId: "test-space-battle",
     preferredSectorId: "rakkan-drift",
     preferredRingIds: ["third", "outer"],
   },
   {
-    missionId: "nightglass-abyss",
+    missionId: "test-ground-sweep",
+    preferredSectorId: "ashari-crown",
+    preferredRingIds: ["second", "third"],
+  },
+  {
+    missionId: "test-zone-reclaim",
+    preferredSectorId: "svarin-span",
+    preferredRingIds: ["second", "third"],
+  },
+  {
+    missionId: "test-kill-target",
+    preferredSectorId: "aaruian-reach",
+    preferredRingIds: ["third", "outer"],
+  },
+  {
+    missionId: "test-boss-climax",
     preferredSectorId: "elsari-veil",
+    preferredRingIds: ["outer", "third"],
+  },
+  {
+    missionId: "test-chain-dispatch",
+    preferredSectorId: "olydran-expanse",
+    preferredRingIds: ["second", "third"],
+  },
+  {
+    missionId: "test-escort-distress",
+    preferredSectorId: "nevari-bloom",
+    preferredRingIds: ["second", "third"],
+  },
+  {
+    missionId: "test-resource-salvage",
+    preferredSectorId: "rakkan-drift",
     preferredRingIds: ["outer", "third"],
   },
 ];
@@ -1373,10 +1408,31 @@ function assignMissionTargets(
   planets: GalaxyPlanetRecord[],
   rng: SeededRandom,
 ): Record<string, string> {
-  const assignments: Record<string, string> = {};
-  const assignedPlanetIds = new Set<string>();
+  return ensureMissionTargets(planets, rng);
+}
+
+function ensureMissionTargets(
+  planets: GalaxyPlanetRecord[],
+  rng: SeededRandom,
+  existingAssignments: Record<string, string> = {},
+): Record<string, string> {
+  const assignments: Record<string, string> = { ...existingAssignments };
+  const planetIds = new Set(planets.map((planet) => planet.id));
+  const assignedPlanetIds = new Set(
+    Object.values(assignments).filter((planetId) => planetIds.has(planetId)),
+  );
 
   GALAXY_MISSION_ASSIGNMENT_RULES.forEach((rule) => {
+    const existingPlanetId = assignments[rule.missionId];
+    const existingPlanet = existingPlanetId ? planets.find((planet) => planet.id === existingPlanetId) : null;
+    if (existingPlanet && !existingPlanet.isHomeworld) {
+      if (!existingPlanet.missionIds.includes(rule.missionId)) {
+        existingPlanet.missionIds.push(rule.missionId);
+      }
+      assignedPlanetIds.add(existingPlanet.id);
+      return;
+    }
+
     const preferredCandidates = planets.filter((planet) => (
       !planet.isHomeworld
       && !assignedPlanetIds.has(planet.id)
@@ -1396,7 +1452,9 @@ function assignMissionTargets(
         : fallbackCandidates;
     const selected = candidatePool[rng.int(0, candidatePool.length - 1)];
     assignments[rule.missionId] = selected.id;
-    selected.missionIds.push(rule.missionId);
+    if (!selected.missionIds.includes(rule.missionId)) {
+      selected.missionIds.push(rule.missionId);
+    }
     assignedPlanetIds.add(selected.id);
   });
 
@@ -2081,7 +2139,11 @@ export function normalizeGalaxyDefinition(
       stations: Array.isArray(galaxy.stations) && galaxy.stations.length > 0
         ? galaxy.stations.map((station) => ({ ...station }))
         : createStationsForSectors(systems, new SeededRandom((galaxy.seed ^ GALAXY_STATION_SEED_SALT) >>> 0)),
-      missionAssignments: { ...galaxy.missionAssignments },
+      missionAssignments: ensureMissionTargets(
+        planets,
+        new SeededRandom((galaxy.seed ^ 0x1f4c4d5) >>> 0),
+        galaxy.missionAssignments,
+      ),
     };
   }
 

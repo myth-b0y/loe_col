@@ -1,9 +1,35 @@
 import { getMissionRewardPreview, type MissionRewardPreview } from "./loot";
 
 export type MissionDifficultyTier = "easy" | "medium" | "hard";
+export type MissionActivityType =
+  | "travel"
+  | "comms"
+  | "space-battle"
+  | "ground"
+  | "zone"
+  | "kill-target"
+  | "escort"
+  | "boss"
+  | "resource";
+export type MissionSourceKind = "terminal" | "live-space";
+export type MissionTargetHint = "mission-planet" | "prime-world" | "station" | "zone" | "ship" | "resource" | "escort";
 export type MissionEnemyKind = "rusher" | "shooter" | "hexer";
 export type MissionFlow = "right" | "up";
 export type MissionBossKind = "shard-bruiser" | "relay-seer" | "nightglass-behemoth";
+
+export type MissionActivityStepDefinition = {
+  id: string;
+  type: MissionActivityType;
+  objective: string;
+  targetHint: MissionTargetHint;
+  completionText: string;
+};
+
+export type MissionActivityState = {
+  stepIndex: number;
+  completedStepIds: string[];
+  flags: Record<string, string | number | boolean>;
+};
 
 export type MissionEnemyGroup = {
   kind: MissionEnemyKind;
@@ -53,12 +79,20 @@ export type MissionStage = HallwayStage | RestStage | BossStage;
 export type MissionContractDefinition = {
   id: string;
   difficulty: MissionDifficultyTier;
+  activityType: MissionActivityType | "chain";
+  source: {
+    kind: MissionSourceKind;
+    giver: string;
+    label: string;
+  };
+  terminalVisible: boolean;
   title: string;
   location: string;
   briefingSpeaker: string;
   briefing: string[];
   prompt: string;
   objective: string;
+  activities: MissionActivityStepDefinition[];
   baseXp: number;
   rewardPreview: MissionRewardPreview;
   accentColor: number;
@@ -73,6 +107,7 @@ export type MissionDefinition = {
   briefing: string[];
   prompt: string;
   objective: string;
+  activities: MissionActivityStepDefinition[];
   seed: number;
   baseXp: number;
   rewardPreview: MissionRewardPreview;
@@ -120,57 +155,319 @@ const ZONE_FLAVOR_BANK = [
 
 export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
   {
-    id: "ember-watch",
+    id: "test-travel-survey",
     difficulty: "easy",
-    title: "Ember Watch",
-    location: "Cinder Relay Verge",
-    briefingSpeaker: "Marshal Teren",
+    activityType: "travel",
+    source: { kind: "terminal", giver: "Navigation Desk", label: "Terminal route test" },
+    terminalVisible: true,
+    title: "Test: Navigation Hop",
+    location: "Generated system waypoint",
+    briefingSpeaker: "Navigation Desk",
     briefing: [
-      "A low-intensity shadow bloom has taken hold around an outer relay watchpost.",
-      "Push the route, stabilize the chamber, and bring back whatever hardware survives the breach.",
-      "This is a clean test contract for a squad that still wants room to breathe.",
+      "This is a simple travel activity test using the generated galaxy data.",
+      "Set the mission as your course, launch, and reach the marked generated world.",
+      "The mission completes when your ship enters the target arrival radius.",
     ],
-    prompt: "Stabilize the watchpost before the darkness roots deeper into the relay shell.",
-    objective: "Clear the generated route, use the safe rooms well, defeat the anchor brute, and extract.",
-    baseXp: 150,
-    rewardPreview: getMissionRewardPreview("ember-watch", 150),
+    prompt: "Verify that active-course travel waypoints only appear after a mission is accepted and set as course.",
+    objective: "Fly to the marked generated planet/system waypoint.",
+    activities: [
+      {
+        id: "travel",
+        type: "travel",
+        objective: "Fly to the active generated waypoint.",
+        targetHint: "mission-planet",
+        completionText: "Travel waypoint reached.",
+      },
+    ],
+    baseXp: 70,
+    rewardPreview: getMissionRewardPreview("test-travel-survey", 70),
     accentColor: 0x7de6ff,
   },
   {
-    id: "outpost-breach",
-    difficulty: "medium",
-    title: "Outpost Breach",
-    location: "Ashfall Relay Rim",
-    briefingSpeaker: "Marshal Teren",
+    id: "test-comms-checkin",
+    difficulty: "easy",
+    activityType: "comms",
+    source: { kind: "terminal", giver: "Republic Signal Clerk", label: "Terminal comms test" },
+    terminalVisible: true,
+    title: "Test: Prime Comms",
+    location: "Prime-world comms channel",
+    briefingSpeaker: "Republic Signal Clerk",
     briefing: [
-      "A Republic relay outpost has fallen dark after a shard flare rolled through the station spine.",
-      "Shadow-corrupted raiders moved in behind the surge and are turning the relay into a launch point.",
-      "Sweep the route, reset in the safe rooms when they appear, and break the brute anchoring the corruption.",
+      "This checks the talk/comms activity path without full landing.",
+      "Fly to the marked Prime World contact and open comms from interaction range.",
+      "The comms exchange completes the test mission.",
     ],
-    prompt: "Clear the relay spine before it becomes a stable launch route for the darkness.",
-    objective: "Fight through a medium-threat randomized route, break the boss room, and return with salvage.",
-    baseXp: 195,
-    rewardPreview: getMissionRewardPreview("outpost-breach", 195),
-    accentColor: 0xffcb79,
+    prompt: "Make contact with a Prime World through the ship comms window.",
+    objective: "Fly to the marked Prime World and press F in comms range.",
+    activities: [
+      {
+        id: "comms",
+        type: "comms",
+        objective: "Open comms with the marked Prime World contact.",
+        targetHint: "prime-world",
+        completionText: "Comms contact verified.",
+      },
+    ],
+    baseXp: 80,
+    rewardPreview: getMissionRewardPreview("test-comms-checkin", 80),
+    accentColor: 0x8fe3ff,
   },
   {
-    id: "nightglass-abyss",
-    difficulty: "hard",
-    title: "Nightglass Abyss",
-    location: "Null Glass Descent",
-    briefingSpeaker: "Void Marshal Nera",
+    id: "test-space-battle",
+    difficulty: "medium",
+    activityType: "space-battle",
+    source: { kind: "terminal", giver: "Patrol Coordinator", label: "Terminal battle test" },
+    terminalVisible: true,
+    title: "Test: Skirmish Clear",
+    location: "Hostile fleet marker",
+    briefingSpeaker: "Patrol Coordinator",
     briefing: [
-      "A severe shadow wound has cracked open through a buried vertical relay tract.",
-      "Expect tighter routes, fewer reset opportunities, and a boss chamber that will hit back hard.",
-      "Bring the strongest squad formation you have and cut through before the route locks permanently.",
+      "This stages a small hostile fleet near a generated route target.",
+      "Clear every hostile test craft in the marked encounter area.",
+      "The mission succeeds when the encounter is empty.",
     ],
-    prompt: "Descend into the wound, hold formation under pressure, and tear out the anchor before it matures.",
-    objective: "Survive a hard randomized route, endure sparse rest access, destroy the anchor, and get out.",
-    baseXp: 260,
-    rewardPreview: getMissionRewardPreview("nightglass-abyss", 260),
+    prompt: "Destroy the temporary hostile fleet staged for the activity test.",
+    objective: "Reach the marker and destroy the hostile test fleet.",
+    activities: [
+      {
+        id: "space-battle",
+        type: "space-battle",
+        objective: "Destroy the hostile test fleet.",
+        targetHint: "ship",
+        completionText: "Hostile fleet cleared.",
+      },
+    ],
+    baseXp: 130,
+    rewardPreview: getMissionRewardPreview("test-space-battle", 130),
+    accentColor: 0xffb86c,
+  },
+  {
+    id: "test-ground-sweep",
+    difficulty: "easy",
+    activityType: "ground",
+    source: { kind: "terminal", giver: "Ground Dispatch", label: "Terminal ground test" },
+    terminalVisible: true,
+    title: "Test: Ground Sweep",
+    location: "Marked generated world",
+    briefingSpeaker: "Ground Dispatch",
+    briefing: [
+      "This uses the existing ground mission slice rather than replacing it.",
+      "Set course, land at the mission world, and clear the generated combat route.",
+      "The existing extraction and reward flow should complete the mission.",
+    ],
+    prompt: "Land at the marked world and run a short ground combat verification route.",
+    objective: "Land, clear the generated ground route, defeat the final room, and extract.",
+    activities: [
+      {
+        id: "ground",
+        type: "ground",
+        objective: "Land and complete the ground combat slice.",
+        targetHint: "mission-planet",
+        completionText: "Ground sweep complete.",
+      },
+    ],
+    baseXp: 150,
+    rewardPreview: getMissionRewardPreview("test-ground-sweep", 150),
+    accentColor: 0x9df7c7,
+  },
+  {
+    id: "test-zone-reclaim",
+    difficulty: "medium",
+    activityType: "zone",
+    source: { kind: "terminal", giver: "Frontline Monitor", label: "Terminal war test" },
+    terminalVisible: true,
+    title: "Test: Zone Assist",
+    location: "Active war-zone marker",
+    briefingSpeaker: "Frontline Monitor",
+    briefing: [
+      "This verifies a mission can talk to the existing zone/faction war state.",
+      "Fly to the marked zone and assist the local controller.",
+      "For now, the player action resolves a simple reclaim/defense result so the map visibly updates.",
+    ],
+    prompt: "Help stabilize a contested or occupied zone using the real zone data.",
+    objective: "Reach the marked zone and press F to complete the support action.",
+    activities: [
+      {
+        id: "zone",
+        type: "zone",
+        objective: "Assist the marked strategic zone.",
+        targetHint: "zone",
+        completionText: "Zone support resolved.",
+      },
+    ],
+    baseXp: 145,
+    rewardPreview: getMissionRewardPreview("test-zone-reclaim", 145),
+    accentColor: 0x8bd0ff,
+  },
+  {
+    id: "test-kill-target",
+    difficulty: "medium",
+    activityType: "kill-target",
+    source: { kind: "terminal", giver: "Bounty Relay", label: "Terminal target test" },
+    terminalVisible: true,
+    title: "Test: Marked Target",
+    location: "Commander intercept point",
+    briefingSpeaker: "Bounty Relay",
+    briefing: [
+      "This creates one marked ship target tied to the active mission.",
+      "The ship is not a full story commander yet.",
+      "Destroying the target should complete the objective and clear the waypoint.",
+    ],
+    prompt: "Intercept and destroy the marked hostile target.",
+    objective: "Destroy the marked target ship.",
+    activities: [
+      {
+        id: "target",
+        type: "kill-target",
+        objective: "Destroy the marked target ship.",
+        targetHint: "ship",
+        completionText: "Marked target destroyed.",
+      },
+    ],
+    baseXp: 125,
+    rewardPreview: getMissionRewardPreview("test-kill-target", 125),
+    accentColor: 0xff8f8f,
+  },
+  {
+    id: "test-boss-climax",
+    difficulty: "hard",
+    activityType: "boss",
+    source: { kind: "terminal", giver: "Threat Analysis", label: "Terminal boss test" },
+    terminalVisible: true,
+    title: "Test: Heavy Contact",
+    location: "Boss-style intercept",
+    briefingSpeaker: "Threat Analysis",
+    briefing: [
+      "This stages one tougher ship as a first-pass climax activity.",
+      "It is intentionally simple and exists to verify boss-style objective completion.",
+      "Later story chapters can reuse the same activity slot with authored encounters.",
+    ],
+    prompt: "Destroy the heavy hostile contact at the marked intercept point.",
+    objective: "Defeat the stronger boss-style ship.",
+    activities: [
+      {
+        id: "boss",
+        type: "boss",
+        objective: "Destroy the heavy hostile contact.",
+        targetHint: "ship",
+        completionText: "Heavy contact eliminated.",
+      },
+    ],
+    baseXp: 210,
+    rewardPreview: getMissionRewardPreview("test-boss-climax", 210),
     accentColor: 0xc8a7ff,
   },
+  {
+    id: "test-chain-dispatch",
+    difficulty: "medium",
+    activityType: "chain",
+    source: { kind: "terminal", giver: "Operations Desk", label: "Terminal chain test" },
+    terminalVisible: true,
+    title: "Test: Linked Dispatch",
+    location: "Multi-step live route",
+    briefingSpeaker: "Operations Desk",
+    briefing: [
+      "This proves a mission can advance through several activity types in order.",
+      "The source is a real terminal giver, then the route moves through travel, comms, escort, and a final heavy contact.",
+      "Encounter offsets and targets are seeded from the save so the chain is stable but not identical across saves.",
+    ],
+    prompt: "Run a linked field dispatch from setup to climax.",
+    objective: "Travel, open comms, escort a courier, then destroy the final heavy contact.",
+    activities: [
+      {
+        id: "chain-travel",
+        type: "travel",
+        objective: "Travel to the first generated waypoint.",
+        targetHint: "mission-planet",
+        completionText: "Dispatch waypoint reached.",
+      },
+      {
+        id: "chain-comms",
+        type: "comms",
+        objective: "Open comms with the field contact.",
+        targetHint: "prime-world",
+        completionText: "Field contact acknowledged.",
+      },
+      {
+        id: "chain-escort",
+        type: "escort",
+        objective: "Escort the courier ship to its exit marker.",
+        targetHint: "escort",
+        completionText: "Courier reached the transfer point.",
+      },
+      {
+        id: "chain-boss",
+        type: "boss",
+        objective: "Destroy the heavy contact blocking extraction.",
+        targetHint: "ship",
+        completionText: "Linked dispatch complete.",
+      },
+    ],
+    baseXp: 230,
+    rewardPreview: getMissionRewardPreview("test-chain-dispatch", 230),
+    accentColor: 0xffd27a,
+  },
+  {
+    id: "test-escort-distress",
+    difficulty: "easy",
+    activityType: "escort",
+    source: { kind: "live-space", giver: "Distress Call", label: "Live distress call" },
+    terminalVisible: false,
+    title: "Test: Distress Escort",
+    location: "Live courier signal",
+    briefingSpeaker: "Distress Call",
+    briefing: [
+      "A courier has broadcast a short-range distress call.",
+      "This live test mission appears while flying in space.",
+      "Set it as your course from the Data Pad to show the escort waypoint.",
+    ],
+    prompt: "Escort the live courier signal to a nearby transfer point.",
+    objective: "Keep the escort ship alive until it reaches its destination.",
+    activities: [
+      {
+        id: "escort",
+        type: "escort",
+        objective: "Escort the courier ship.",
+        targetHint: "escort",
+        completionText: "Courier escort complete.",
+      },
+    ],
+    baseXp: 115,
+    rewardPreview: getMissionRewardPreview("test-escort-distress", 115),
+    accentColor: 0x9fffd0,
+  },
+  {
+    id: "test-resource-salvage",
+    difficulty: "easy",
+    activityType: "resource",
+    source: { kind: "live-space", giver: "Salvage Ping", label: "Live salvage ping" },
+    terminalVisible: false,
+    title: "Test: Salvage Recovery",
+    location: "Live resource ping",
+    briefingSpeaker: "Salvage Ping",
+    briefing: [
+      "A recoverable object has been detected in nearby space.",
+      "This live test mission verifies retrieval without a full inventory economy.",
+      "Set it as your course, reach the marker, and press F to recover it.",
+    ],
+    prompt: "Recover the marked salvage ping.",
+    objective: "Collect the marked resource object.",
+    activities: [
+      {
+        id: "resource",
+        type: "resource",
+        objective: "Recover the marked salvage object.",
+        targetHint: "resource",
+        completionText: "Resource recovered.",
+      },
+    ],
+    baseXp: 95,
+    rewardPreview: getMissionRewardPreview("test-resource-salvage", 95),
+    accentColor: 0xf0d49c,
+  },
 ] as const;
+
+export const TEMP_TEST_MISSION_IDS = MISSION_CONTRACTS.map((contract) => contract.id);
 
 class SeededRandom {
   private seed: number;
@@ -310,8 +607,31 @@ export function getMissionContracts(): MissionContractDefinition[] {
   return [...MISSION_CONTRACTS];
 }
 
+export function getTerminalMissionContracts(): MissionContractDefinition[] {
+  return MISSION_CONTRACTS.filter((contract) => contract.terminalVisible);
+}
+
 export function getMissionContract(missionId: string): MissionContractDefinition | undefined {
   return MISSION_CONTRACTS.find((contract) => contract.id === missionId);
+}
+
+export function createDefaultMissionActivityState(): MissionActivityState {
+  return {
+    stepIndex: 0,
+    completedStepIds: [],
+    flags: {},
+  };
+}
+
+export function getCurrentMissionActivityStep(contract: MissionContractDefinition, state?: Partial<MissionActivityState> | null): MissionActivityStepDefinition | null {
+  const stepIndex = typeof state?.stepIndex === "number" && Number.isFinite(state.stepIndex)
+    ? Math.max(0, Math.floor(state.stepIndex))
+    : 0;
+  return contract.activities[stepIndex] ?? null;
+}
+
+export function isGroundMissionContract(contract: MissionContractDefinition | null | undefined): boolean {
+  return Boolean(contract?.activities.some((activity) => activity.type === "ground"));
 }
 
 export function createMissionDefinition(contractId: string, seed = Date.now()): MissionDefinition {
@@ -344,6 +664,7 @@ export function createMissionDefinition(contractId: string, seed = Date.now()): 
     briefing: [...contract.briefing],
     prompt: contract.prompt,
     objective: contract.objective,
+    activities: contract.activities.map((activity) => ({ ...activity })),
     seed,
     baseXp: contract.baseXp,
     rewardPreview: { ...contract.rewardPreview, dropLines: [...contract.rewardPreview.dropLines] },
@@ -351,7 +672,7 @@ export function createMissionDefinition(contractId: string, seed = Date.now()): 
   };
 }
 
-export const FIRST_MISSION = createMissionDefinition("ember-watch", 1);
+export const FIRST_MISSION = createMissionDefinition("test-ground-sweep", 1);
 
 export const missionRegistry: Record<string, MissionDefinition> = {
   [FIRST_MISSION.id]: FIRST_MISSION,

@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 
-import { getMissionContracts, type MissionContractDefinition } from "../content/missions";
+import { getTerminalMissionContracts, type MissionContractDefinition } from "../content/missions";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
@@ -48,7 +48,7 @@ export class MissionBoardOverlay {
 
   constructor({ scene, onClose }: MissionBoardOverlayOptions) {
     this.onClose = onClose;
-    const contracts = getMissionContracts();
+    const contracts = getTerminalMissionContracts();
     this.selectedMissionId = contracts[0]?.id ?? "";
 
     this.backdrop = scene.add.rectangle(640, 360, 1280, 720, 0x01050a, 0.9)
@@ -109,41 +109,41 @@ export class MissionBoardOverlay {
     }).setDepth(62);
 
     this.cards = contracts.map((contract, index) => {
-      const y = 226 + index * 148;
-      const frame = scene.add.rectangle(338, y, 360, 120, 0x0c1725, 0.97)
+      const y = 206 + index * 58;
+      const frame = scene.add.rectangle(338, y, 360, 48, 0x0c1725, 0.97)
         .setDepth(62)
         .setStrokeStyle(2, 0x37577e, 0.78)
         .setInteractive({ useHandCursor: true });
-      const badge = scene.add.text(182, y - 42, getDifficultyLabel(contract).toUpperCase(), {
+      const badge = scene.add.text(182, y - 18, getDifficultyLabel(contract).toUpperCase(), {
         fontFamily: "Arial",
-        fontSize: "13px",
+        fontSize: "10px",
         color: "#f6fbff",
         fontStyle: "bold",
         backgroundColor: `#${contract.accentColor.toString(16).padStart(6, "0")}99`,
         padding: { x: 8, y: 4 },
       }).setDepth(63);
-      const titleText = scene.add.text(182, y - 10, contract.title, {
+      const titleText = scene.add.text(254, y - 18, contract.title, {
         fontFamily: "Arial",
-        fontSize: "24px",
+        fontSize: "16px",
         color: "#f7fbff",
         fontStyle: "bold",
       }).setDepth(63);
-      const location = scene.add.text(182, y + 20, contract.location, {
+      const location = scene.add.text(254, y + 2, contract.location, {
         fontFamily: "Arial",
-        fontSize: "15px",
+        fontSize: "12px",
         color: "#bdd4f3",
       }).setDepth(63);
-      const status = scene.add.text(182, y + 46, "", {
+      const status = scene.add.text(254, y + 18, "", {
         fontFamily: "Arial",
-        fontSize: "14px",
+        fontSize: "11px",
         color: "#8fc9ff",
       }).setDepth(63);
       const action = createMenuButton({
         scene,
         x: 456,
         y,
-        width: 108,
-        height: 40,
+        width: 82,
+        height: 30,
         label: "Accept",
         onClick: () => this.acceptMission(contract.id),
         depth: 63,
@@ -188,7 +188,7 @@ export class MissionBoardOverlay {
       label: "Refresh Routes",
       onClick: () => {
         gameSession.refreshMissionBoard();
-        this.selectedMissionId = getMissionContracts()[0]?.id ?? "";
+        this.selectedMissionId = getTerminalMissionContracts()[0]?.id ?? "";
         this.refresh();
       },
       depth: 62,
@@ -259,7 +259,7 @@ export class MissionBoardOverlay {
   }
 
   private getAvailableContracts(): MissionContractDefinition[] {
-    return getMissionContracts().filter((contract) =>
+    return getTerminalMissionContracts().filter((contract) =>
       gameSession.isMissionUnlocked(contract.id) && !gameSession.isMissionExhausted(contract.id),
     );
   }
@@ -315,12 +315,12 @@ export class MissionBoardOverlay {
       card.status.setVisible(true);
       card.action.container.setVisible(true);
       const visibleIndex = contracts.findIndex((entry) => entry.id === card.contractId);
-      const y = 226 + visibleIndex * 148;
+      const y = 206 + visibleIndex * 58;
       card.frame.setPosition(338, y);
-      card.badge.setPosition(182, y - 42);
-      card.title.setPosition(182, y - 10);
-      card.location.setPosition(182, y + 20);
-      card.status.setPosition(182, y + 46);
+      card.badge.setPosition(182, y - 18);
+      card.title.setPosition(254, y - 18);
+      card.location.setPosition(254, y + 2);
+      card.status.setPosition(254, y + 18);
       card.action.container.setPosition(456, y);
       const isSelected = selected?.id === card.contractId;
       const isAccepted = acceptedMissionIds.includes(card.contractId);
@@ -329,7 +329,7 @@ export class MissionBoardOverlay {
       card.status.setText(
         isAccepted
           ? selectedMissionId === card.contractId
-            ? "Queued | Active in Data Pad"
+            ? "Queued | Course set"
             : "Queued"
           : "Ready to accept",
       );
@@ -352,7 +352,7 @@ export class MissionBoardOverlay {
 
     this.detailTitle.setText(`${selected.title}\n${selected.location}`);
     this.detailBody.setText([
-      `Threat: ${getDifficultyLabel(selected)}`,
+      `Threat: ${getDifficultyLabel(selected)} | Source: ${selected.source.label}`,
       "",
       selected.prompt,
       "",

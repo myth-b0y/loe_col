@@ -10,6 +10,7 @@ import {
   getGalaxyMoonPositionAtTime,
   getGalaxyPlanetPositionAtTime,
   getGalaxyRegionLabelAtPosition,
+  getGalaxySectorById,
   getGalaxySectorAtPosition,
   getGalaxySectorDisplayLabel,
   getGalaxySectorTravelLabel,
@@ -24,6 +25,7 @@ import {
   type GalaxyStarSeed,
   type GalaxyStationRecord,
   type GalaxySystemRecord,
+  type GalaxyZoneRecord,
 } from "../content/galaxy";
 import {
   advanceFactionForceProduction,
@@ -43,7 +45,14 @@ import {
   type FactionWarState,
   type FactionWarZoneAdjacency,
 } from "../content/factionWar";
-import { getMissionContract } from "../content/missions";
+import { buildMissionRewardBundle } from "../content/loot";
+import {
+  getCurrentMissionActivityStep,
+  getMissionContract,
+  getMissionContracts,
+  isGroundMissionContract,
+  type MissionActivityStepDefinition,
+} from "../content/missions";
 import {
   SPACE_FACTIONS,
   SHIP_HYPERDRIVE_CONFIG,
@@ -69,7 +78,7 @@ import {
   type SpaceWorldCellKey,
   type SpaceWorldDefinition,
 } from "../content/space";
-import { type RaceId } from "../content/items";
+import { DEFAULT_CRAFTING_MATERIALS, type RaceId } from "../content/items";
 import { gameSession } from "../core/session";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -250,9 +259,45 @@ type SpaceDamageSource =
   | { kind: "player" }
   | { kind: "ship"; shipId: string | null; factionId: SpaceFactionId | null };
 
+type SpaceMissionObjectKind = "hostile" | "boss" | "escort" | "resource" | "contact";
+
+type SpaceMissionObject = {
+  id: string;
+  missionId: string;
+  stepId: string;
+  kind: SpaceMissionObjectKind;
+  root: Phaser.GameObjects.Container;
+  body: Phaser.GameObjects.Shape;
+  marker: Phaser.GameObjects.Arc;
+  label: Phaser.GameObjects.Text;
+  velocity: Phaser.Math.Vector2;
+  radius: number;
+  hp: number;
+  maxHp: number;
+  targetX: number;
+  targetY: number;
+  flash: number;
+  complete: boolean;
+};
+
+type SpaceMissionWaypoint = {
+  id: string;
+  missionId: string;
+  stepId: string;
+  label: string;
+  kind: "planet" | "ship" | "resource" | "zone" | "comms";
+  x: number;
+  y: number;
+  radius: number;
+  color: number;
+  actionLabel?: string;
+  targetObjectId?: string;
+};
+
 type SpacePlayerTarget =
   | { kind: "ship"; ship: SpaceFactionShip }
-  | { kind: "field"; fieldObject: SpaceFieldObject };
+  | { kind: "field"; fieldObject: SpaceFieldObject }
+  | { kind: "mission"; missionObject: SpaceMissionObject };
 
 type SpaceHyperdriveDropTarget = {
   id: string;
@@ -312,6 +357,11 @@ const FACTION_DAMAGE = 1;
 const PLAYER_DAMAGE = 1;
 const AGGRESSION_DURATION = 12;
 const MISSION_LANDING_RANGE_BUFFER = 150;
+const MISSION_TRAVEL_REACH_RADIUS = 440;
+const MISSION_INTERACTION_RANGE = 360;
+const MISSION_ENCOUNTER_OFFSET = 620;
+const MISSION_OBJECT_TARGET_RANGE = 80;
+const LIVE_MISSION_GRANT_DELAY_MS = 2200;
 const FORMATION_RECOVERY_DISTANCE = 180;
 const PLAYER_TARGET_LOCK_RANGE = 980;
 const TOUCH_STICK_RADIUS = 72;
@@ -531,6 +581,10 @@ export class SpaceScene extends Phaser.Scene {
   private activeMoonViews = new Map<string, SpaceCelestialMoonView>();
   private activeStationViews = new Map<string, SpaceStationView>();
   private shots: SpaceProjectile[] = [];
+  private missionObjects: SpaceMissionObject[] = [];
+  private activeMissionWaypoint: SpaceMissionWaypoint | null = null;
+  private activeMissionStepKey: string | null = null;
+  private liveMissionGrantTimerMs = LIVE_MISSION_GRANT_DELAY_MS;
   private burstParticles: SpaceBurstParticle[] = [];
   private activeFieldCellKeys: SpaceWorldCellKey[] = [];
   private activeShipCellKeys: SpaceWorldCellKey[] = [];
@@ -661,6 +715,10 @@ export class SpaceScene extends Phaser.Scene {
     this.activeMoonViews.clear();
     this.activeStationViews.clear();
     this.shots = [];
+    this.clearMissionObjects();
+    this.activeMissionWaypoint = null;
+    this.activeMissionStepKey = null;
+    this.liveMissionGrantTimerMs = LIVE_MISSION_GRANT_DELAY_MS;
     this.burstParticles = [];
     this.activeFieldCellKeys = [];
     this.activeShipCellKeys = [];
@@ -745,6 +803,7 @@ export class SpaceScene extends Phaser.Scene {
     const dt = Math.min(delta / 1000, 0.05);
     this.hudRefreshTimerMs = Math.max(0, this.hudRefreshTimerMs - delta);
     this.syncTrackedMissionPlanet();
+    this.updateLiveMissionGrants(delta);
 
     if (this.isMenuOverlayVisible()) {
       if (this.hudRefreshTimerMs <= 0) {
@@ -775,6 +834,7 @@ export class SpaceScene extends Phaser.Scene {
     this.syncBackdropVisuals();
     this.syncActiveWorld();
     this.updateCelestialMotion();
+    this.updateMissionActivity(dt);
     this.updateFieldObjects(dt);
     this.updateFactionWar(delta);
     this.updateForceProduction(delta);
@@ -1157,10 +1217,23 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private syncTrackedMissionPlanet(orbitTimeMs = this.getOrbitTimeMs()): void {
+    const missionId = this.getActiveCourseMissionId();
     this.trackedMissionPlanet = gameSession.getMissionPlanetForMission(
-      this.routeMissionId ?? gameSession.getTrackedMissionId(),
+      missionId,
       orbitTimeMs,
     );
+  }
+
+  private getActiveCourseMissionId(): string | null {
+    const routeMissionId = this.routeMissionId;
+    if (routeMissionId && (gameSession.isMissionAccepted(routeMissionId) || gameSession.getArrivedMissionId() === routeMissionId)) {
+      return routeMissionId;
+    }
+
+    const selectedMissionId = gameSession.getSelectedMissionId();
+    return selectedMissionId && gameSession.isMissionAccepted(selectedMissionId)
+      ? selectedMissionId
+      : null;
   }
 
   private updateCelestialMotion(orbitTimeMs = this.getOrbitTimeMs()): void {
@@ -1189,6 +1262,501 @@ export class SpaceScene extends Phaser.Scene {
       moonView.orbit.setPosition(planetPosition.x - system.x, planetPosition.y - system.y);
       moonView.root.setPosition(moonPosition.x - system.x, moonPosition.y - system.y);
     });
+  }
+
+  private updateLiveMissionGrants(deltaMs: number): void {
+    this.liveMissionGrantTimerMs -= deltaMs;
+    if (this.liveMissionGrantTimerMs > 0) {
+      return;
+    }
+
+    this.liveMissionGrantTimerMs = 9000;
+    getMissionContracts()
+      .filter((contract) => contract.source.kind === "live-space")
+      .forEach((contract) => {
+        if (gameSession.isLiveMissionGranted(contract.id) || gameSession.isMissionAccepted(contract.id) || gameSession.isMissionCompleted(contract.id)) {
+          return;
+        }
+        if (gameSession.grantLiveMission(contract.id)) {
+          this.pushStatusMessage(`${contract.source.giver}: ${contract.title} added to Data Pad. Set course to show waypoint.`, 7200);
+        }
+      });
+  }
+
+  private getActiveMissionStepContext(): {
+    missionId: string;
+    contract: NonNullable<ReturnType<typeof getMissionContract>>;
+    step: MissionActivityStepDefinition;
+  } | null {
+    const missionId = this.getActiveCourseMissionId();
+    const contract = missionId ? getMissionContract(missionId) : undefined;
+    if (!missionId || !contract) {
+      return null;
+    }
+
+    const step = getCurrentMissionActivityStep(contract, gameSession.getMissionActivityState(missionId));
+    return step ? { missionId, contract, step } : null;
+  }
+
+  private updateMissionActivity(dt: number): void {
+    const context = this.getActiveMissionStepContext();
+    const nextKey = context ? `${context.missionId}:${context.step.id}` : null;
+    if (nextKey !== this.activeMissionStepKey) {
+      this.clearMissionObjects();
+      this.activeMissionWaypoint = null;
+      this.activeMissionStepKey = nextKey;
+      if (context) {
+        this.pushStatusMessage(`${context.contract.title}: ${context.step.objective}`, 5600);
+      }
+    }
+
+    if (!context) {
+      this.activeMissionWaypoint = null;
+      return;
+    }
+
+    this.ensureMissionStepObjects(context.missionId, context.contract, context.step);
+    this.updateMissionObjects(dt);
+    this.activeMissionWaypoint = this.resolveMissionWaypoint(context.missionId, context.contract, context.step);
+    this.checkMissionStepCompletion(context.missionId, context.contract, context.step);
+  }
+
+  private ensureMissionStepObjects(
+    missionId: string,
+    contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ): void {
+    if (this.missionObjects.some((object) => object.missionId === missionId && object.stepId === step.id)) {
+      return;
+    }
+
+    const anchor = this.getMissionAnchorPoint(missionId, step);
+    switch (step.type) {
+      case "space-battle":
+        for (let index = 0; index < 3; index += 1) {
+          const angle = (index / 3) * Math.PI * 2;
+          this.createMissionObject({
+            id: `${missionId}:${step.id}:hostile-${index}`,
+            missionId,
+            stepId: step.id,
+            kind: "hostile",
+            x: anchor.x + Math.cos(angle) * MISSION_ENCOUNTER_OFFSET,
+            y: anchor.y + Math.sin(angle) * MISSION_ENCOUNTER_OFFSET,
+            targetX: anchor.x,
+            targetY: anchor.y,
+            hp: contract.difficulty === "hard" ? 4 : 3,
+            radius: 24,
+            color: 0xff776d,
+            label: "Hostile",
+          });
+        }
+        break;
+      case "kill-target":
+        this.createMissionObject({
+          id: `${missionId}:${step.id}:target`,
+          missionId,
+          stepId: step.id,
+          kind: "hostile",
+          x: anchor.x + MISSION_ENCOUNTER_OFFSET,
+          y: anchor.y - 160,
+          targetX: anchor.x,
+          targetY: anchor.y,
+          hp: 5,
+          radius: 30,
+          color: 0xff8f8f,
+          label: "Marked Target",
+        });
+        break;
+      case "boss":
+        this.createMissionObject({
+          id: `${missionId}:${step.id}:boss`,
+          missionId,
+          stepId: step.id,
+          kind: "boss",
+          x: anchor.x + MISSION_ENCOUNTER_OFFSET,
+          y: anchor.y + MISSION_ENCOUNTER_OFFSET * 0.35,
+          targetX: anchor.x,
+          targetY: anchor.y,
+          hp: contract.difficulty === "hard" ? 10 : 8,
+          radius: 44,
+          color: 0xc8a7ff,
+          label: "Heavy Contact",
+        });
+        break;
+      case "escort":
+        this.createMissionObject({
+          id: `${missionId}:${step.id}:escort`,
+          missionId,
+          stepId: step.id,
+          kind: "escort",
+          x: this.shipRoot.x + 420,
+          y: this.shipRoot.y - 180,
+          targetX: anchor.x + 720,
+          targetY: anchor.y + 240,
+          hp: 5,
+          radius: 24,
+          color: 0x9fffd0,
+          label: "Escort",
+        });
+        break;
+      case "resource":
+        this.createMissionObject({
+          id: `${missionId}:${step.id}:resource`,
+          missionId,
+          stepId: step.id,
+          kind: "resource",
+          x: anchor.x + 300,
+          y: anchor.y + 160,
+          targetX: anchor.x + 300,
+          targetY: anchor.y + 160,
+          hp: 1,
+          radius: 22,
+          color: 0xf0d49c,
+          label: "Salvage",
+        });
+        break;
+      case "zone":
+        this.createMissionObject({
+          id: `${missionId}:${step.id}:zone-signal`,
+          missionId,
+          stepId: step.id,
+          kind: "contact",
+          x: anchor.x,
+          y: anchor.y,
+          targetX: anchor.x,
+          targetY: anchor.y,
+          hp: 1,
+          radius: 18,
+          color: 0xffd27a,
+          label: "Zone Signal",
+        });
+        break;
+      default:
+        break;
+    }
+
+    if (step.type === "zone") {
+      this.primeMissionZoneConflict(missionId, step);
+    }
+  }
+
+  private createMissionObject(options: {
+    id: string;
+    missionId: string;
+    stepId: string;
+    kind: SpaceMissionObjectKind;
+    x: number;
+    y: number;
+    targetX: number;
+    targetY: number;
+    hp: number;
+    radius: number;
+    color: number;
+    label: string;
+  }): SpaceMissionObject {
+    const marker = this.add.circle(0, 0, options.radius + 12, options.color, 0.08)
+      .setStrokeStyle(2, 0xfff3d2, 0.76);
+    const body = options.kind === "resource"
+      ? this.add.rectangle(0, 0, options.radius * 1.4, options.radius * 1.4, options.color, 0.94).setStrokeStyle(2, 0xfff3d2, 0.84)
+      : options.kind === "escort"
+        ? this.add.triangle(0, 0, 0, -options.radius, options.radius * 0.82, options.radius, -options.radius * 0.82, options.radius, options.color, 0.96).setStrokeStyle(2, 0xf4fff7, 0.82)
+        : this.add.triangle(0, 0, 0, -options.radius * 1.12, options.radius, options.radius, -options.radius, options.radius, options.color, 0.96).setStrokeStyle(2, 0xffe1d8, 0.86);
+    const label = this.add.text(0, options.radius + 16, options.label, {
+      fontFamily: "Arial",
+      fontSize: "13px",
+      color: "#fff1cf",
+      fontStyle: "bold",
+      backgroundColor: "#07111bcc",
+      padding: { x: 5, y: 3 },
+    }).setOrigin(0.5, 0);
+    const root = this.add.container(options.x, options.y, [marker, body, label]).setDepth(13);
+    const missionObject: SpaceMissionObject = {
+      id: options.id,
+      missionId: options.missionId,
+      stepId: options.stepId,
+      kind: options.kind,
+      root,
+      body,
+      marker,
+      label,
+      velocity: new Phaser.Math.Vector2(),
+      radius: options.radius,
+      hp: options.hp,
+      maxHp: options.hp,
+      targetX: options.targetX,
+      targetY: options.targetY,
+      flash: 0,
+      complete: false,
+    };
+    this.missionObjects.push(missionObject);
+    return missionObject;
+  }
+
+  private updateMissionObjects(dt: number): void {
+    this.missionObjects.forEach((object) => {
+      object.flash = Math.max(0, object.flash - (dt * 5));
+      object.marker.setStrokeStyle(2, 0xfff3d2, 0.52 + object.flash * 0.4);
+      object.marker.setFillStyle(object.kind === "resource" ? 0xf0d49c : object.kind === "escort" ? 0x9fffd0 : 0xff776d, 0.06 + object.flash * 0.18);
+
+      if (object.kind === "resource" || object.complete) {
+        return;
+      }
+
+      const dx = object.targetX - object.root.x;
+      const dy = object.targetY - object.root.y;
+      const distance = Math.hypot(dx, dy);
+      const speed = object.kind === "escort" ? 175 : object.kind === "boss" ? 110 : 145;
+      if (distance > MISSION_OBJECT_TARGET_RANGE) {
+        object.velocity.set(dx / distance, dy / distance).scale(speed);
+      } else {
+        object.velocity.scale(0.84);
+        if (object.kind === "escort") {
+          object.complete = true;
+        }
+      }
+      object.root.x += object.velocity.x * dt;
+      object.root.y += object.velocity.y * dt;
+      if (object.velocity.lengthSq() > 1) {
+        object.root.rotation = Math.atan2(object.velocity.y, object.velocity.x) + Math.PI * 0.5;
+      }
+    });
+  }
+
+  private clearMissionObjects(): void {
+    this.missionObjects.forEach((object) => {
+      object.root.destroy(true);
+    });
+    this.missionObjects = [];
+  }
+
+  private clearMissionObjectReferences(objectId: string): void {
+    if (this.selectedTarget?.kind === "mission" && this.selectedTarget.missionObject.id === objectId) {
+      this.selectedTarget = null;
+    }
+    if (this.autoAimTarget?.kind === "mission" && this.autoAimTarget.missionObject.id === objectId) {
+      this.autoAimTarget = null;
+    }
+  }
+
+  private getMissionAnchorPoint(missionId: string, step: MissionActivityStepDefinition): { x: number; y: number; radius: number; label: string; color: number } {
+    if (step.targetHint === "prime-world") {
+      const homeworld = gameSession.getHomeworldPlanetByRace();
+      if (homeworld) {
+        const position = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, homeworld, this.getOrbitTimeMs());
+        return { x: position.x, y: position.y, radius: homeworld.radius, label: homeworld.name, color: homeworld.color };
+      }
+    }
+
+    if (step.targetHint === "station") {
+      const station = this.galaxyDefinition.stations[0];
+      if (station) {
+        return { x: station.x, y: station.y, radius: station.radius, label: station.name, color: station.borderColor };
+      }
+    }
+
+    if (step.targetHint === "zone") {
+      const zone = this.getMissionTargetZone();
+      const system = zone ? this.galaxySystemsById.get(zone.systemId) ?? null : null;
+      if (zone && system) {
+        return { x: system.x, y: system.y, radius: 320, label: zone.name, color: 0xffd27a };
+      }
+    }
+
+    const missionPlanet = gameSession.getMissionPlanetForMission(missionId, this.getOrbitTimeMs());
+    if (missionPlanet) {
+      return {
+        x: missionPlanet.x,
+        y: missionPlanet.y,
+        radius: missionPlanet.radius,
+        label: missionPlanet.name,
+        color: missionPlanet.color,
+      };
+    }
+
+    return { x: this.shipRoot.x + 800, y: this.shipRoot.y, radius: 260, label: "Mission waypoint", color: 0xffc56e };
+  }
+
+  private resolveMissionWaypoint(
+    missionId: string,
+    _contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ): SpaceMissionWaypoint | null {
+    const object = this.missionObjects.find((candidate) => candidate.missionId === missionId && candidate.stepId === step.id && !candidate.complete);
+    if (object && (step.type === "escort" || step.type === "kill-target" || step.type === "space-battle" || step.type === "boss" || step.type === "resource")) {
+      return {
+        id: object.id,
+        missionId,
+        stepId: step.id,
+        label: object.label.text,
+        kind: object.kind === "resource" ? "resource" : "ship",
+        x: object.root.x,
+        y: object.root.y,
+        radius: object.radius,
+        color: object.kind === "resource" ? 0xf0d49c : object.kind === "escort" ? 0x9fffd0 : 0xff776d,
+        actionLabel: object.kind === "resource" ? "RECOVER" : undefined,
+        targetObjectId: object.id,
+      };
+    }
+
+    const anchor = this.getMissionAnchorPoint(missionId, step);
+    return {
+      id: `${missionId}:${step.id}:waypoint`,
+      missionId,
+      stepId: step.id,
+      label: anchor.label,
+      kind: step.type === "comms" ? "comms" : step.type === "zone" ? "zone" : "planet",
+      x: anchor.x,
+      y: anchor.y,
+      radius: anchor.radius,
+      color: anchor.color,
+      actionLabel: step.type === "comms" ? "COMMS" : step.type === "zone" ? "ASSIST" : step.type === "ground" ? "LAND" : undefined,
+    };
+  }
+
+  private checkMissionStepCompletion(
+    missionId: string,
+    contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ): void {
+    const waypoint = this.activeMissionWaypoint;
+    if (!waypoint) {
+      return;
+    }
+
+    const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, waypoint.x, waypoint.y);
+    if (step.type === "travel" && distance <= Math.max(MISSION_TRAVEL_REACH_RADIUS, waypoint.radius + 120)) {
+      this.completeMissionActivityStep(missionId, contract, step);
+      return;
+    }
+
+    if ((step.type === "space-battle" || step.type === "kill-target" || step.type === "boss") && !this.missionObjects.some((object) => (
+      object.missionId === missionId
+      && object.stepId === step.id
+      && (object.kind === "hostile" || object.kind === "boss")
+    ))) {
+      this.completeMissionActivityStep(missionId, contract, step);
+      return;
+    }
+
+    if (step.type === "escort") {
+      const escort = this.missionObjects.find((object) => object.missionId === missionId && object.stepId === step.id && object.kind === "escort");
+      if (escort?.complete) {
+        this.completeMissionActivityStep(missionId, contract, step);
+      }
+    }
+  }
+
+  private tryCompleteInteractiveMissionStep(): boolean {
+    const context = this.getActiveMissionStepContext();
+    if (!context || !this.activeMissionWaypoint) {
+      return false;
+    }
+
+    const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, this.activeMissionWaypoint.x, this.activeMissionWaypoint.y);
+    if (distance > MISSION_INTERACTION_RANGE + this.activeMissionWaypoint.radius * 0.15) {
+      return false;
+    }
+
+    if (context.step.type === "comms" || context.step.type === "resource" || context.step.type === "zone") {
+      if (context.step.type === "zone") {
+        this.resolveMissionZoneSupport(context.missionId, context.step);
+      }
+      this.completeMissionActivityStep(context.missionId, context.contract, context.step);
+      return true;
+    }
+
+    return false;
+  }
+
+  private completeMissionActivityStep(
+    missionId: string,
+    contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ): void {
+    this.pushStatusMessage(step.completionText, 5400);
+    this.clearMissionObjects();
+    this.activeMissionWaypoint = null;
+    const state = gameSession.getMissionActivityState(missionId);
+    if (state.stepIndex + 1 < contract.activities.length) {
+      gameSession.advanceMissionActivityStep(missionId, step.id);
+      this.activeMissionStepKey = null;
+      return;
+    }
+
+    this.completeSpaceMission(missionId, contract);
+  }
+
+  private completeSpaceMission(missionId: string, contract: NonNullable<ReturnType<typeof getMissionContract>>): void {
+    const credits = contract.difficulty === "hard" ? 150 : contract.difficulty === "medium" ? 100 : 70;
+    const reward = buildMissionRewardBundle({
+      missionId,
+      difficulty: contract.difficulty,
+      raceId: gameSession.getPlayerRaceId(),
+      xp: contract.baseXp,
+      credits,
+      materials: { ...DEFAULT_CRAFTING_MATERIALS },
+      items: [],
+      seed: (this.galaxyDefinition.seed ^ missionId.length ^ Math.round(this.time.now)) >>> 0,
+    });
+    gameSession.completeMission(missionId, reward);
+    if (this.routeMissionId === missionId) {
+      this.routeMissionId = null;
+      this.routeTitle = "Free roam launch";
+    }
+    this.activeMissionStepKey = null;
+    this.trackedMissionPlanet = null;
+    this.pushStatusMessage(`${contract.title} complete. +${reward.xp} XP +${reward.credits} credits.`, 8200);
+  }
+
+  private getMissionTargetZone(): GalaxyZoneRecord | null {
+    const empireRaceId = this.warState.empireRaceId;
+    const empireHeldForeign = this.galaxyDefinition.zones.find((zone) => {
+      const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId;
+      return coreRaceId && coreRaceId !== empireRaceId && zone.currentControllerId === empireRaceId;
+    });
+    if (empireHeldForeign) {
+      return empireHeldForeign;
+    }
+
+    return this.galaxyDefinition.zones.find((zone) => !zone.isPrimeWorldZone) ?? this.galaxyDefinition.zones[0] ?? null;
+  }
+
+  private primeMissionZoneConflict(_missionId: string, _step: MissionActivityStepDefinition): void {
+    const zone = this.getMissionTargetZone();
+    if (!zone) {
+      return;
+    }
+
+    const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId ?? getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y).raceId;
+    if (zone.currentControllerId === coreRaceId && zone.zoneState === "stable") {
+      zone.zoneState = "contested";
+      zone.zoneCaptureProgress = Math.max(zone.zoneCaptureProgress, 0.18);
+      zone.captureAttackerRaceId = this.warState.empireRaceId;
+    } else if (zone.currentControllerId !== coreRaceId) {
+      zone.zoneState = "capturing";
+      zone.zoneCaptureProgress = Math.max(zone.zoneCaptureProgress, 0.58);
+      zone.captureAttackerRaceId = coreRaceId;
+    }
+    this.galaxyStateDirty = true;
+    gameSession.setGalaxyDefinition(this.galaxyDefinition, true);
+  }
+
+  private resolveMissionZoneSupport(_missionId: string, _step: MissionActivityStepDefinition): void {
+    const zone = this.getMissionTargetZone();
+    if (!zone) {
+      return;
+    }
+
+    const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId ?? getGalaxySectorAtPosition(this.shipRoot.x, this.shipRoot.y).raceId;
+    zone.currentControllerId = coreRaceId;
+    zone.zoneState = "stable";
+    zone.zoneCaptureProgress = 0;
+    zone.zoneConflictProgress = 0;
+    zone.captureAttackerRaceId = null;
+    this.galaxyStateDirty = true;
+    this.warStateDirty = true;
+    gameSession.setGalaxyDefinition(this.galaxyDefinition, true);
+    this.pushStatusMessage(`${zone.name} stabilized for ${getGalaxySectorById(zone.coreSectorId)?.label ?? "local forces"}.`, 6200);
   }
 
   private createCelestialSystemView(system: GalaxySystemRecord): SpaceCelestialSystemView {
@@ -2939,6 +3507,17 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private getHyperdriveSafetyTargets(): SpaceHyperdriveDropTarget[] {
+    if (this.activeMissionWaypoint) {
+      return [{
+        id: `mission:${this.activeMissionWaypoint.missionId}:${this.activeMissionWaypoint.stepId}`,
+        label: this.activeMissionWaypoint.label,
+        x: this.activeMissionWaypoint.x,
+        y: this.activeMissionWaypoint.y,
+        safetyRadius: this.activeMissionWaypoint.radius + SHIP_HYPERDRIVE_CONFIG.proximitySafetyPadding,
+        autoDropRadius: this.activeMissionWaypoint.radius + SHIP_HYPERDRIVE_CONFIG.waypointAutoDropPadding,
+      }];
+    }
+
     const missionPlanet = this.getTrackedMissionPlanet();
     if (!missionPlanet) {
       return [];
@@ -3141,6 +3720,13 @@ export class SpaceScene extends Phaser.Scene {
       ).normalize();
     }
 
+    if (this.autoAimTarget.kind === "mission") {
+      return new Phaser.Math.Vector2(
+        this.autoAimTarget.missionObject.root.x - this.shipRoot.x,
+        this.autoAimTarget.missionObject.root.y - this.shipRoot.y,
+      ).normalize();
+    }
+
     return new Phaser.Math.Vector2(
       this.autoAimTarget.fieldObject.root.x - this.shipRoot.x,
       this.autoAimTarget.fieldObject.root.y - this.shipRoot.y,
@@ -3166,7 +3752,12 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     const nearestHostileShip = this.getNearestHostileShip();
-    return nearestHostileShip ? { kind: "ship", ship: nearestHostileShip } : null;
+    if (nearestHostileShip) {
+      return { kind: "ship", ship: nearestHostileShip };
+    }
+
+    const missionTarget = this.getNearestHostileMissionObject();
+    return missionTarget ? { kind: "mission", missionObject: missionTarget } : null;
   }
 
   private getNearestHostileShip(): SpaceFactionShip | null {
@@ -3190,7 +3781,38 @@ export class SpaceScene extends Phaser.Scene {
     return nearest;
   }
 
+  private getNearestHostileMissionObject(): SpaceMissionObject | null {
+    let nearest: SpaceMissionObject | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    this.missionObjects.forEach((object) => {
+      if (object.kind !== "hostile" && object.kind !== "boss") {
+        return;
+      }
+      const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, object.root.x, object.root.y);
+      if (distance > PLAYER_TARGET_LOCK_RANGE || distance >= nearestDistance) {
+        return;
+      }
+      nearest = object;
+      nearestDistance = distance;
+    });
+    return nearest;
+  }
+
   private getTargetCycleCandidates(): SpacePlayerTarget[] {
+    const missionHostiles = this.missionObjects
+      .filter((object) => object.kind === "hostile" || object.kind === "boss")
+      .sort((left, right) => {
+        const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
+        const rightDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, right.root.x, right.root.y);
+        return leftDistance - rightDistance;
+      })
+      .filter((object) => Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, object.root.x, object.root.y) <= PLAYER_TARGET_LOCK_RANGE)
+      .map<SpacePlayerTarget>((missionObject) => ({ kind: "mission", missionObject }));
+
+    if (missionHostiles.length > 0) {
+      return missionHostiles;
+    }
+
     const hostileShips = this.factionShips
       .filter((ship) => this.isShipHostileToPlayer(ship))
       .sort((left, right) => {
@@ -3248,6 +3870,10 @@ export class SpaceScene extends Phaser.Scene {
       return left.fieldObject.id === right.fieldObject.id;
     }
 
+    if (left.kind === "mission" && right.kind === "mission") {
+      return left.missionObject.id === right.missionObject.id;
+    }
+
     return false;
   }
 
@@ -3258,8 +3884,14 @@ export class SpaceScene extends Phaser.Scene {
         && Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, target.ship.root.x, target.ship.root.y) <= PLAYER_TARGET_LOCK_RANGE;
     }
 
-    return this.asteroids.includes(target.fieldObject)
+    if (target.kind === "field") {
+      return this.asteroids.includes(target.fieldObject)
       && Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, target.fieldObject.root.x, target.fieldObject.root.y) <= PLAYER_TARGET_LOCK_RANGE;
+    }
+
+    return this.missionObjects.includes(target.missionObject)
+      && (target.missionObject.kind === "hostile" || target.missionObject.kind === "boss")
+      && Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, target.missionObject.root.x, target.missionObject.root.y) <= PLAYER_TARGET_LOCK_RANGE;
   }
 
   private isShipHostileToPlayer(ship: SpaceFactionShip): boolean {
@@ -4397,6 +5029,28 @@ export class SpaceScene extends Phaser.Scene {
           continue;
         }
 
+        for (let objectIndex = this.missionObjects.length - 1; objectIndex >= 0; objectIndex -= 1) {
+          const missionObject = this.missionObjects[objectIndex];
+          if (missionObject.kind !== "hostile" && missionObject.kind !== "boss") {
+            continue;
+          }
+          const dx = missionObject.root.x - shot.sprite.x;
+          const dy = missionObject.root.y - shot.sprite.y;
+          const combinedRadius = missionObject.radius + shot.radius;
+          if ((dx * dx) + (dy * dy) > combinedRadius * combinedRadius) {
+            continue;
+          }
+
+          this.damageMissionObject(missionObject, shot.damage);
+          this.destroyProjectile(shotIndex);
+          consumed = true;
+          break;
+        }
+
+        if (consumed) {
+          continue;
+        }
+
         for (let objectIndex = this.asteroids.length - 1; objectIndex >= 0; objectIndex -= 1) {
           const fieldObject = this.asteroids[objectIndex];
           const dx = fieldObject.root.x - shot.sprite.x;
@@ -4455,6 +5109,22 @@ export class SpaceScene extends Phaser.Scene {
         continue;
       }
     }
+  }
+
+  private damageMissionObject(missionObject: SpaceMissionObject, damage: number): void {
+    missionObject.hp -= damage;
+    missionObject.flash = 1;
+    this.playWorldCue("shield-hit", missionObject.root.x, missionObject.root.y, 0.76);
+    if (missionObject.hp > 0) {
+      return;
+    }
+
+    const x = missionObject.root.x;
+    const y = missionObject.root.y;
+    this.clearMissionObjectReferences(missionObject.id);
+    missionObject.root.destroy(true);
+    Phaser.Utils.Array.Remove(this.missionObjects, missionObject);
+    this.spawnBurst(x, y, 0xffd2bc, missionObject.kind === "boss" ? 16 : 8, 90, 210);
   }
 
   private damageFieldObject(fieldObject: SpaceFieldObject): void {
@@ -4739,17 +5409,29 @@ export class SpaceScene extends Phaser.Scene {
     this.refreshCurrentSector();
     const regionLabel = this.getCurrentRegionLabel();
     const missionPlanet = this.getTrackedMissionPlanet();
-    const trackedMissionId = missionPlanet?.missionId ?? this.routeMissionId ?? gameSession.getTrackedMissionId();
+    const missionWaypoint = this.activeMissionWaypoint;
+    const trackedMissionId = missionWaypoint?.missionId ?? missionPlanet?.missionId ?? this.getActiveCourseMissionId();
     const trackedMission = trackedMissionId ? getMissionContract(trackedMissionId) : null;
     const localCounts = this.getFactionCounts(1400);
     const localBreakables = this.countNearbyBreakables(1200);
     const speed = Math.round(this.shipVelocity.length());
     const hyperdriveStatus = this.getHyperdriveStatusLabel();
     const hyperdriveHint = this.getHyperdriveHintLabel();
-    const missionDistance = missionPlanet
+    const planetDistance = missionPlanet
       ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionPlanet.x, missionPlanet.y)
       : null;
-    const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, missionDistance);
+    const waypointDistance = missionWaypoint
+      ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionWaypoint.x, missionWaypoint.y)
+      : null;
+    const missionDistance = waypointDistance ?? planetDistance;
+    const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, planetDistance);
+    const missionActionReady = Boolean(
+      missionWaypoint
+      && missionWaypoint.actionLabel
+      && missionWaypoint.actionLabel !== "LAND"
+      && waypointDistance !== null
+      && waypointDistance <= MISSION_INTERACTION_RANGE + missionWaypoint.radius * 0.15,
+    );
     const stationInteraction = this.getNearestStationInteraction();
     const stationRestricted = Boolean(stationInteraction && this.isStationEmpireRestricted(stationInteraction.station));
     const touchLocked = this.returningToShip || this.playerDestroyed || this.isMenuOverlayVisible();
@@ -4763,6 +5445,8 @@ export class SpaceScene extends Phaser.Scene {
     const targetLabel = this.autoAimTarget
       ? this.autoAimTarget.kind === "ship"
         ? `${SPACE_FACTIONS[this.autoAimTarget.ship.factionId].label} ship`
+        : this.autoAimTarget.kind === "mission"
+          ? this.autoAimTarget.missionObject.kind === "boss" ? "Mission heavy contact" : "Mission target"
         : this.autoAimTarget.fieldObject.kind === "asteroid"
           ? this.autoAimTarget.fieldObject.isLarge ? "Large asteroid" : "Asteroid"
           : "Debris"
@@ -4771,6 +5455,8 @@ export class SpaceScene extends Phaser.Scene {
     const autoFire = gameSession.settings.controls.autoFire;
     const stationStatus = landingReady
       ? `Mission world ${missionPlanet?.name ?? "target"} | Press F to land`
+      : missionActionReady
+        ? `${missionWaypoint?.label ?? "Mission target"} | Press F to ${missionWaypoint?.actionLabel?.toLowerCase() ?? "interact"}`
       : stationInteraction
         ? stationRestricted
           ? stationInteraction.inRange
@@ -4792,11 +5478,11 @@ export class SpaceScene extends Phaser.Scene {
       : `Free roam launch  |  Region: ${regionLabel}`);
     this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady ? "  |  Landing ready" : ""}`);
     const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guardians ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
-    this.contactText?.setText(missionPlanet
-      ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionPlanet.name} ${landingReady ? "| Landing window open." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
+    this.contactText?.setText(missionWaypoint || missionPlanet
+      ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionWaypoint?.label ?? missionPlanet?.name ?? "target"} ${landingReady ? "| Landing window open." : missionActionReady ? "| Interaction ready." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
       : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}\n${stationStatus}`);
-    this.coordinateText?.setText(missionPlanet
-      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionPlanet.name}  X ${Math.round(missionPlanet.x)}  Y ${Math.round(missionPlanet.y)}\nDIST ${Math.round(missionDistance ?? 0)}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : `REGION ${regionLabel}`}\nHYPER ${hyperdriveStatus}`
+    this.coordinateText?.setText(missionWaypoint || missionPlanet
+      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionWaypoint?.label ?? missionPlanet?.name ?? "Mission"}  X ${Math.round(missionWaypoint?.x ?? missionPlanet?.x ?? 0)}  Y ${Math.round(missionWaypoint?.y ?? missionPlanet?.y ?? 0)}\nDIST ${Math.round(missionDistance ?? 0)}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : `REGION ${regionLabel}`}\nHYPER ${hyperdriveStatus}`
       : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : "STATION none nearby"}\nHYPER ${hyperdriveStatus}`);
     this.returnButton?.setLabel("Return To Ship");
     this.attackButton?.setLabel("Attack");
@@ -4831,7 +5517,7 @@ export class SpaceScene extends Phaser.Scene {
       stationView.label.setAlpha(isNearestStation ? 0.98 : 0.8);
     });
     this.updateMissionPlanetVisuals(missionPlanet, landingReady);
-    this.updateWaypointIndicator(missionPlanet, missionDistance, landingReady);
+    this.updateWaypointIndicator(missionWaypoint ?? missionPlanet, missionDistance, landingReady || missionActionReady);
     this.refreshStatusMessageText();
     if (this.stationOverlay?.isVisible() && this.stationOverlayStationId) {
       const station = this.galaxyStationsById.get(this.stationOverlayStationId);
@@ -4944,6 +5630,18 @@ export class SpaceScene extends Phaser.Scene {
       });
     }
 
+    this.missionObjects.forEach((object) => {
+      sources.push({
+        id: `mission-object:${object.id}`,
+        kind: object.kind === "resource" || object.kind === "contact" ? "poi" : object.kind === "escort" ? "friendly-ship" : "enemy-ship",
+        label: object.label.text,
+        x: object.root.x,
+        y: object.root.y,
+        radius: object.radius,
+        color: object.kind === "resource" ? 0xf0d49c : object.kind === "escort" ? 0x9fffd0 : 0xff776d,
+      });
+    });
+
     return sources;
   }
 
@@ -4956,6 +5654,11 @@ export class SpaceScene extends Phaser.Scene {
     if (sourceId.startsWith("field:")) {
       const fieldId = sourceId.slice(6);
       return this.fieldStates.get(fieldId)?.destroyed ?? false;
+    }
+
+    if (sourceId.startsWith("mission-object:")) {
+      const objectId = sourceId.slice("mission-object:".length);
+      return !this.missionObjects.some((object) => object.id === objectId);
     }
 
     return false;
@@ -5065,6 +5768,10 @@ export class SpaceScene extends Phaser.Scene {
 
   private tryHandlePrimaryInteraction(): void {
     if (this.playerDestroyed || this.returningToShip || this.isMenuOverlayVisible()) {
+      return;
+    }
+
+    if (this.tryCompleteInteractiveMissionStep()) {
       return;
     }
 
@@ -5240,6 +5947,11 @@ export class SpaceScene extends Phaser.Scene {
       return false;
     }
 
+    const context = this.getActiveMissionStepContext();
+    if (!context || context.step.type !== "ground" || !isGroundMissionContract(context.contract)) {
+      return false;
+    }
+
     return distance <= missionPlanet.radius + MISSION_LANDING_RANGE_BUFFER;
   }
 
@@ -5263,18 +5975,18 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updateWaypointIndicator(
-    missionPlanet: GalaxyMissionPlanet | null,
+    missionTarget: (GalaxyMissionPlanet | SpaceMissionWaypoint) | null,
     missionDistance: number | null,
-    landingReady: boolean,
+    actionReady: boolean,
   ): void {
-    if (!this.waypointArrow || !this.waypointLabel || !missionPlanet || missionDistance === null) {
+    if (!this.waypointArrow || !this.waypointLabel || !missionTarget || missionDistance === null) {
       this.waypointArrow?.setVisible(false);
       this.waypointLabel?.setVisible(false);
       return;
     }
 
-    const dx = missionPlanet.x - this.shipRoot.x;
-    const dy = missionPlanet.y - this.shipRoot.y;
+    const dx = missionTarget.x - this.shipRoot.x;
+    const dy = missionTarget.y - this.shipRoot.y;
     const angle = Math.atan2(dy, dx);
     const centerX = GAME_WIDTH * 0.5;
     const centerY = GAME_HEIGHT * 0.5;
@@ -5291,13 +6003,17 @@ export class SpaceScene extends Phaser.Scene {
     this.waypointArrow
       .setPosition(indicatorX, indicatorY)
       .setRotation(angle + Math.PI * 0.5)
-      .setFillStyle(landingReady ? 0x9df7c7 : 0xffc56e, 0.96)
+      .setFillStyle(actionReady ? 0x9df7c7 : 0xffc56e, 0.96)
       .setVisible(true);
+    const label = "label" in missionTarget ? missionTarget.label : missionTarget.name;
+    const readyText = "actionLabel" in missionTarget && missionTarget.actionLabel
+      ? `${missionTarget.actionLabel} READY`
+      : "LANDING WINDOW OPEN";
     this.waypointLabel
       .setPosition(indicatorX, indicatorY + 18)
-      .setText(landingReady
-        ? `${missionPlanet.name}\nLANDING WINDOW OPEN`
-        : `${missionPlanet.name}\n${Math.round(missionDistance)} units`)
+      .setText(actionReady
+        ? `${label}\n${readyText}`
+        : `${label}\n${Math.round(missionDistance)} units`)
       .setVisible(true);
   }
 
@@ -5636,6 +6352,24 @@ export class SpaceScene extends Phaser.Scene {
         x: Math.round(this.getTrackedMissionPlanet()?.x ?? 0),
         y: Math.round(this.getTrackedMissionPlanet()?.y ?? 0),
       } : null,
+      activeMissionWaypoint: this.activeMissionWaypoint ? {
+        missionId: this.activeMissionWaypoint.missionId,
+        stepId: this.activeMissionWaypoint.stepId,
+        label: this.activeMissionWaypoint.label,
+        kind: this.activeMissionWaypoint.kind,
+        x: Math.round(this.activeMissionWaypoint.x),
+        y: Math.round(this.activeMissionWaypoint.y),
+      } : null,
+      missionObjects: this.missionObjects.map((object) => ({
+        id: object.id,
+        kind: object.kind,
+        missionId: object.missionId,
+        stepId: object.stepId,
+        hp: object.hp,
+        x: Math.round(object.root.x),
+        y: Math.round(object.root.y),
+        complete: object.complete,
+      })),
       landingReady: this.canLandOnTrackedMissionPlanet(),
       nearestStation: nearestStation
         ? {
@@ -5674,12 +6408,16 @@ export class SpaceScene extends Phaser.Scene {
       selectedTarget: this.selectedTarget
         ? this.selectedTarget.kind === "ship"
           ? { kind: "ship", id: this.selectedTarget.ship.id, factionId: this.selectedTarget.ship.factionId }
-          : { kind: "field", id: this.selectedTarget.fieldObject.id, fieldKind: this.selectedTarget.fieldObject.kind }
+          : this.selectedTarget.kind === "mission"
+            ? { kind: "mission", id: this.selectedTarget.missionObject.id, objectKind: this.selectedTarget.missionObject.kind }
+            : { kind: "field", id: this.selectedTarget.fieldObject.id, fieldKind: this.selectedTarget.fieldObject.kind }
         : null,
       autoAimTarget: this.autoAimTarget
         ? this.autoAimTarget.kind === "ship"
           ? { kind: "ship", id: this.autoAimTarget.ship.id, factionId: this.autoAimTarget.ship.factionId }
-          : { kind: "field", id: this.autoAimTarget.fieldObject.id, fieldKind: this.autoAimTarget.fieldObject.kind }
+          : this.autoAimTarget.kind === "mission"
+            ? { kind: "mission", id: this.autoAimTarget.missionObject.id, objectKind: this.autoAimTarget.missionObject.kind }
+            : { kind: "field", id: this.autoAimTarget.fieldObject.id, fieldKind: this.autoAimTarget.fieldObject.kind }
         : null,
       touchAttackHeld: this.attackPointerId !== null,
       touchHyperdriveHeld: this.hyperdrivePointerId !== null,

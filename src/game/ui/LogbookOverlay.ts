@@ -1,6 +1,10 @@
 import Phaser from "phaser";
 
-import { getMissionContracts, type MissionContractDefinition } from "../content/missions";
+import {
+  getCurrentMissionActivityStep,
+  getMissionContracts,
+  type MissionContractDefinition,
+} from "../content/missions";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 import { LayoutDebugOverlay } from "./LayoutDebugOverlay";
@@ -46,7 +50,7 @@ function getStatusLabel(contractId: string): string {
   }
 
   if (gameSession.getSelectedMissionId() === contractId) {
-    return "Active Route";
+    return "Course Set";
   }
 
   if (gameSession.isMissionAccepted(contractId)) {
@@ -295,7 +299,7 @@ export class LogbookOverlay {
       y: detailRect.bottom - 44,
       width: 196,
       height: 40,
-      label: "Set Active",
+      label: "Set Course",
       onClick: () => {
         if (gameSession.setSelectedMission(this.selectedMissionId)) {
           this.refresh();
@@ -470,10 +474,10 @@ export class LogbookOverlay {
       ? contracts.find((contract) => contract.id === gameSession.activeMissionId)
       : undefined;
 
-    this.subtitle.setText("Accepted contracts, archived clears, and the next active route all live here.");
+    this.subtitle.setText("Accepted missions, archived clears, and the current set course live here.");
     this.listSummary.setText(
       queuedContracts.length > 0
-        ? `Queued routes: ${queuedContracts.length}\nDeploy target: ${(selectedMissionId && contracts.find((contract) => contract.id === selectedMissionId)?.title) ?? (activeMission?.title ?? "None")}`
+        ? `Queued missions: ${queuedContracts.length}\nSet course: ${(selectedMissionId && contracts.find((contract) => contract.id === selectedMissionId)?.title) ?? (activeMission?.title ?? "None")}`
         : "No accepted routes yet.\nVisit the mission terminal to queue contracts, then choose one here.",
     );
 
@@ -546,21 +550,24 @@ export class LogbookOverlay {
     const inMission = gameSession.activeMissionId === selected.id;
 
     this.detailTitle.setText(selected.title);
-    this.detailMeta.setText(`${selected.location} | ${getStatusLabel(selected.id)}`);
+    const activityState = gameSession.getMissionActivityState(selected.id);
+    const currentStep = getCurrentMissionActivityStep(selected, activityState);
+    this.detailMeta.setText(`${selected.location} | ${getStatusLabel(selected.id)} | ${selected.source.label}`);
     this.detailBody.setText([
       selected.prompt,
       "",
       `Objective: ${selected.objective}`,
+      currentStep ? `Current step: ${currentStep.objective}` : "",
       "",
       `Rewards: +${selected.baseXp} XP | ${selected.rewardPreview.dropLines.join(" | ")} | ${selected.rewardPreview.salvageLine}`,
-    ].join("\n"));
+    ].filter(Boolean).join("\n"));
     this.detailFooter.setText(
       inMission
         ? "This contract is currently live in the field."
         : accepted
           ? activeRoute
-            ? "This route is active. The deploy door will launch this mission next."
-            : "Queued route. Set it active here when you want the ship door to launch it."
+            ? "This mission is your set course. Waypoints are visible only for this accepted mission."
+            : "Queued mission. Set course here when you want its waypoint and route active."
           : completed
             ? "Archived story clear. Completed routes are removed from the mission terminal and kept here for review."
             : "This contract is not currently queued.",

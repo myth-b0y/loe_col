@@ -68,6 +68,11 @@ import {
 } from "../content/items";
 import { type MissionRewardBundle } from "../content/loot";
 import {
+  createDefaultMissionActivityState,
+  getMissionContracts,
+  type MissionActivityState,
+} from "../content/missions";
+import {
   DEFAULT_RUN_CONFIG,
   GAME_MODE_RULES,
   type GameModeRules,
@@ -329,7 +334,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 11;
+  version: 12;
   meta: {
     lastSavedAt: string | null;
   };
@@ -353,6 +358,8 @@ export type SaveData = {
   missions: {
     acceptedMissionIds: string[];
     selectedMissionId: string | null;
+    activityStates: Record<string, MissionActivityState>;
+    liveGrantedMissionIds: string[];
   };
   progression: {
     completedMissionIds: string[];
@@ -376,6 +383,7 @@ const SLOT_COUNT = 3;
 const LEGACY_SAVE_KEY = "loe-col-save-v1";
 const SAVE_SLOTS_KEY = "loe-col-save-slots-v2";
 const SETTINGS_KEY = "loe-col-settings-v1";
+const DEFAULT_UNLOCKED_MISSION_IDS = getMissionContracts().map((contract) => contract.id);
 
 const DEFAULT_SETTINGS: GameSettings = {
   graphics: {
@@ -436,12 +444,50 @@ function deriveLegacyGalaxySeed(parsed: Partial<SaveData>, raceId: RaceId): numb
   return hashed === 0 ? 0x41c6_ce57 : hashed;
 }
 
+function normalizeMissionActivityState(value: Partial<MissionActivityState> | undefined): MissionActivityState {
+  const defaults = createDefaultMissionActivityState();
+  return {
+    stepIndex: typeof value?.stepIndex === "number" && Number.isFinite(value.stepIndex)
+      ? Math.max(0, Math.floor(value.stepIndex))
+      : defaults.stepIndex,
+    completedStepIds: Array.isArray(value?.completedStepIds)
+      ? Array.from(new Set(value.completedStepIds.filter((id): id is string => typeof id === "string" && id.length > 0)))
+      : [],
+    flags: value?.flags && typeof value.flags === "object" && !Array.isArray(value.flags)
+      ? Object.entries(value.flags).reduce<Record<string, string | number | boolean>>((flags, [key, flagValue]) => {
+          if (
+            typeof flagValue === "string"
+            || typeof flagValue === "number"
+            || typeof flagValue === "boolean"
+          ) {
+            flags[key] = flagValue;
+          }
+          return flags;
+        }, {})
+      : {},
+  };
+}
+
+function normalizeMissionActivityStates(value: unknown): Record<string, MissionActivityState> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.entries(value as Record<string, Partial<MissionActivityState>>)
+    .reduce<Record<string, MissionActivityState>>((states, [missionId, state]) => {
+      if (typeof missionId === "string" && missionId.length > 0) {
+        states[missionId] = normalizeMissionActivityState(state);
+      }
+      return states;
+    }, {});
+}
+
 function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
   const profileRaceId: RaceId = "olydran";
   const galaxy = createGalaxyDefinition(galaxySeed);
   const war = createFactionWarState(galaxy);
   return {
-    version: 11,
+    version: 12,
     meta: {
       lastSavedAt: null,
     },
@@ -465,11 +511,13 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
     missions: {
       acceptedMissionIds: [],
       selectedMissionId: null,
+      activityStates: {},
+      liveGrantedMissionIds: [],
     },
     progression: {
       completedMissionIds: [],
       exhaustedMissionIds: [],
-      unlockedMissionIds: ["ember-watch", "outpost-breach", "nightglass-abyss"],
+      unlockedMissionIds: [...DEFAULT_UNLOCKED_MISSION_IDS],
     },
     galaxy,
     war,
@@ -561,7 +609,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 11 as const,
+    version: 12 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -571,10 +619,19 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       crafting: { ...clone(DEFAULT_SAVE.loadout.crafting), ...parsed.loadout?.crafting },
       cargo: normalizeCargoSlots(parsed.loadout?.cargo),
     },
-    missions: { ...clone(DEFAULT_SAVE.missions), ...parsed.missions },
+    missions: {
+      ...clone(DEFAULT_SAVE.missions),
+      ...parsed.missions,
+      activityStates: normalizeMissionActivityStates(parsed.missions?.activityStates),
+      liveGrantedMissionIds: Array.from(new Set((parsed.missions?.liveGrantedMissionIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0))),
+    },
     progression: {
       ...clone(DEFAULT_SAVE.progression),
       ...parsed.progression,
+      unlockedMissionIds: Array.from(new Set([
+        ...DEFAULT_UNLOCKED_MISSION_IDS,
+        ...(parsed.progression?.unlockedMissionIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0),
+      ])),
     },
     galaxy: normalizedGalaxy,
     war: normalizedWar,
@@ -1253,6 +1310,67 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return this.saveData.missions.selectedMissionId;
   }
 
+  getMissionActivityState(missionId: string): MissionActivityState {
+    return clone(this.saveData.missions.activityStates[missionId] ?? createDefaultMissionActivityState());
+  }
+
+  setMissionActivityState(missionId: string, state: MissionActivityState, emit = false): void {
+    if (!missionId) {
+      return;
+    }
+
+    this.saveData.missions.activityStates[missionId] = normalizeMissionActivityState(state);
+    if (emit) {
+      this.emit("save-changed", this.saveData);
+    }
+  }
+
+  advanceMissionActivityStep(missionId: string, completedStepId: string): MissionActivityState {
+    const state = this.saveData.missions.activityStates[missionId] ?? createDefaultMissionActivityState();
+    const completedStepIds = new Set(state.completedStepIds);
+    completedStepIds.add(completedStepId);
+    const nextState = normalizeMissionActivityState({
+      ...state,
+      stepIndex: state.stepIndex + 1,
+      completedStepIds: [...completedStepIds],
+    });
+    this.saveData.missions.activityStates[missionId] = nextState;
+    this.emit("save-changed", this.saveData);
+    return clone(nextState);
+  }
+
+  resetMissionActivityState(missionId: string, emit = false): void {
+    delete this.saveData.missions.activityStates[missionId];
+    if (emit) {
+      this.emit("save-changed", this.saveData);
+    }
+  }
+
+  isLiveMissionGranted(missionId: string): boolean {
+    return this.saveData.missions.liveGrantedMissionIds.includes(missionId);
+  }
+
+  grantLiveMission(missionId: string): boolean {
+    if (
+      !this.isMissionUnlocked(missionId)
+      || this.isMissionExhausted(missionId)
+      || this.isMissionCompleted(missionId)
+    ) {
+      return false;
+    }
+
+    const liveGranted = new Set(this.saveData.missions.liveGrantedMissionIds);
+    liveGranted.add(missionId);
+    this.saveData.missions.liveGrantedMissionIds = [...liveGranted];
+
+    const accepted = new Set(this.saveData.missions.acceptedMissionIds);
+    accepted.add(missionId);
+    this.saveData.missions.acceptedMissionIds = [...accepted];
+    this.emit("save-changed", this.saveData);
+    this.emit("mission-accepted", missionId);
+    return true;
+  }
+
   getCompletedMissionIds(): string[] {
     return [...this.saveData.progression.completedMissionIds];
   }
@@ -1324,6 +1442,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     if (this.saveData.missions.selectedMissionId === missionId) {
       this.saveData.missions.selectedMissionId = null;
     }
+    delete this.saveData.missions.activityStates[missionId];
     if (this.clearShipTravelForMission(missionId)) {
       this.emitShipTravelChanged();
       return true;
@@ -1431,6 +1550,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   completeMission(missionId: string, reward: RewardData): void {
     this.activeMissionId = null;
+    this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);
+    if (this.saveData.missions.selectedMissionId === missionId) {
+      this.saveData.missions.selectedMissionId = null;
+    }
+    delete this.saveData.missions.activityStates[missionId];
 
     if (!this.saveData.progression.completedMissionIds.includes(missionId)) {
       this.saveData.progression.completedMissionIds.push(missionId);
@@ -1468,6 +1592,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   refreshMissionBoard(): void {
     this.saveData.progression.exhaustedMissionIds = [];
+    this.saveData.progression.unlockedMissionIds = [...DEFAULT_UNLOCKED_MISSION_IDS];
     this.emit("save-changed", this.saveData);
   }
 

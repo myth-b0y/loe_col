@@ -41,19 +41,54 @@ type MissionBossLootPlan = {
 };
 
 const BOSS_LOOT_PLANS: Record<string, MissionBossLootPlan> = {
-  "ember-watch": {
-    missionId: "ember-watch",
+  "test-travel-survey": {
+    missionId: "test-travel-survey",
     legendaryPiece: "chest",
     bonusSlot: "belt",
   },
-  "outpost-breach": {
-    missionId: "outpost-breach",
+  "test-comms-checkin": {
+    missionId: "test-comms-checkin",
+    legendaryPiece: "chest",
+    bonusSlot: "back",
+  },
+  "test-space-battle": {
+    missionId: "test-space-battle",
     legendaryPiece: "legs",
     bonusSlot: "weapon",
   },
-  "nightglass-abyss": {
-    missionId: "nightglass-abyss",
+  "test-ground-sweep": {
+    missionId: "test-ground-sweep",
+    legendaryPiece: "chest",
+    bonusSlot: "belt",
+  },
+  "test-zone-reclaim": {
+    missionId: "test-zone-reclaim",
+    legendaryPiece: "legs",
+    bonusSlot: "back",
+  },
+  "test-kill-target": {
+    missionId: "test-kill-target",
+    legendaryPiece: "legs",
+    bonusSlot: "weapon",
+  },
+  "test-boss-climax": {
+    missionId: "test-boss-climax",
     legendaryPiece: "head",
+    bonusSlot: "back",
+  },
+  "test-chain-dispatch": {
+    missionId: "test-chain-dispatch",
+    legendaryPiece: "head",
+    bonusSlot: "weapon",
+  },
+  "test-escort-distress": {
+    missionId: "test-escort-distress",
+    legendaryPiece: "chest",
+    bonusSlot: "belt",
+  },
+  "test-resource-salvage": {
+    missionId: "test-resource-salvage",
+    legendaryPiece: "legs",
     bonusSlot: "back",
   },
 };
@@ -76,7 +111,7 @@ class SeededRandom {
 }
 
 export function getMissionRewardPreview(missionId: string, xp: number): MissionRewardPreview {
-  const plan = BOSS_LOOT_PLANS[missionId] ?? BOSS_LOOT_PLANS["ember-watch"];
+  const plan = BOSS_LOOT_PLANS[missionId] ?? BOSS_LOOT_PLANS["test-ground-sweep"];
   const legendaryLabel = plan.legendaryPiece === "head"
     ? "Legendary Helm"
     : plan.legendaryPiece === "chest"
@@ -130,7 +165,7 @@ export function buildBossLootBundle(options: {
   raceId: RaceId;
   seed: number;
 }): BossLootBundle {
-  const plan = BOSS_LOOT_PLANS[options.missionId] ?? BOSS_LOOT_PLANS["ember-watch"];
+  const plan = BOSS_LOOT_PLANS[options.missionId] ?? BOSS_LOOT_PLANS["test-ground-sweep"];
   const items: InventoryItem[] = [
     createLegendarySetPiece(plan.legendaryPiece, options.raceId, options.seed ^ 0x5a11a7),
     createProceduralBossGear(plan.bonusSlot, options.raceId, options.difficulty, options.seed ^ 0x1c77b9),
