@@ -654,7 +654,8 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   };
 
   const normalizedSquad = normalizeSquadAssignments(merged.loadout.squad ?? DEFAULT_SAVE.loadout.squad);
-  const acceptedMissionIds = Array.from(new Set((merged.missions.acceptedMissionIds ?? []).filter(Boolean)));
+  const validMissionIds = new Set(DEFAULT_UNLOCKED_MISSION_IDS);
+  const acceptedMissionIds = Array.from(new Set((merged.missions.acceptedMissionIds ?? []).filter((id) => Boolean(id) && validMissionIds.has(id))));
   const selectedMissionId = merged.missions.selectedMissionId && acceptedMissionIds.includes(merged.missions.selectedMissionId)
     ? merged.missions.selectedMissionId
     : null;
@@ -664,8 +665,12 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   merged.loadout.weapon = summarizeEquippedWeapon(merged.loadout.equipment);
   merged.missions.acceptedMissionIds = acceptedMissionIds;
   merged.missions.selectedMissionId = selectedMissionId;
-  merged.progression.completedMissionIds = Array.from(new Set(merged.progression.completedMissionIds ?? []));
-  merged.progression.exhaustedMissionIds = Array.from(new Set(merged.progression.exhaustedMissionIds ?? []));
+  merged.missions.liveGrantedMissionIds = Array.from(new Set((merged.missions.liveGrantedMissionIds ?? []).filter((id) => validMissionIds.has(id))));
+  merged.missions.activityStates = Object.fromEntries(
+    Object.entries(merged.missions.activityStates ?? {}).filter(([missionId]) => validMissionIds.has(missionId)),
+  );
+  merged.progression.completedMissionIds = Array.from(new Set((merged.progression.completedMissionIds ?? []).filter((id) => validMissionIds.has(id))));
+  merged.progression.exhaustedMissionIds = Array.from(new Set((merged.progression.exhaustedMissionIds ?? []).filter((id) => validMissionIds.has(id))));
   return merged;
 }
 

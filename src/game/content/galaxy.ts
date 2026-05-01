@@ -306,11 +306,6 @@ const GALAXY_SPECIAL_CONTROLLER_PALETTES: Record<Exclude<GalaxyZoneControllerId,
 
 const GALAXY_MISSION_ASSIGNMENT_RULES: GalaxyMissionAssignmentRule[] = [
   {
-    missionId: "test-travel-survey",
-    preferredSectorId: "olydran-expanse",
-    preferredRingIds: ["second", "third"],
-  },
-  {
     missionId: "test-comms-checkin",
     preferredSectorId: "nevari-bloom",
     preferredRingIds: ["third"],

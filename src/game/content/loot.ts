@@ -41,11 +41,6 @@ type MissionBossLootPlan = {
 };
 
 const BOSS_LOOT_PLANS: Record<string, MissionBossLootPlan> = {
-  "test-travel-survey": {
-    missionId: "test-travel-survey",
-    legendaryPiece: "chest",
-    bonusSlot: "belt",
-  },
   "test-comms-checkin": {
     missionId: "test-comms-checkin",
     legendaryPiece: "chest",

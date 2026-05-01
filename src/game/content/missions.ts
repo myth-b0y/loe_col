@@ -23,6 +23,9 @@ export type MissionActivityStepDefinition = {
   objective: string;
   targetHint: MissionTargetHint;
   completionText: string;
+  commsText?: string[];
+  dialogueOptions?: string[];
+  waveCount?: number;
 };
 
 export type MissionActivityState = {
@@ -93,6 +96,7 @@ export type MissionContractDefinition = {
   prompt: string;
   objective: string;
   activities: MissionActivityStepDefinition[];
+  groundVariant?: "standard" | "short";
   baseXp: number;
   rewardPreview: MissionRewardPreview;
   accentColor: number;
@@ -155,35 +159,6 @@ const ZONE_FLAVOR_BANK = [
 
 export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
   {
-    id: "test-travel-survey",
-    difficulty: "easy",
-    activityType: "travel",
-    source: { kind: "terminal", giver: "Navigation Desk", label: "Terminal route test" },
-    terminalVisible: true,
-    title: "Test: Navigation Hop",
-    location: "Generated system waypoint",
-    briefingSpeaker: "Navigation Desk",
-    briefing: [
-      "This is a simple travel activity test using the generated galaxy data.",
-      "Set the mission as your course, launch, and reach the marked generated world.",
-      "The mission completes when your ship enters the target arrival radius.",
-    ],
-    prompt: "Verify that active-course travel waypoints only appear after a mission is accepted and set as course.",
-    objective: "Fly to the marked generated planet/system waypoint.",
-    activities: [
-      {
-        id: "travel",
-        type: "travel",
-        objective: "Fly to the active generated waypoint.",
-        targetHint: "mission-planet",
-        completionText: "Travel waypoint reached.",
-      },
-    ],
-    baseXp: 70,
-    rewardPreview: getMissionRewardPreview("test-travel-survey", 70),
-    accentColor: 0x7de6ff,
-  },
-  {
     id: "test-comms-checkin",
     difficulty: "easy",
     activityType: "comms",
@@ -206,6 +181,11 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
         objective: "Open comms with the marked Prime World contact.",
         targetHint: "prime-world",
         completionText: "Comms contact verified.",
+        commsText: [
+          "Prime-world signal lock established. The channel carries local traffic, patrol reports, and a short confirmation packet.",
+          "Reply with the verification phrase so the comms activity can advance through the real dialogue hook.",
+        ],
+        dialogueOptions: ["Transmit verification phrase", "Ask for local status"],
       },
     ],
     baseXp: 80,
@@ -222,19 +202,20 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     location: "Hostile fleet marker",
     briefingSpeaker: "Patrol Coordinator",
     briefing: [
-      "This stages a small hostile fleet near a generated route target.",
-      "Clear every hostile test craft in the marked encounter area.",
-      "The mission succeeds when the encounter is empty.",
+      "This stages a finite Empire skirmish near a valid generated route target.",
+      "Clear the hostile waves in the marked encounter area.",
+      "The mission succeeds when the wave count is exhausted and the encounter is empty.",
     ],
-    prompt: "Destroy the temporary hostile fleet staged for the activity test.",
-    objective: "Reach the marker and destroy the hostile test fleet.",
+    prompt: "Destroy the Empire skirmish group without letting it endlessly respawn.",
+    objective: "Reach the marker and clear the finite hostile waves.",
     activities: [
       {
         id: "space-battle",
         type: "space-battle",
-        objective: "Destroy the hostile test fleet.",
+        objective: "Destroy the hostile Empire skirmish group.",
         targetHint: "ship",
         completionText: "Hostile fleet cleared.",
+        waveCount: 2,
       },
     ],
     baseXp: 130,
@@ -257,6 +238,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Land at the marked world and run a short ground combat verification route.",
     objective: "Land, clear the generated ground route, defeat the final room, and extract.",
+    groundVariant: "short",
     activities: [
       {
         id: "ground",
@@ -281,18 +263,18 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     briefingSpeaker: "Frontline Monitor",
     briefing: [
       "This verifies a mission can talk to the existing zone/faction war state.",
-      "Fly to the marked zone and assist the local controller.",
-      "For now, the player action resolves a simple reclaim/defense result so the map visibly updates.",
+      "Fly to an Empire-held or contested zone and clear the enemy defenders.",
+      "After the defenders are gone, stabilize the zone so the map visibly updates.",
     ],
     prompt: "Help stabilize a contested or occupied zone using the real zone data.",
-    objective: "Reach the marked zone and press F to complete the support action.",
+    objective: "Reach the marked zone, clear defenders, then press F to reclaim it.",
     activities: [
       {
         id: "zone",
         type: "zone",
-        objective: "Assist the marked strategic zone.",
+        objective: "Clear and stabilize the marked strategic zone.",
         targetHint: "zone",
-        completionText: "Zone support resolved.",
+        completionText: "Zone reclaim resolved.",
       },
     ],
     baseXp: 145,
@@ -309,17 +291,17 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     location: "Commander intercept point",
     briefingSpeaker: "Bounty Relay",
     briefing: [
-      "This creates one marked ship target tied to the active mission.",
-      "The ship is not a full story commander yet.",
+      "This creates one dangerous marked ship target tied to the active mission.",
+      "The target uses real hostile context and does not respawn after destruction.",
       "Destroying the target should complete the objective and clear the waypoint.",
     ],
-    prompt: "Intercept and destroy the marked hostile target.",
-    objective: "Destroy the marked target ship.",
+    prompt: "Intercept and destroy the marked hostile elite.",
+    objective: "Destroy the marked elite target ship.",
     activities: [
       {
         id: "target",
         type: "kill-target",
-        objective: "Destroy the marked target ship.",
+        objective: "Destroy the marked elite target ship.",
         targetHint: "ship",
         completionText: "Marked target destroyed.",
       },
@@ -338,8 +320,8 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     location: "Boss-style intercept",
     briefingSpeaker: "Threat Analysis",
     briefing: [
-      "This stages one tougher ship as a first-pass climax activity.",
-      "It is intentionally simple and exists to verify boss-style objective completion.",
+      "This stages one tougher Empire command ship as a first-pass climax activity.",
+      "It is a real finite combat objective and should not loop-spawn after death.",
       "Later story chapters can reuse the same activity slot with authored encounters.",
     ],
     prompt: "Destroy the heavy hostile contact at the marked intercept point.",
@@ -387,6 +369,11 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
         objective: "Open comms with the field contact.",
         targetHint: "prime-world",
         completionText: "Field contact acknowledged.",
+        commsText: [
+          "The field contact verifies the route and uploads the courier transponder.",
+          "Accept the handoff, then escort the transport to its real destination.",
+        ],
+        dialogueOptions: ["Accept courier handoff", "Request threat summary"],
       },
       {
         id: "chain-escort",
@@ -418,10 +405,10 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     briefingSpeaker: "Distress Call",
     briefing: [
       "A courier has broadcast a short-range distress call.",
-      "This live test mission appears while flying in space.",
-      "Set it as your course from the Data Pad to show the escort waypoint.",
+      "The escort begins at a real station or world, then a transport enters the mission route.",
+      "Set it as your course from the Data Pad to show the escort waypoint and keep the transport alive.",
     ],
-    prompt: "Escort the live courier signal to a nearby transfer point.",
+    prompt: "Escort the live transport to a real nearby destination.",
     objective: "Keep the escort ship alive until it reaches its destination.",
     activities: [
       {
@@ -446,19 +433,31 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     location: "Live resource ping",
     briefingSpeaker: "Salvage Ping",
     briefing: [
-      "A recoverable object has been detected in nearby space.",
-      "This live test mission verifies retrieval without a full inventory economy.",
-      "Set it as your course, reach the marker, and press F to recover it.",
+      "A recoverable object has been detected inside a drifting wreckage field.",
+      "Recover the object, then deliver it to the assigned station contact.",
+      "Set it as your course, reach the marker, recover it, and complete the delivery through comms.",
     ],
-    prompt: "Recover the marked salvage ping.",
-    objective: "Collect the marked resource object.",
+    prompt: "Recover the marked salvage package and deliver it.",
+    objective: "Collect the salvage package from wreckage and deliver it to the station contact.",
     activities: [
       {
         id: "resource",
         type: "resource",
-        objective: "Recover the marked salvage object.",
+        objective: "Recover the marked salvage package from wreckage.",
         targetHint: "resource",
-        completionText: "Resource recovered.",
+        completionText: "Salvage package recovered.",
+      },
+      {
+        id: "deliver-salvage",
+        type: "comms",
+        objective: "Deliver the recovered salvage package to the station contact.",
+        targetHint: "station",
+        completionText: "Salvage delivered.",
+        commsText: [
+          "Station salvage control confirms the package beacon and opens a clean delivery channel.",
+          "Transfer the manifest to complete the retrieval activity.",
+        ],
+        dialogueOptions: ["Transfer salvage manifest", "Ask for recovery receipt"],
       },
     ],
     baseXp: 95,
@@ -592,6 +591,10 @@ function createBossStage(contract: MissionContractDefinition, index: number, rng
 }
 
 function buildMissionStagePlan(contract: MissionContractDefinition): Array<"hallway" | "rest" | "boss"> {
+  if (contract.groundVariant === "short") {
+    return ["hallway", "boss"];
+  }
+
   if (contract.difficulty === "easy") {
     return ["hallway", "hallway", "rest", "hallway", "hallway", "rest", "boss"];
   }
@@ -635,7 +638,7 @@ export function isGroundMissionContract(contract: MissionContractDefinition | nu
 }
 
 export function createMissionDefinition(contractId: string, seed = Date.now()): MissionDefinition {
-  const contract = getMissionContract(contractId) ?? MISSION_CONTRACTS[1];
+  const contract = getMissionContract(contractId) ?? getMissionContract("test-ground-sweep") ?? MISSION_CONTRACTS[0];
   const rng = new SeededRandom(seed ^ hashSeed(contract.id));
   const plan = buildMissionStagePlan(contract);
   let hallwayNumber = 0;

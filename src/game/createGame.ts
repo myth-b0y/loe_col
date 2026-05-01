@@ -1,7 +1,7 @@
 ﻿import Phaser from "phaser";
 
 import { retroSfx } from "./audio/retroSfx";
-import { getMissionContracts } from "./content/missions";
+import { createMissionDefinition, getMissionContracts } from "./content/missions";
 import { gameSession } from "./core/session";
 import { BootScene } from "./scenes/BootScene";
 import { HubScene } from "./scenes/HubScene";
@@ -65,12 +65,14 @@ export function createGame(parent: string): Phaser.Game {
       __loeGame?: Phaser.Game;
       __loeSession?: typeof gameSession;
       __loeContracts?: ReturnType<typeof getMissionContracts>;
+      __loeCreateMissionDefinition?: typeof createMissionDefinition;
       __loeSfx?: typeof retroSfx;
       render_game_to_text?: () => string;
     };
     debugWindow.__loeGame = game;
     debugWindow.__loeSession = gameSession;
     debugWindow.__loeContracts = getMissionContracts();
+    debugWindow.__loeCreateMissionDefinition = createMissionDefinition;
     debugWindow.__loeSfx = retroSfx;
     debugWindow.render_game_to_text = () => {
       const activeScene = game.scene.getScenes(true).at(-1) as
