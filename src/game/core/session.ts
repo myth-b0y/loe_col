@@ -8,6 +8,7 @@ import {
   getGalaxyHomeworldByRace,
   getGalaxyHomeworldPlanets,
   getGalaxyPlanetById,
+  getGalaxySectorById,
   getGalaxyStationById as getGalaxyStationByIdFromGalaxy,
   getGalaxyZoneById as getGalaxyZoneByIdFromGalaxy,
   getGalaxyZoneBySystemId as getGalaxyZoneBySystemIdFromGalaxy,
@@ -69,6 +70,7 @@ import {
 import { type MissionRewardBundle } from "../content/loot";
 import {
   createDefaultMissionActivityState,
+  getMissionContract,
   getMissionContracts,
   type MissionActivityState,
 } from "../content/missions";
@@ -1392,6 +1394,11 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return true;
   }
 
+  clearLiveMissionGrant(missionId: string): void {
+    this.saveData.missions.liveGrantedMissionIds = this.saveData.missions.liveGrantedMissionIds.filter((id) => id !== missionId);
+    this.emit("save-changed", this.saveData);
+  }
+
   getCompletedMissionIds(): string[] {
     return [...this.saveData.progression.completedMissionIds];
   }
@@ -1575,13 +1582,19 @@ export class GameSession extends Phaser.Events.EventEmitter {
     if (this.saveData.missions.selectedMissionId === missionId) {
       this.saveData.missions.selectedMissionId = null;
     }
+    this.resolveMissionWorldEffects(missionId);
     delete this.saveData.missions.activityStates[missionId];
 
-    if (!this.saveData.progression.completedMissionIds.includes(missionId)) {
+    const contract = getMissionContract(missionId);
+    const isRepeatableWorldActivity = contract?.source.kind !== "terminal";
+    if (!isRepeatableWorldActivity && !this.saveData.progression.completedMissionIds.includes(missionId)) {
       this.saveData.progression.completedMissionIds.push(missionId);
     }
-    if (!this.saveData.progression.exhaustedMissionIds.includes(missionId)) {
+    if (!isRepeatableWorldActivity && !this.saveData.progression.exhaustedMissionIds.includes(missionId)) {
       this.saveData.progression.exhaustedMissionIds.push(missionId);
+    }
+    if (isRepeatableWorldActivity) {
+      this.saveData.missions.liveGrantedMissionIds = this.saveData.missions.liveGrantedMissionIds.filter((id) => id !== missionId);
     }
 
     this.saveData.profile.credits += reward.credits;
@@ -1736,6 +1749,38 @@ export class GameSession extends Phaser.Events.EventEmitter {
   private emitShipChanged(): void {
     this.emit("ship-changed", this.getShipState());
     this.emit("save-changed", this.saveData);
+  }
+
+  private resolveMissionWorldEffects(missionId: string): void {
+    const state = this.saveData.missions.activityStates[missionId];
+    const reclaimZoneId = typeof state?.flags.reclaimZoneId === "string"
+      ? state.flags.reclaimZoneId
+      : typeof state?.flags.targetZoneId === "string" && missionId.includes("reclaim")
+        ? state.flags.targetZoneId
+        : null;
+    if (!reclaimZoneId) {
+      return;
+    }
+
+    const zone = getGalaxyZoneByIdFromGalaxy(this.saveData.galaxy, reclaimZoneId);
+    if (!zone) {
+      return;
+    }
+
+    const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId
+      ?? getGalaxySectorById(zone.sectorId)?.raceId
+      ?? null;
+    if (!coreRaceId) {
+      return;
+    }
+
+    zone.currentControllerId = coreRaceId;
+    zone.zoneState = "stable";
+    zone.zoneCaptureProgress = 0;
+    zone.zoneConflictProgress = 0;
+    zone.captureAttackerRaceId = null;
+    this.saveData.war = normalizeFactionWarState(this.saveData.war, this.saveData.galaxy);
+    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
   }
 
   private emitShipTravelChanged(): void {

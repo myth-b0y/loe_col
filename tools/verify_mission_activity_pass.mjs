@@ -5,20 +5,27 @@ import { chromium } from "playwright";
 const OUTPUT_DIR = path.resolve("output/web-game/mission-activity-pass");
 const URL = process.env.LOE_VERIFY_URL ?? "http://127.0.0.1:4173/?renderer=canvas";
 
-const TERMINAL_MISSION_IDS = [
+const TERMINAL_MISSION_IDS = ["test-chain-dispatch"];
+const LIVE_MISSION_IDS = [
+  "distress-transport",
+  "distress-salvage",
+  "distress-smuggling",
+  "distress-reclaim",
+  "distress-pirate-defense",
+  "distress-neutral-empire-defense",
+];
+const PRIME_WORLD_MISSION_IDS = ["prime-assist-reclaim", "world-zone-reclaim"];
+const REMOVED_TEMP_IDS = [
   "test-comms-checkin",
   "test-space-battle",
   "test-ground-sweep",
   "test-zone-reclaim",
   "test-kill-target",
   "test-boss-climax",
-  "test-chain-dispatch",
   "test-smuggling-run",
-];
-
-const LIVE_MISSION_IDS = [
   "test-escort-distress",
   "test-resource-salvage",
+  "test-travel-survey",
 ];
 
 function assert(condition, message) {
@@ -52,11 +59,11 @@ async function capture(page, filename) {
   await page.screenshot({ path: path.join(OUTPUT_DIR, filename), fullPage: false });
 }
 
-async function resetToSpace(page, missionId, { live = false } = {}) {
-  await page.evaluate(({ missionId: id, live: isLive }) => {
+async function resetToSpace(page, missionId, { source = "terminal" } = {}) {
+  await page.evaluate(({ missionId: id, source: missionSource }) => {
     window.localStorage.clear();
     window.__loeSession?.startNewGame?.(0);
-    if (isLive) {
+    if (missionSource === "live-space") {
       window.__loeSession?.grantLiveMission?.(id);
     } else {
       window.__loeSession?.acceptMission?.(id);
@@ -65,7 +72,7 @@ async function resetToSpace(page, missionId, { live = false } = {}) {
     window.__loeGame?.scene.stop("hub");
     window.__loeGame?.scene.stop("space");
     window.__loeGame?.scene.start("space");
-  }, { missionId, live });
+  }, { missionId, source });
   await waitForScene(page, "space");
   await page.waitForTimeout(250);
   await page.evaluate(() => {
@@ -79,41 +86,49 @@ async function snapshot(page) {
   return page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     const raw = space?.getDebugSnapshot?.() ?? {};
+    const waypoint = raw.activeMissionWaypoint ?? null;
+    const activityState = waypoint?.missionId
+      ? window.__loeSession?.getMissionActivityState?.(waypoint.missionId)
+      : null;
+    const targetShipIds = waypoint && activityState?.flags
+      ? String(activityState.flags[`${waypoint.stepId}:targetShipIds`] ?? "")
+          .split("|")
+          .map((id) => id.trim())
+          .filter(Boolean)
+      : [];
+    const missionTargetShips = targetShipIds.map((id) => {
+      const state = space?.shipStates?.get?.(id) ?? null;
+      return state
+        ? {
+            id,
+            factionId: state.factionId,
+            originRaceId: state.originRaceId,
+            shipRole: state.shipRole,
+            hp: state.hp,
+            destroyed: state.destroyed,
+            groupId: state.groupId,
+          }
+        : { id, missing: true };
+    });
     return {
       selectedMissionId: window.__loeSession?.getSelectedMissionId?.() ?? null,
       acceptedMissionIds: window.__loeSession?.getAcceptedMissionIds?.() ?? [],
       completedMissionIds: window.__loeSession?.getCompletedMissionIds?.() ?? [],
-      activityState: raw.activeMissionWaypoint?.missionId
-        ? window.__loeSession?.getMissionActivityState?.(raw.activeMissionWaypoint.missionId)
-        : null,
-      activeMissionWaypoint: raw.activeMissionWaypoint ?? null,
+      activityState,
+      activeMissionWaypoint: waypoint,
       missionObjects: raw.missionObjects ?? [],
       missionRuntime: raw.missionRuntime ?? {},
       cargo: window.__loeSession?.getCargoSlots?.() ?? [],
       war: raw.war ?? null,
       commsOverlayVisible: raw.commsOverlayVisible ?? false,
       stationOverlayVisible: raw.stationOverlayVisible ?? false,
-      landingReady: raw.landingReady ?? false,
+      missionTargetShips,
+      factionShipsRemaining: raw.factionShipsRemaining ?? 0,
     };
   });
 }
 
-async function destroyMissionCombatObjects(page) {
-  await page.evaluate(() => {
-    const space = window.__loeGame?.scene.keys.space;
-    if (!space) {
-      return;
-    }
-    space.updateMissionActivity?.(1 / 60);
-    const objects = [...(space.missionObjects ?? [])]
-      .filter((object) => object.kind === "hostile" || object.kind === "boss");
-    objects.forEach((object) => space.damageMissionObject?.(object, object.hp + 20));
-    space.updateMissionActivity?.(1 / 60);
-    space.refreshHud?.();
-  });
-}
-
-async function completeCurrentComms(page) {
+async function movePlayerToActiveWaypoint(page) {
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     const waypoint = space?.getDebugSnapshot?.()?.activeMissionWaypoint;
@@ -124,11 +139,72 @@ async function completeCurrentComms(page) {
     space.shipRoot.y = waypoint.y;
     space.shipVelocity.set(0, 0);
     window.__loeSession?.setShipSpacePosition?.(waypoint.x, waypoint.y);
-    space.refreshHud?.();
-    space.tryCompleteInteractiveMissionStep?.();
-    space.handleMissionCommsContinue?.();
     space.updateMissionActivity?.(1 / 60);
     space.refreshHud?.();
+  });
+}
+
+async function completeCurrentComms(page) {
+  await movePlayerToActiveWaypoint(page);
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    space?.tryCompleteInteractiveMissionStep?.();
+    space?.handleMissionCommsContinue?.();
+    space?.updateMissionActivity?.(1 / 60);
+    space?.refreshHud?.();
+  });
+}
+
+async function destroyActiveMissionTargetShips(page) {
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    const waypoint = space?.getDebugSnapshot?.()?.activeMissionWaypoint;
+    const state = waypoint?.missionId ? window.__loeSession?.getMissionActivityState?.(waypoint.missionId) : null;
+    const ids = String(state?.flags?.[`${waypoint?.stepId}:targetShipIds`] ?? "")
+      .split("|")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    ids.forEach((id) => {
+      const activeShip = space?.factionShips?.find?.((ship) => ship.id === id);
+      if (activeShip) {
+        space.destroyFactionShip?.(activeShip);
+        return;
+      }
+      const ship = space?.shipStates?.get?.(id);
+      if (!ship) {
+        return;
+      }
+      ship.hp = 0;
+      ship.destroyed = true;
+    });
+    space?.updateMissionActivity?.(1 / 60);
+    space?.refreshHud?.();
+  });
+}
+
+async function seedEmpireHeldForeignZone(page) {
+  return page.evaluate(() => {
+    const session = window.__loeSession;
+    const galaxy = session?.getGalaxyDefinition?.();
+    const war = session?.getFactionWarState?.();
+    if (!session || !galaxy || !war?.empireRaceId) {
+      return null;
+    }
+    const zone = galaxy.zones.find((candidate) => (
+      !candidate.isPrimeWorldZone
+      && candidate.currentControllerId !== war.empireRaceId
+    ));
+    if (!zone) {
+      return null;
+    }
+    const originalControllerId = zone.currentControllerId;
+    zone.currentControllerId = war.empireRaceId;
+    zone.zoneState = "stable";
+    zone.zoneCaptureProgress = 0;
+    zone.zoneConflictProgress = 0;
+    zone.captureAttackerRaceId = null;
+    session.setGalaxyDefinition(galaxy, true);
+    return { zoneId: zone.id, originalControllerId, empireRaceId: war.empireRaceId };
   });
 }
 
@@ -153,35 +229,45 @@ try {
   await page.goto(URL, { waitUntil: "networkidle" });
   await page.waitForFunction(() => Boolean(window.__loeGame) && typeof window.render_game_to_text === "function");
 
-  const contractState = await page.evaluate(({ terminalIds, liveIds }) => {
+  const contractState = await page.evaluate(({ terminalIds, liveIds, primeIds, removedIds }) => {
     const contracts = window.__loeContracts ?? [];
+    const byId = Object.fromEntries(contracts.map((contract) => [contract.id, contract]));
     return {
       count: contracts.length,
       terminalIds: contracts.filter((contract) => contract.terminalVisible).map((contract) => contract.id),
       liveIds: contracts.filter((contract) => contract.source?.kind === "live-space").map((contract) => contract.id),
-      removedTravelPresent: contracts.some((contract) => contract.id === "test-travel-survey"),
-      chainSteps: contracts.find((contract) => contract.id === "test-chain-dispatch")?.activities?.map((step) => step.type) ?? [],
-      salvageSteps: contracts.find((contract) => contract.id === "test-resource-salvage")?.activities?.map((step) => step.type) ?? [],
-      smugglingSteps: contracts.find((contract) => contract.id === "test-smuggling-run")?.activities?.map((step) => step.type) ?? [],
-      shortGroundStages: window.__loeCreateMissionDefinition?.("test-ground-sweep", 1)?.stages?.length ?? null,
-      terminalPresent: terminalIds.every((id) => contracts.some((contract) => contract.id === id && contract.terminalVisible)),
-      livePresent: liveIds.every((id) => contracts.some((contract) => contract.id === id && contract.source?.kind === "live-space")),
+      primeIds: contracts.filter((contract) => contract.source?.kind === "prime-world").map((contract) => contract.id),
+      removedPresent: removedIds.filter((id) => Boolean(byId[id])),
+      terminalPresent: terminalIds.every((id) => byId[id]?.terminalVisible),
+      livePresent: liveIds.every((id) => byId[id]?.source?.kind === "live-space" && !byId[id]?.terminalVisible),
+      primePresent: primeIds.every((id) => byId[id]?.source?.kind === "prime-world" && !byId[id]?.terminalVisible),
+      chainSteps: byId["test-chain-dispatch"]?.activities?.map((step) => step.type) ?? [],
+      smugglingSteps: byId["distress-smuggling"]?.activities?.map((step) => step.type) ?? [],
+      salvageSteps: byId["distress-salvage"]?.activities?.map((step) => step.type) ?? [],
+      directReclaimStages: window.__loeCreateMissionDefinition?.("world-zone-reclaim", 1)?.stages?.length ?? null,
     };
-  }, { terminalIds: TERMINAL_MISSION_IDS, liveIds: LIVE_MISSION_IDS });
+  }, {
+    terminalIds: TERMINAL_MISSION_IDS,
+    liveIds: LIVE_MISSION_IDS,
+    primeIds: PRIME_WORLD_MISSION_IDS,
+    removedIds: REMOVED_TEMP_IDS,
+  });
 
-  assert(contractState.count === 10, `Expected 10 focused test missions, got ${contractState.count}`);
-  assert(!contractState.removedTravelPresent, "Standalone travel test mission should be removed");
-  assert(contractState.terminalPresent, `Terminal mission set mismatch: ${JSON.stringify(contractState.terminalIds)}`);
-  assert(contractState.livePresent, `Live mission set mismatch: ${JSON.stringify(contractState.liveIds)}`);
-  assert(contractState.chainSteps.join(">") === "travel>comms>escort>boss", `Linked chain steps changed unexpectedly: ${contractState.chainSteps}`);
-  assert(contractState.salvageSteps.join(">") === "resource>comms", `Salvage should recover then deliver: ${contractState.salvageSteps}`);
-  assert(contractState.smugglingSteps.join(">") === "resource>comms", `Smuggling should recover cargo then deliver: ${contractState.smugglingSteps}`);
-  assert(contractState.shortGroundStages === 2, `Short ground mission should use 2 stages, got ${contractState.shortGroundStages}`);
+  assert(contractState.count === 9, `Expected 9 world-backed mission contracts, got ${contractState.count}`);
+  assert(JSON.stringify(contractState.terminalIds) === JSON.stringify(TERMINAL_MISSION_IDS), `Terminal should only expose linked test mission: ${JSON.stringify(contractState.terminalIds)}`);
+  assert(contractState.terminalPresent, `Linked terminal mission missing: ${JSON.stringify(contractState)}`);
+  assert(contractState.livePresent, `Live distress mission set mismatch: ${JSON.stringify(contractState.liveIds)}`);
+  assert(contractState.primePresent, `Prime/direct mission set mismatch: ${JSON.stringify(contractState.primeIds)}`);
+  assert(contractState.removedPresent.length === 0, `Removed temp missions still present: ${contractState.removedPresent.join(", ")}`);
+  assert(contractState.chainSteps.join(">") === "travel>comms>comms>comms>resource>comms>escort>space-battle>zone>kill-target>boss>ground", `Linked chain steps changed unexpectedly: ${contractState.chainSteps}`);
+  assert(contractState.smugglingSteps.join(">") === "comms>comms", `Smuggling should be pickup/delivery comms, got: ${contractState.smugglingSteps}`);
+  assert(contractState.salvageSteps.join(">") === "resource>comms", `Salvage should recover then deliver, got: ${contractState.salvageSteps}`);
+  assert(contractState.directReclaimStages === 2, `Direct/simple reclaim should use short ground variant, got ${contractState.directReclaimStages}`);
 
   await page.evaluate(() => {
     window.localStorage.clear();
     window.__loeSession?.startNewGame?.(0);
-    window.__loeSession?.acceptMission?.("test-comms-checkin");
+    window.__loeSession?.acceptMission?.("test-chain-dispatch");
     window.__loeSession?.setSelectedMission?.(null);
     window.__loeGame?.scene.stop("hub");
     window.__loeGame?.scene.stop("space");
@@ -189,209 +275,191 @@ try {
   });
   await waitForScene(page, "space");
   await page.waitForTimeout(250);
-  const acceptedNotActive = await snapshot(page);
-  assert(acceptedNotActive.acceptedMissionIds.includes("test-comms-checkin"), "Accepted mission missing before set-course test");
-  assert(acceptedNotActive.selectedMissionId === null, "Accepted mission should not be selected automatically");
-  assert(acceptedNotActive.activeMissionWaypoint === null, "Accepted but inactive mission should not show waypoint");
+  let state = await snapshot(page);
+  assert(state.acceptedMissionIds.includes("test-chain-dispatch"), "Accepted linked mission missing before set-course test");
+  assert(state.selectedMissionId === null, "Accepted mission should not be selected automatically");
+  assert(state.activeMissionWaypoint === null, "Accepted but inactive mission should not show a waypoint");
   await capture(page, "accepted-not-course.png");
 
-  await resetToSpace(page, "test-comms-checkin");
-  await capture(page, "comms-course-set.png");
-  await page.evaluate(() => {
-    const space = window.__loeGame?.scene.keys.space;
-    const waypoint = space?.getDebugSnapshot?.()?.activeMissionWaypoint;
-    space.shipRoot.x = waypoint.x;
-    space.shipRoot.y = waypoint.y;
-    space.shipVelocity.set(0, 0);
-    window.__loeSession?.setShipSpacePosition?.(waypoint.x, waypoint.y);
-    space.refreshHud?.();
-    space.tryCompleteInteractiveMissionStep?.();
-  });
-  let state = await snapshot(page);
-  assert(state.stationOverlayVisible || state.commsOverlayVisible, "Comms mission should open a contextual comms/menu window before completion");
-  await capture(page, "comms-window.png");
-  await page.evaluate(() => window.__loeGame?.scene.keys.space?.handleMissionCommsContinue?.());
-  await page.waitForTimeout(200);
+  await resetToSpace(page, "distress-smuggling", { source: "live-space" });
   state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-comms-checkin"), "Comms mission did not complete through comms hook");
-  assert(state.activeMissionWaypoint === null, "Completed comms mission should clear waypoint");
+  assert(state.activeMissionWaypoint?.kind === "comms", `Smuggling pickup should be a real comms pickup: ${JSON.stringify(state.activeMissionWaypoint)}`);
+  assert(state.missionObjects.length === 0, "Smuggling pickup should not spawn salvage/resource objects");
+  await completeCurrentComms(page);
+  state = await snapshot(page);
+  assert(state.cargo.some((item) => item?.tag === "mission-cargo:distress-smuggling"), "Smuggling pickup should place cargo in inventory");
+  assert(state.activeMissionWaypoint?.kind === "comms", "Smuggling delivery should remain a comms delivery");
+  await completeCurrentComms(page);
+  state = await snapshot(page);
+  assert(!state.acceptedMissionIds.includes("distress-smuggling"), "Completed live smuggling activity should clear from accepted missions");
+  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:distress-smuggling"), "Smuggling cargo should be removed on delivery");
 
-  await resetToSpace(page, "test-space-battle");
+  await resetToSpace(page, "distress-salvage", { source: "live-space" });
   state = await snapshot(page);
-  assert(state.missionObjects.filter((object) => object.kind === "hostile").length === 3, `Skirmish wave 1 not spawned: ${JSON.stringify(state.missionObjects)}`);
-  assert(state.missionObjects.filter((object) => object.kind === "hostile").every((object) => object.usesRealShipVisual), "Skirmish targets should use real ship visuals");
-  await destroyMissionCombatObjects(page);
+  assert(state.missionObjects.some((object) => object.kind === "resource"), "Salvage package should spawn as a recoverable resource");
+  assert(state.missionObjects.filter((object) => object.kind === "debris").length >= 3, "Salvage should include a ship debris field");
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    for (let i = 0; i < 150; i += 1) {
-      space.updateMissionActivity?.(1 / 30);
+    const resource = space?.missionObjects?.find((object) => object.kind === "resource");
+    if (!space || !resource) {
+      return;
     }
+    space.shipRoot.x = resource.root.x;
+    space.shipRoot.y = resource.root.y;
+    space.shipVelocity.set(0, 0);
+    space.tryCompleteInteractiveMissionStep?.();
+    space.updateMissionActivity?.(1 / 60);
+    space.refreshHud?.();
   });
   state = await snapshot(page);
-  assert(state.missionObjects.filter((object) => object.kind === "hostile").length === 2, `Skirmish wave 2 not spawned: ${JSON.stringify(state)}`);
-  await destroyMissionCombatObjects(page);
-  await page.evaluate(() => window.__loeGame?.scene.keys.space?.updateMissionActivity?.(1 / 60));
+  assert(state.cargo.some((item) => item?.tag === "mission-cargo:distress-salvage"), "Salvage recovery should place a real cargo item in inventory");
+  await completeCurrentComms(page);
   state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-space-battle"), "Finite skirmish did not complete after clearing all waves");
+  assert(!state.acceptedMissionIds.includes("distress-salvage"), "Completed live salvage activity should clear from accepted missions");
+  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:distress-salvage"), "Salvage cargo should be removed on delivery");
 
-  await resetToSpace(page, "test-escort-distress", { live: true });
+  await resetToSpace(page, "distress-transport", { source: "live-space" });
+  state = await snapshot(page);
+  assert(state.activeMissionWaypoint, `Transport should first point at the start location: ${JSON.stringify(state.activeMissionWaypoint)}`);
+  assert(state.activeMissionWaypoint?.actionLabel === "START ESCORT", "Transport should wait for F/start interaction before spawning");
+  assert(!state.missionObjects.some((object) => object.kind === "escort"), "Transport should not spawn before the player starts the escort");
+  await movePlayerToActiveWaypoint(page);
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    space?.tryCompleteInteractiveMissionStep?.();
+    for (let i = 0; i < 180; i += 1) {
+      space?.updateMissionActivity?.(1 / 60);
+    }
+    space?.refreshHud?.();
+  });
   state = await snapshot(page);
   const escort = state.missionObjects.find((object) => object.kind === "escort");
   assert(escort?.routeOriginLabel && escort?.routeDestinationLabel, `Escort transport missing real route labels: ${JSON.stringify(state.missionObjects)}`);
   assert(escort?.usesRealShipVisual, "Escort transport should use the real ship renderer");
-  assert(escort?.routeCheckpointCount >= 3, `Escort route should include internal checkpoints: ${JSON.stringify(escort)}`);
+  assert(escort?.routeCheckpointCount >= 3, `Escort route should include internal checkpoints plus destination: ${JSON.stringify(escort)}`);
+  assert(escort?.routeStarted, "Escort transport should begin moving after launch delay");
+  await capture(page, "transport-started.png");
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    const escortObject = space.missionObjects.find((object) => object.kind === "escort");
-    space.shipRoot.x = escortObject.root.x;
-    space.shipRoot.y = escortObject.root.y;
-    space.shipVelocity.set(0, 0);
-    const checkpoint = escortObject.routeCheckpoints[0];
+    const escortObject = space?.missionObjects?.find((object) => object.kind === "escort");
+    const checkpoint = escortObject?.routeCheckpoints?.[0];
+    if (!space || !escortObject || !checkpoint) {
+      return;
+    }
     escortObject.root.x = checkpoint.x;
     escortObject.root.y = checkpoint.y;
     space.shipRoot.x = checkpoint.x;
     space.shipRoot.y = checkpoint.y;
-    space.updateMissionActivity?.(1 / 60);
-    for (let i = 0; i < 140; i += 1) {
-      space.updateMissionActivity?.(1 / 30);
+    for (let i = 0; i < 260; i += 1) {
+      space.updateMissionActivity?.(1 / 60);
     }
   });
   state = await snapshot(page);
-  assert(state.missionObjects.some((object) => object.role === "skirmish" && object.factionId === "pirate"), "Escort route did not spawn periodic raiders");
-  await page.evaluate(() => {
+  const pirateRaiders = await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    const escortObject = space.missionObjects.find((object) => object.kind === "escort");
-    const finalCheckpoint = escortObject.routeCheckpoints[escortObject.routeCheckpoints.length - 1];
-    escortObject.routeCheckpointIndex = escortObject.routeCheckpoints.length - 1;
-    escortObject.targetX = finalCheckpoint.x;
-    escortObject.targetY = finalCheckpoint.y;
-    escortObject.root.x = finalCheckpoint.x;
-    escortObject.root.y = finalCheckpoint.y;
-    space.updateMissionActivity?.(1 / 60);
+    return [...(space?.shipStates?.values?.() ?? [])].filter((ship) => ship.factionId === "pirate" && String(ship.groupId ?? "").includes("distress-transport")).length;
   });
-  state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-escort-distress"), "Escort mission did not complete when transport reached destination");
+  assert(pirateRaiders > 0, "Escort attackers should spawn as real pirate faction ships, not mission circles");
+  assert(!state.missionObjects.some((object) => object.kind === "hostile" || object.kind === "boss"), "Escort raiders should not be fake hostile mission objects");
 
-  await resetToSpace(page, "test-resource-salvage", { live: true });
+  await resetToSpace(page, "distress-pirate-defense", { source: "live-space" });
   state = await snapshot(page);
-  assert(state.missionObjects.some((object) => object.kind === "resource"), "Salvage resource did not spawn");
-  assert(state.missionObjects.filter((object) => object.kind === "debris").length >= 3, "Salvage debris field did not spawn");
-  await page.evaluate(() => {
-    const space = window.__loeGame?.scene.keys.space;
-    const resource = space.missionObjects.find((object) => object.kind === "resource");
-    space.shipRoot.x = resource.root.x;
-    space.shipRoot.y = resource.root.y;
-    space.shipVelocity.set(0, 0);
-    space.refreshHud?.();
-    space.tryCompleteInteractiveMissionStep?.();
-    space.updateMissionActivity?.(1 / 60);
-    space.refreshHud?.();
-  });
+  assert(state.activeMissionWaypoint?.targetShipId, `Pirate defense should waypoint to a real target ship: ${JSON.stringify(state.activeMissionWaypoint)}`);
+  assert(state.missionTargetShips.length > 0, "Pirate defense should register target ship ids");
+  assert(state.missionTargetShips.every((ship) => ship.factionId === "pirate"), `Pirate defense targets should be real pirate ships: ${JSON.stringify(state.missionTargetShips)}`);
+  assert(!state.missionObjects.some((object) => object.kind === "hostile" || object.kind === "boss"), "Pirate defense should not use fake hostile mission objects");
+  await destroyActiveMissionTargetShips(page);
   state = await snapshot(page);
-  assert(state.activityState?.stepIndex === 1, `Salvage pickup should advance to delivery step: ${JSON.stringify(state.activityState)}`);
-  assert(state.cargo.some((item) => item?.tag === "mission-cargo:test-resource-salvage"), "Salvage pickup should place a quest cargo item in inventory");
-  assert(state.activeMissionWaypoint?.kind === "comms", `Salvage delivery should target comms/station: ${JSON.stringify(state.activeMissionWaypoint)}`);
-  await completeCurrentComms(page);
-  state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-resource-salvage"), "Salvage mission did not complete after delivery");
-  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:test-resource-salvage"), "Salvage cargo should be removed on delivery");
+  assert(!state.acceptedMissionIds.includes("distress-pirate-defense"), "Pirate defense should complete after real target ships are destroyed");
 
-  await resetToSpace(page, "test-smuggling-run");
+  await resetToSpace(page, "distress-neutral-empire-defense", { source: "live-space" });
   state = await snapshot(page);
-  assert(state.missionObjects.some((object) => object.kind === "resource"), "Smuggling cargo cache did not spawn");
-  await page.evaluate(() => {
-    const space = window.__loeGame?.scene.keys.space;
-    const resource = space.missionObjects.find((object) => object.kind === "resource");
-    space.shipRoot.x = resource.root.x;
-    space.shipRoot.y = resource.root.y;
-    space.shipVelocity.set(0, 0);
-    space.refreshHud?.();
-    space.tryCompleteInteractiveMissionStep?.();
-    space.updateMissionActivity?.(1 / 60);
-    space.refreshHud?.();
-  });
+  assert(state.activeMissionWaypoint?.targetShipId, "Neutral defense should target a real Empire ship");
+  assert(state.missionTargetShips.length > 0, "Neutral defense should register target ship ids");
+  assert(state.missionTargetShips.every((ship) => ship.factionId === "empire" && ship.originRaceId), `Neutral defense targets should use this save's Empire identity: ${JSON.stringify(state.missionTargetShips)}`);
+  await destroyActiveMissionTargetShips(page);
   state = await snapshot(page);
-  assert(state.cargo.some((item) => item?.tag === "mission-cargo:test-smuggling-run"), "Smuggling pickup should place a quest cargo item in inventory");
-  await completeCurrentComms(page);
-  state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-smuggling-run"), "Smuggling run did not complete after cargo delivery");
-  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:test-smuggling-run"), "Smuggling cargo should be removed on delivery");
+  assert(!state.acceptedMissionIds.includes("distress-neutral-empire-defense"), "Neutral defense should complete after real Empire ships are destroyed");
 
-  await resetToSpace(page, "test-zone-reclaim");
-  state = await snapshot(page);
-  const zoneBefore = state.war?.contestedZones?.[0] ?? null;
-  assert(zoneBefore, `Zone reclaim did not create visible contested state: ${JSON.stringify(state.war)}`);
-  assert(state.missionObjects.some((object) => object.role === "zone-defender" && object.factionId === "empire"), "Zone reclaim did not spawn Empire defenders");
-  assert(state.missionObjects.filter((object) => object.role === "zone-defender").every((object) => object.usesRealShipVisual), "Zone defenders should use real ship visuals");
-  await destroyMissionCombatObjects(page);
-  await page.evaluate(() => {
-    const space = window.__loeGame?.scene.keys.space;
-    const waypoint = space.getDebugSnapshot().activeMissionWaypoint;
-    space.shipRoot.x = waypoint.x;
-    space.shipRoot.y = waypoint.y;
-    space.shipVelocity.set(0, 0);
-    window.__loeSession?.setShipSpacePosition?.(waypoint.x, waypoint.y);
-    space.refreshHud?.();
-    space.tryCompleteInteractiveMissionStep?.();
-  });
-  state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-zone-reclaim"), "Zone reclaim did not complete after clearing defenders and stabilizing");
-  assert((state.war?.contestedZones ?? []).length === 0, "Zone reclaim should clear contested state after stabilization");
-
-  await resetToSpace(page, "test-kill-target");
-  state = await snapshot(page);
-  assert(state.missionObjects.some((object) => object.role === "elite-target"), "Marked target did not spawn elite target");
-  assert(state.missionObjects.some((object) => object.role === "elite-target" && object.usesRealShipVisual), "Marked target should use real ship visuals");
-  await destroyMissionCombatObjects(page);
-  await page.evaluate(() => {
-    const space = window.__loeGame?.scene.keys.space;
-    for (let i = 0; i < 20; i += 1) {
-      space.updateMissionActivity?.(1 / 30);
+  await resetToSpace(page, "distress-reclaim", { source: "live-space" });
+  const seededZone = await seedEmpireHeldForeignZone(page);
+  assert(seededZone, "Could not seed a real foreign Empire-held zone for reclaim verification");
+  await page.evaluate((zoneId) => {
+    const state = window.__loeSession?.getMissionActivityState?.("distress-reclaim");
+    if (!state) {
+      return;
     }
-  });
-  state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-kill-target"), "Marked target mission did not complete on target destruction");
-  assert(!state.missionObjects.some((object) => object.role === "elite-target"), "Marked target respawned after completion");
-
-  await resetToSpace(page, "test-boss-climax");
-  state = await snapshot(page);
-  assert(state.missionObjects.some((object) => object.role === "heavy-contact"), "Heavy contact did not spawn command target");
-  assert(state.missionObjects.some((object) => object.role === "heavy-contact" && object.usesRealShipVisual), "Heavy contact should use real ship visuals");
-  await destroyMissionCombatObjects(page);
-  await page.evaluate(() => window.__loeGame?.scene.keys.space?.updateMissionActivity?.(1 / 60));
-  state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-boss-climax"), "Heavy contact mission did not complete on command target destruction");
-
-  await resetToSpace(page, "test-chain-dispatch");
+    window.__loeSession?.setMissionActivityState?.("distress-reclaim", {
+      ...state,
+      flags: {
+        ...state.flags,
+        targetZoneId: zoneId,
+        reclaimZoneId: zoneId,
+      },
+    }, true);
+  }, seededZone.zoneId);
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    let waypoint = space.getDebugSnapshot().activeMissionWaypoint;
-    space.shipRoot.x = waypoint.x;
-    space.shipRoot.y = waypoint.y;
-    space.shipVelocity.set(0, 0);
-    space.updateMissionActivity?.(1 / 60);
-    space.updateMissionActivity?.(1 / 60);
+    space?.updateMissionActivity?.(1 / 60);
+    space?.refreshHud?.();
   });
-  await completeCurrentComms(page);
+  state = await snapshot(page);
+  assert(state.activeMissionWaypoint?.kind === "zone", `Reclaim should point at the real zone being stabilized: ${JSON.stringify(state.activeMissionWaypoint)}`);
+  assert(state.missionTargetShips.length > 0, "Reclaim should bind real Empire ships to the zone objective");
+  assert(state.missionTargetShips.every((ship) => ship.factionId === "empire"), `Reclaim target ships should be Empire-controlled: ${JSON.stringify(state.missionTargetShips)}`);
+  await destroyActiveMissionTargetShips(page);
+  await movePlayerToActiveWaypoint(page);
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
-    let escortObject = space.missionObjects.find((object) => object.kind === "escort");
-    space.shipRoot.x = escortObject.root.x;
-    space.shipRoot.y = escortObject.root.y;
-    space.updateMissionActivity?.(1 / 60);
-    escortObject = space.missionObjects.find((object) => object.kind === "escort");
-    const finalCheckpoint = escortObject.routeCheckpoints[escortObject.routeCheckpoints.length - 1];
-    escortObject.routeCheckpointIndex = escortObject.routeCheckpoints.length - 1;
-    escortObject.targetX = finalCheckpoint.x;
-    escortObject.targetY = finalCheckpoint.y;
-    escortObject.root.x = finalCheckpoint.x;
-    escortObject.root.y = finalCheckpoint.y;
-    space.updateMissionActivity?.(1 / 60);
+    space?.tryCompleteInteractiveMissionStep?.();
+    space?.updateMissionActivity?.(1 / 60);
+    space?.refreshHud?.();
   });
-  await destroyMissionCombatObjects(page);
-  await page.evaluate(() => window.__loeGame?.scene.keys.space?.updateMissionActivity?.(1 / 60));
   state = await snapshot(page);
-  assert(state.completedMissionIds.includes("test-chain-dispatch"), `Linked chain did not complete corrected flow: ${JSON.stringify(state)}`);
+  assert(!state.acceptedMissionIds.includes("distress-reclaim"), "Reclaim support should complete after clearing real ships and stabilizing");
+  const zoneAfterReclaim = await page.evaluate((zoneId) => {
+    const zone = window.__loeSession?.getGalaxyDefinition?.()?.zones?.find((candidate) => candidate.id === zoneId);
+    return zone ? { id: zone.id, currentControllerId: zone.currentControllerId, zoneState: zone.zoneState } : null;
+  }, seededZone.zoneId);
+  assert(zoneAfterReclaim?.currentControllerId === seededZone.originalControllerId, `Reclaim should restore original owner: ${JSON.stringify(zoneAfterReclaim)}`);
+
+  const directZone = await page.evaluate(({ zoneId, empireRaceId }) => {
+    const session = window.__loeSession;
+    const galaxy = session?.getGalaxyDefinition?.();
+    const zone = galaxy?.zones?.find((candidate) => candidate.id === zoneId);
+    if (!session || !galaxy || !zone) {
+      return null;
+    }
+    const originalControllerId = zone.currentControllerId;
+    zone.currentControllerId = empireRaceId;
+    zone.zoneState = "stable";
+    session.setGalaxyDefinition(galaxy, true);
+    session.acceptMission("world-zone-reclaim");
+    session.setMissionActivityState("world-zone-reclaim", {
+      stepIndex: 0,
+      completedStepIds: [],
+      flags: {
+        targetZoneId: zone.id,
+        reclaimZoneId: zone.id,
+      },
+    }, true);
+    return { zoneId: zone.id, originalControllerId };
+  }, { zoneId: seededZone.zoneId, empireRaceId: seededZone.empireRaceId });
+  assert(directZone, "Could not seed direct reclaim mission state");
+  await page.evaluate(() => {
+    window.__loeSession?.completeMission?.("world-zone-reclaim", {
+      missionId: "world-zone-reclaim",
+      xp: 1,
+      credits: 1,
+      materials: {},
+      items: [],
+    });
+  });
+  const directZoneAfter = await page.evaluate((zoneId) => {
+    const zone = window.__loeSession?.getGalaxyDefinition?.()?.zones?.find((candidate) => candidate.id === zoneId);
+    return zone ? { id: zone.id, currentControllerId: zone.currentControllerId, zoneState: zone.zoneState } : null;
+  }, directZone.zoneId);
+  assert(directZoneAfter?.currentControllerId === directZone.originalControllerId, `Direct reclaim completion should restore original owner: ${JSON.stringify(directZoneAfter)}`);
 
   const result = {
     contractState,
