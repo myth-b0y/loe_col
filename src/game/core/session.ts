@@ -1226,6 +1226,22 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return true;
   }
 
+  hasCargoItemByInstanceId(instanceId: string): boolean {
+    return this.saveData.loadout.cargo.some((item) => item?.instanceId === instanceId);
+  }
+
+  removeCargoItemByInstanceId(instanceId: string): boolean {
+    const cargo = this.saveData.loadout.cargo;
+    const index = cargo.findIndex((item) => item?.instanceId === instanceId);
+    if (index < 0) {
+      return false;
+    }
+
+    cargo[index] = null;
+    this.emit("save-changed", this.saveData);
+    return true;
+  }
+
   equipCargoItemToSlot(cargoIndex: number, slotId: EquipmentSlotId): boolean {
     const cargo = this.saveData.loadout.cargo;
     if (cargoIndex < 0 || cargoIndex >= cargo.length) {

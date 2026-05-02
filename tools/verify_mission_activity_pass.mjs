@@ -13,6 +13,7 @@ const TERMINAL_MISSION_IDS = [
   "test-kill-target",
   "test-boss-climax",
   "test-chain-dispatch",
+  "test-smuggling-run",
 ];
 
 const LIVE_MISSION_IDS = [
@@ -88,6 +89,7 @@ async function snapshot(page) {
       activeMissionWaypoint: raw.activeMissionWaypoint ?? null,
       missionObjects: raw.missionObjects ?? [],
       missionRuntime: raw.missionRuntime ?? {},
+      cargo: window.__loeSession?.getCargoSlots?.() ?? [],
       war: raw.war ?? null,
       commsOverlayVisible: raw.commsOverlayVisible ?? false,
       stationOverlayVisible: raw.stationOverlayVisible ?? false,
@@ -102,6 +104,7 @@ async function destroyMissionCombatObjects(page) {
     if (!space) {
       return;
     }
+    space.updateMissionActivity?.(1 / 60);
     const objects = [...(space.missionObjects ?? [])]
       .filter((object) => object.kind === "hostile" || object.kind === "boss");
     objects.forEach((object) => space.damageMissionObject?.(object, object.hp + 20));
@@ -159,18 +162,20 @@ try {
       removedTravelPresent: contracts.some((contract) => contract.id === "test-travel-survey"),
       chainSteps: contracts.find((contract) => contract.id === "test-chain-dispatch")?.activities?.map((step) => step.type) ?? [],
       salvageSteps: contracts.find((contract) => contract.id === "test-resource-salvage")?.activities?.map((step) => step.type) ?? [],
+      smugglingSteps: contracts.find((contract) => contract.id === "test-smuggling-run")?.activities?.map((step) => step.type) ?? [],
       shortGroundStages: window.__loeCreateMissionDefinition?.("test-ground-sweep", 1)?.stages?.length ?? null,
       terminalPresent: terminalIds.every((id) => contracts.some((contract) => contract.id === id && contract.terminalVisible)),
       livePresent: liveIds.every((id) => contracts.some((contract) => contract.id === id && contract.source?.kind === "live-space")),
     };
   }, { terminalIds: TERMINAL_MISSION_IDS, liveIds: LIVE_MISSION_IDS });
 
-  assert(contractState.count === 9, `Expected 9 focused test missions, got ${contractState.count}`);
+  assert(contractState.count === 10, `Expected 10 focused test missions, got ${contractState.count}`);
   assert(!contractState.removedTravelPresent, "Standalone travel test mission should be removed");
   assert(contractState.terminalPresent, `Terminal mission set mismatch: ${JSON.stringify(contractState.terminalIds)}`);
   assert(contractState.livePresent, `Live mission set mismatch: ${JSON.stringify(contractState.liveIds)}`);
   assert(contractState.chainSteps.join(">") === "travel>comms>escort>boss", `Linked chain steps changed unexpectedly: ${contractState.chainSteps}`);
   assert(contractState.salvageSteps.join(">") === "resource>comms", `Salvage should recover then deliver: ${contractState.salvageSteps}`);
+  assert(contractState.smugglingSteps.join(">") === "resource>comms", `Smuggling should recover cargo then deliver: ${contractState.smugglingSteps}`);
   assert(contractState.shortGroundStages === 2, `Short ground mission should use 2 stages, got ${contractState.shortGroundStages}`);
 
   await page.evaluate(() => {
@@ -203,7 +208,7 @@ try {
     space.tryCompleteInteractiveMissionStep?.();
   });
   let state = await snapshot(page);
-  assert(state.commsOverlayVisible, "Comms mission should open a comms window before completion");
+  assert(state.stationOverlayVisible || state.commsOverlayVisible, "Comms mission should open a contextual comms/menu window before completion");
   await capture(page, "comms-window.png");
   await page.evaluate(() => window.__loeGame?.scene.keys.space?.handleMissionCommsContinue?.());
   await page.waitForTimeout(200);
@@ -214,6 +219,7 @@ try {
   await resetToSpace(page, "test-space-battle");
   state = await snapshot(page);
   assert(state.missionObjects.filter((object) => object.kind === "hostile").length === 3, `Skirmish wave 1 not spawned: ${JSON.stringify(state.missionObjects)}`);
+  assert(state.missionObjects.filter((object) => object.kind === "hostile").every((object) => object.usesRealShipVisual), "Skirmish targets should use real ship visuals");
   await destroyMissionCombatObjects(page);
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -232,14 +238,21 @@ try {
   state = await snapshot(page);
   const escort = state.missionObjects.find((object) => object.kind === "escort");
   assert(escort?.routeOriginLabel && escort?.routeDestinationLabel, `Escort transport missing real route labels: ${JSON.stringify(state.missionObjects)}`);
+  assert(escort?.usesRealShipVisual, "Escort transport should use the real ship renderer");
+  assert(escort?.routeCheckpointCount >= 3, `Escort route should include internal checkpoints: ${JSON.stringify(escort)}`);
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     const escortObject = space.missionObjects.find((object) => object.kind === "escort");
     space.shipRoot.x = escortObject.root.x;
     space.shipRoot.y = escortObject.root.y;
     space.shipVelocity.set(0, 0);
+    const checkpoint = escortObject.routeCheckpoints[0];
+    escortObject.root.x = checkpoint.x;
+    escortObject.root.y = checkpoint.y;
+    space.shipRoot.x = checkpoint.x;
+    space.shipRoot.y = checkpoint.y;
     space.updateMissionActivity?.(1 / 60);
-    for (let i = 0; i < 220; i += 1) {
+    for (let i = 0; i < 140; i += 1) {
       space.updateMissionActivity?.(1 / 30);
     }
   });
@@ -248,8 +261,12 @@ try {
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
     const escortObject = space.missionObjects.find((object) => object.kind === "escort");
-    escortObject.root.x = escortObject.targetX;
-    escortObject.root.y = escortObject.targetY;
+    const finalCheckpoint = escortObject.routeCheckpoints[escortObject.routeCheckpoints.length - 1];
+    escortObject.routeCheckpointIndex = escortObject.routeCheckpoints.length - 1;
+    escortObject.targetX = finalCheckpoint.x;
+    escortObject.targetY = finalCheckpoint.y;
+    escortObject.root.x = finalCheckpoint.x;
+    escortObject.root.y = finalCheckpoint.y;
     space.updateMissionActivity?.(1 / 60);
   });
   state = await snapshot(page);
@@ -272,16 +289,40 @@ try {
   });
   state = await snapshot(page);
   assert(state.activityState?.stepIndex === 1, `Salvage pickup should advance to delivery step: ${JSON.stringify(state.activityState)}`);
+  assert(state.cargo.some((item) => item?.tag === "mission-cargo:test-resource-salvage"), "Salvage pickup should place a quest cargo item in inventory");
   assert(state.activeMissionWaypoint?.kind === "comms", `Salvage delivery should target comms/station: ${JSON.stringify(state.activeMissionWaypoint)}`);
   await completeCurrentComms(page);
   state = await snapshot(page);
   assert(state.completedMissionIds.includes("test-resource-salvage"), "Salvage mission did not complete after delivery");
+  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:test-resource-salvage"), "Salvage cargo should be removed on delivery");
+
+  await resetToSpace(page, "test-smuggling-run");
+  state = await snapshot(page);
+  assert(state.missionObjects.some((object) => object.kind === "resource"), "Smuggling cargo cache did not spawn");
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    const resource = space.missionObjects.find((object) => object.kind === "resource");
+    space.shipRoot.x = resource.root.x;
+    space.shipRoot.y = resource.root.y;
+    space.shipVelocity.set(0, 0);
+    space.refreshHud?.();
+    space.tryCompleteInteractiveMissionStep?.();
+    space.updateMissionActivity?.(1 / 60);
+    space.refreshHud?.();
+  });
+  state = await snapshot(page);
+  assert(state.cargo.some((item) => item?.tag === "mission-cargo:test-smuggling-run"), "Smuggling pickup should place a quest cargo item in inventory");
+  await completeCurrentComms(page);
+  state = await snapshot(page);
+  assert(state.completedMissionIds.includes("test-smuggling-run"), "Smuggling run did not complete after cargo delivery");
+  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:test-smuggling-run"), "Smuggling cargo should be removed on delivery");
 
   await resetToSpace(page, "test-zone-reclaim");
   state = await snapshot(page);
   const zoneBefore = state.war?.contestedZones?.[0] ?? null;
   assert(zoneBefore, `Zone reclaim did not create visible contested state: ${JSON.stringify(state.war)}`);
   assert(state.missionObjects.some((object) => object.role === "zone-defender" && object.factionId === "empire"), "Zone reclaim did not spawn Empire defenders");
+  assert(state.missionObjects.filter((object) => object.role === "zone-defender").every((object) => object.usesRealShipVisual), "Zone defenders should use real ship visuals");
   await destroyMissionCombatObjects(page);
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -300,6 +341,7 @@ try {
   await resetToSpace(page, "test-kill-target");
   state = await snapshot(page);
   assert(state.missionObjects.some((object) => object.role === "elite-target"), "Marked target did not spawn elite target");
+  assert(state.missionObjects.some((object) => object.role === "elite-target" && object.usesRealShipVisual), "Marked target should use real ship visuals");
   await destroyMissionCombatObjects(page);
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -314,6 +356,7 @@ try {
   await resetToSpace(page, "test-boss-climax");
   state = await snapshot(page);
   assert(state.missionObjects.some((object) => object.role === "heavy-contact"), "Heavy contact did not spawn command target");
+  assert(state.missionObjects.some((object) => object.role === "heavy-contact" && object.usesRealShipVisual), "Heavy contact should use real ship visuals");
   await destroyMissionCombatObjects(page);
   await page.evaluate(() => window.__loeGame?.scene.keys.space?.updateMissionActivity?.(1 / 60));
   state = await snapshot(page);
@@ -337,8 +380,12 @@ try {
     space.shipRoot.y = escortObject.root.y;
     space.updateMissionActivity?.(1 / 60);
     escortObject = space.missionObjects.find((object) => object.kind === "escort");
-    escortObject.root.x = escortObject.targetX;
-    escortObject.root.y = escortObject.targetY;
+    const finalCheckpoint = escortObject.routeCheckpoints[escortObject.routeCheckpoints.length - 1];
+    escortObject.routeCheckpointIndex = escortObject.routeCheckpoints.length - 1;
+    escortObject.targetX = finalCheckpoint.x;
+    escortObject.targetY = finalCheckpoint.y;
+    escortObject.root.x = finalCheckpoint.x;
+    escortObject.root.y = finalCheckpoint.y;
     space.updateMissionActivity?.(1 / 60);
   });
   await destroyMissionCombatObjects(page);

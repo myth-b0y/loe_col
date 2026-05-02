@@ -78,7 +78,7 @@ import {
   type SpaceWorldCellKey,
   type SpaceWorldDefinition,
 } from "../content/space";
-import { DEFAULT_CRAFTING_MATERIALS, type RaceId } from "../content/items";
+import { DEFAULT_CRAFTING_MATERIALS, createMissionQuestItem, type RaceId } from "../content/items";
 import { gameSession } from "../core/session";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -293,8 +293,12 @@ type SpaceMissionObject = {
   routeStarted: boolean;
   routeOriginLabel: string | null;
   routeDestinationLabel: string | null;
+  routeCheckpoints: SpaceMissionRoutePoint[];
+  routeCheckpointIndex: number;
+  checkpointHoldMs: number;
   canAttackPlayer: boolean;
   canAttackEscort: boolean;
+  usesRealShipVisual: boolean;
   flash: number;
   complete: boolean;
 };
@@ -306,6 +310,8 @@ type SpaceMissionRuntime = {
   escortWavesSpawned: number;
   maxEscortWaves: number;
   routeAnnounced: boolean;
+  escortCheckpointWarningMs: number;
+  escortCheckpointPendingWave: number;
 };
 
 type SpaceMissionRoutePoint = {
@@ -1424,7 +1430,7 @@ export class SpaceScene extends Phaser.Scene {
         if (runtime.wavesSpawned > 0) {
           return;
         }
-        this.spawnMissionSalvageField(missionId, step);
+        this.spawnMissionSalvageField(missionId, contract, step);
         runtime.wavesSpawned = 1;
         break;
       case "zone":
@@ -1454,6 +1460,8 @@ export class SpaceScene extends Phaser.Scene {
       escortWavesSpawned: 0,
       maxEscortWaves: 2,
       routeAnnounced: false,
+      escortCheckpointWarningMs: 0,
+      escortCheckpointPendingWave: 0,
     };
     this.missionStepRuntime.set(key, runtime);
     return runtime;
@@ -1465,7 +1473,7 @@ export class SpaceScene extends Phaser.Scene {
     step: MissionActivityStepDefinition,
     waveNumber: number,
   ): void {
-    const anchor = this.getMissionAnchorPoint(missionId, step);
+    const anchor = this.getMissionCombatAnchor(missionId, step);
     const count = waveNumber > 1 ? 2 : 3;
     for (let index = 0; index < count; index += 1) {
       const angle = ((index / count) * Math.PI * 2) + (waveNumber * 0.42);
@@ -1495,7 +1503,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private spawnMissionEliteTarget(missionId: string, step: MissionActivityStepDefinition): void {
-    const anchor = this.getMissionAnchorPoint(missionId, step);
+    const anchor = this.getMissionCombatAnchor(missionId, step);
     const factionId: SpaceFactionId = this.warState.empireRaceId ? "empire" : "pirate";
     this.createMissionObject({
       id: `${missionId}:${step.id}:elite-target`,
@@ -1521,7 +1529,7 @@ export class SpaceScene extends Phaser.Scene {
     contract: NonNullable<ReturnType<typeof getMissionContract>>,
     step: MissionActivityStepDefinition,
   ): void {
-    const anchor = this.getMissionAnchorPoint(missionId, step);
+    const anchor = this.getMissionCombatAnchor(missionId, step);
     this.createMissionObject({
       id: `${missionId}:${step.id}:heavy-contact`,
       missionId,
@@ -1541,6 +1549,22 @@ export class SpaceScene extends Phaser.Scene {
     });
   }
 
+  private getMissionCombatAnchor(missionId: string, step: MissionActivityStepDefinition): { x: number; y: number; radius: number; label: string; color: number } {
+    const zone = this.getMissionTargetZone(missionId);
+    const system = zone ? this.galaxySystemsById.get(zone.systemId) ?? null : null;
+    if (zone && system) {
+      return {
+        x: system.x,
+        y: system.y,
+        radius: 360,
+        label: zone.name,
+        color: zone.currentControllerId === this.warState.empireRaceId ? SPACE_FACTIONS.empire.color : 0xffd27a,
+      };
+    }
+
+    return this.getMissionAnchorPoint(missionId, step);
+  }
+
   private spawnMissionEscortTransport(
     missionId: string,
     step: MissionActivityStepDefinition,
@@ -1548,30 +1572,69 @@ export class SpaceScene extends Phaser.Scene {
   ): void {
     const origin = this.getMissionRouteOrigin(missionId, step);
     const destination = this.getMissionRouteDestination(origin, missionId, step, ["planet", "moon", "station"]);
+    const routeCheckpoints = this.buildMissionEscortCheckpoints(origin, destination, missionId, step);
     runtime.maxEscortWaves = 2;
-        this.createMissionObject({
+    const firstCheckpoint = routeCheckpoints[0] ?? destination;
+    this.createMissionObject({
       id: `${missionId}:${step.id}:transport`,
-          missionId,
-          stepId: step.id,
+      missionId,
+      stepId: step.id,
       kind: "escort",
       role: "transport",
       factionId: "smuggler",
       x: origin.x,
       y: origin.y,
-      targetX: destination.x,
-      targetY: destination.y,
+      targetX: firstCheckpoint.x,
+      targetY: firstCheckpoint.y,
       hp: 8,
       radius: 30,
       color: SPACE_FACTIONS.smuggler.color,
       label: "Transport",
       routeOriginLabel: origin.label,
       routeDestinationLabel: destination.label,
-        });
+      routeCheckpoints,
+    });
     this.pushStatusMessage(`Transport staged at ${origin.label}. Escort it to ${destination.label}.`, 6400);
   }
 
-  private spawnMissionSalvageField(missionId: string, step: MissionActivityStepDefinition): void {
-    const anchor = this.getMissionAnchorPoint(missionId, step);
+  private buildMissionEscortCheckpoints(
+    origin: SpaceMissionRoutePoint,
+    destination: SpaceMissionRoutePoint,
+    missionId: string,
+    step: MissionActivityStepDefinition,
+  ): SpaceMissionRoutePoint[] {
+    const seed = hashTextSeed(`${this.galaxyDefinition.seed}:${missionId}:${step.id}:escort-route`);
+    const dx = destination.x - origin.x;
+    const dy = destination.y - origin.y;
+    const distance = Math.max(1, Math.hypot(dx, dy));
+    const normalX = -dy / distance;
+    const normalY = dx / distance;
+    const bend = 260 + (seed % 220);
+    const points = [0.34, 0.68].map((ratio, index) => ({
+      id: `${missionId}:${step.id}:checkpoint-${index + 1}`,
+      kind: "zone" as const,
+      label: `Route Checkpoint ${index + 1}`,
+      x: Phaser.Math.Clamp(origin.x + dx * ratio + normalX * bend * (index === 0 ? 1 : -0.72), 420, SPACE_WORLD_CONFIG.width - 420),
+      y: Phaser.Math.Clamp(origin.y + dy * ratio + normalY * bend * (index === 0 ? 1 : -0.72), 420, SPACE_WORLD_CONFIG.height - 420),
+      radius: 180,
+      color: SPACE_FACTIONS.smuggler.glowColor,
+      sectorId: ratio < 0.5 ? origin.sectorId : destination.sectorId,
+    }));
+
+    return [
+      ...points,
+      destination,
+    ];
+  }
+
+  private spawnMissionSalvageField(
+    missionId: string,
+    contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ): void {
+    const anchor = contract.activityType === "smuggling"
+      ? this.getMissionCombatAnchor(missionId, step)
+      : this.getMissionAnchorPoint(missionId, step);
     const seed = hashTextSeed(`${this.galaxyDefinition.seed}:${missionId}:${step.id}:salvage`);
     const fieldX = anchor.x + 320 + ((seed % 5) * 18);
     const fieldY = anchor.y + 180 - ((seed % 7) * 15);
@@ -1588,8 +1651,8 @@ export class SpaceScene extends Phaser.Scene {
       targetY: fieldY,
       hp: 1,
       radius: 22,
-      color: 0xf0d49c,
-      label: "Salvage",
+      color: contract.activityType === "smuggling" ? 0xc8ced7 : 0xf0d49c,
+      label: contract.activityType === "smuggling" ? "Sealed Cargo" : "Salvage",
     });
 
     for (let index = 0; index < 5; index += 1) {
@@ -1660,6 +1723,109 @@ export class SpaceScene extends Phaser.Scene {
     });
   }
 
+  private getMissionObjectShipRole(kind: SpaceMissionObjectKind, role: SpaceMissionObjectRole): FactionForceShipRole | null {
+    if (kind === "escort" || role === "transport") {
+      return "support-fighter";
+    }
+    if (kind === "boss" || role === "heavy-contact") {
+      return "attack-warship";
+    }
+    if (role === "elite-target" || role === "zone-defender") {
+      return "defense-warship";
+    }
+    if (kind === "hostile") {
+      return "base-fighter";
+    }
+    return null;
+  }
+
+  private getMissionObjectOriginRaceId(factionId: SpaceFactionId, x: number, y: number): RaceId | null {
+    if (factionId === "empire") {
+      return this.warState.empireRaceId;
+    }
+    if (factionId === "republic") {
+      return this.warState.republicRaceIds[0] ?? gameSession.getPlayerRaceId();
+    }
+    if (factionId === "homeguard") {
+      return getGalaxySectorAtPosition(x, y).raceId;
+    }
+    return null;
+  }
+
+  private createMissionShipState(options: {
+    id: string;
+    factionId: SpaceFactionId;
+    role: SpaceMissionObjectRole;
+    kind: SpaceMissionObjectKind;
+    x: number;
+    y: number;
+    targetX: number;
+    targetY: number;
+    radius: number;
+    hp: number;
+  }): SpaceFactionShipState {
+    const shipRole = this.getMissionObjectShipRole(options.kind, options.role);
+    const originRaceId = this.getMissionObjectOriginRaceId(options.factionId, options.x, options.y);
+    const faction = getSpaceFactionConfig(options.factionId, originRaceId);
+    const dx = options.targetX - options.x;
+    const dy = options.targetY - options.y;
+    const heading = Math.abs(dx) + Math.abs(dy) <= 0.001 ? 0 : Math.atan2(dy, dx) + Math.PI * 0.5;
+    const aim = angleToDirection(heading);
+    return {
+      id: options.id,
+      cellKey: getSpaceCellKeyAtPosition(options.x, options.y),
+      factionId: options.factionId,
+      assetId: `mission/${shipRole ?? options.role}`,
+      originRaceId,
+      shipRole,
+      assignmentKind: null,
+      assignmentZoneId: null,
+      slotKind: shipRole === "attack-warship" || shipRole === "defense-warship" ? "command" : "escort",
+      fleetId: null,
+      fleetGroupId: null,
+      fleetMode: "single-fleet",
+      captureIntent: false,
+      sectorId: getGalaxySectorAtPosition(options.x, options.y).id,
+      groupId: `mission-${options.id}`,
+      leaderId: null,
+      formationOffsetX: 0,
+      formationOffsetY: 0,
+      x: options.x,
+      y: options.y,
+      velocityX: 0,
+      velocityY: 0,
+      rotation: heading,
+      patrolX: options.targetX,
+      patrolY: options.targetY,
+      customColor: faction.color,
+      customTrimColor: faction.trimColor,
+      customGlowColor: faction.glowColor,
+      guardAnchorX: null,
+      guardAnchorY: null,
+      guardRadius: null,
+      originPoolId: null,
+      originPoolKind: null,
+      originZoneId: null,
+      originSystemId: null,
+      aimX: aim.x,
+      aimY: aim.y,
+      radius: options.radius,
+      hp: options.hp,
+      maxHp: options.hp,
+      flash: 0,
+      fireCooldown: randomBetween(MISSION_HOSTILE_FIRE_COOLDOWN_MIN, MISSION_HOSTILE_FIRE_COOLDOWN_MAX),
+      provokedByPlayer: true,
+      provokedByShips: [],
+      aggressionTimer: 0,
+      strafeSign: hashTextSeed(options.id) % 2 === 0 ? 1 : -1,
+      routeTargetKind: null,
+      routeTargetId: null,
+      routeWaitRemainingMs: 0,
+      supportRepairCooldown: 0,
+      destroyed: false,
+    };
+  }
+
   private createMissionObject(options: {
     id: string;
     missionId: string;
@@ -1677,31 +1843,14 @@ export class SpaceScene extends Phaser.Scene {
     label: string;
     routeOriginLabel?: string | null;
     routeDestinationLabel?: string | null;
+    routeCheckpoints?: SpaceMissionRoutePoint[];
     canAttackPlayer?: boolean;
     canAttackEscort?: boolean;
   }): SpaceMissionObject {
+    const role = options.role ?? "skirmish";
+    const usesRealShipVisual = Boolean(options.factionId && (options.kind === "hostile" || options.kind === "boss" || options.kind === "escort"));
     const marker = this.add.circle(0, 0, options.radius + 12, options.color, options.kind === "debris" ? 0.03 : 0.08)
       .setStrokeStyle(options.kind === "debris" ? 1 : 2, 0xfff3d2, options.kind === "debris" ? 0.18 : 0.76);
-    const children: Phaser.GameObjects.GameObject[] = [marker];
-    const body = this.createMissionBody(options.kind, options.role ?? "skirmish", options.radius, options.color);
-    children.push(body);
-
-    if (options.kind === "escort") {
-      children.push(
-        this.add.rectangle(0, options.radius * 0.22, options.radius * 2.6, options.radius * 0.64, 0xd7f7e6, 0.92)
-          .setStrokeStyle(2, 0xf4fff7, 0.78),
-        this.add.triangle(0, -options.radius * 0.78, 0, -options.radius * 1.42, options.radius * 0.68, -options.radius * 0.32, -options.radius * 0.68, -options.radius * 0.32, options.color, 0.96)
-          .setStrokeStyle(2, 0xf4fff7, 0.78),
-      );
-    } else if (options.kind === "boss" || options.role === "elite-target") {
-      children.push(
-        this.add.rectangle(0, options.radius * 0.18, options.radius * 0.62, options.radius * 1.95, 0x1d2734, 0.92)
-          .setStrokeStyle(2, 0xffe1d8, 0.72),
-        this.add.triangle(0, -options.radius * 0.92, 0, -options.radius * 1.55, options.radius * 0.78, -options.radius * 0.16, -options.radius * 0.78, -options.radius * 0.16, options.color, 0.95)
-          .setStrokeStyle(2, 0xffe1d8, 0.8),
-      );
-    }
-
     const label = this.add.text(0, options.radius + 16, options.label, {
       fontFamily: "Arial",
       fontSize: "13px",
@@ -1710,9 +1859,42 @@ export class SpaceScene extends Phaser.Scene {
       backgroundColor: options.label ? "#07111bcc" : "#00000000",
       padding: { x: 5, y: 3 },
     }).setOrigin(0.5, 0).setVisible(options.label.length > 0);
-    children.push(label);
+    const children: Phaser.GameObjects.GameObject[] = [marker, label];
+    let body: Phaser.GameObjects.Shape;
+    let root: Phaser.GameObjects.Container;
 
-    const root = this.add.container(options.x, options.y, children).setDepth(13);
+    if (usesRealShipVisual && options.factionId) {
+      const ship = this.createFactionShip(this.createMissionShipState({
+        id: options.id,
+        factionId: options.factionId,
+        role,
+        kind: options.kind,
+        x: options.x,
+        y: options.y,
+        targetX: options.targetX,
+        targetY: options.targetY,
+        radius: options.radius,
+        hp: options.hp,
+      }));
+      body = ship.damageRing;
+      root = ship.root;
+      root.addAt(marker, 0);
+      root.add(label);
+    } else {
+      body = this.createMissionBody(options.kind, role, options.radius, options.color);
+      children.splice(1, 0, body);
+      if (options.kind === "debris") {
+        const wing = this.add.rectangle(options.radius * 0.42, -options.radius * 0.22, options.radius * 1.55, options.radius * 0.34, 0x566170, 0.62)
+          .setStrokeStyle(1, 0xc7d3df, 0.22);
+        wing.rotation = 0.42;
+        const hullShard = this.add.triangle(-options.radius * 0.44, options.radius * 0.18, 0, -options.radius * 0.74, options.radius * 0.78, options.radius * 0.12, -options.radius * 0.46, options.radius * 0.56, 0x737f91, 0.52)
+          .setStrokeStyle(1, 0xd7e0ea, 0.24);
+        const engineShard = this.add.rectangle(-options.radius * 0.14, options.radius * 0.52, options.radius * 0.72, options.radius * 0.28, 0x2f3a48, 0.78)
+          .setStrokeStyle(1, 0x9eabb9, 0.24);
+        children.splice(2, 0, wing, hullShard, engineShard);
+      }
+      root = this.add.container(options.x, options.y, children).setDepth(13);
+    }
     const missionObject: SpaceMissionObject = {
       id: options.id,
       missionId: options.missionId,
@@ -1735,8 +1917,12 @@ export class SpaceScene extends Phaser.Scene {
       routeStarted: options.kind !== "escort",
       routeOriginLabel: options.routeOriginLabel ?? null,
       routeDestinationLabel: options.routeDestinationLabel ?? null,
+      routeCheckpoints: options.routeCheckpoints ?? [],
+      routeCheckpointIndex: 0,
+      checkpointHoldMs: 0,
       canAttackPlayer: Boolean(options.canAttackPlayer),
       canAttackEscort: Boolean(options.canAttackEscort),
+      usesRealShipVisual,
       flash: 0,
       complete: false,
     };
@@ -1812,14 +1998,28 @@ export class SpaceScene extends Phaser.Scene {
       this.pushStatusMessage(`Transport leaving ${object.routeOriginLabel ?? "origin"} for ${object.routeDestinationLabel ?? "destination"}.`, 5200);
     }
 
-    const dx = object.targetX - object.root.x;
-    const dy = object.targetY - object.root.y;
+    if (object.checkpointHoldMs > 0) {
+      object.velocity.scale(0.82);
+      return;
+    }
+
+    const checkpoint = object.routeCheckpoints[object.routeCheckpointIndex] ?? null;
+    const targetX = checkpoint?.x ?? object.targetX;
+    const targetY = checkpoint?.y ?? object.targetY;
+    object.targetX = targetX;
+    object.targetY = targetY;
+    const dx = targetX - object.root.x;
+    const dy = targetY - object.root.y;
     const distance = Math.hypot(dx, dy);
     if (distance > MISSION_OBJECT_TARGET_RANGE + object.radius) {
       object.velocity.set(dx / distance, dy / distance).scale(142);
     } else {
       object.velocity.scale(0.78);
-      object.complete = true;
+      if (object.routeCheckpointIndex < object.routeCheckpoints.length - 1) {
+        object.checkpointHoldMs = 3200;
+      } else {
+        object.complete = true;
+      }
     }
     object.root.x += object.velocity.x * dt;
     object.root.y += object.velocity.y * dt;
@@ -1882,18 +2082,33 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     const escort = this.missionObjects.find((object) => object.missionId === missionId && object.stepId === step.id && object.kind === "escort" && !object.complete);
-    if (!escort?.routeStarted || runtime.escortWavesSpawned >= runtime.maxEscortWaves) {
+    if (!escort?.routeStarted) {
       return;
     }
 
-    runtime.escortWaveTimerMs -= dt * 1000;
-    if (runtime.escortWaveTimerMs > 0) {
+    if (escort.checkpointHoldMs > 0) {
+      const pendingWave = escort.routeCheckpointIndex + 1;
+      if (runtime.escortCheckpointPendingWave !== pendingWave) {
+        runtime.escortCheckpointPendingWave = pendingWave;
+        runtime.escortCheckpointWarningMs = escort.checkpointHoldMs;
+        this.pushStatusMessage(`Pirate raiders approaching! ${Math.ceil(escort.checkpointHoldMs / 1000)} seconds.`, 4200);
+      }
+
+      escort.checkpointHoldMs = Math.max(0, escort.checkpointHoldMs - dt * 1000);
+      runtime.escortCheckpointWarningMs = escort.checkpointHoldMs;
+      if (escort.checkpointHoldMs <= 0) {
+        runtime.escortWavesSpawned += 1;
+        this.spawnMissionEscortRaiders(missionId, step, escort, runtime.escortWavesSpawned);
+        escort.routeCheckpointIndex = Math.min(escort.routeCheckpointIndex + 1, Math.max(0, escort.routeCheckpoints.length - 1));
+        const nextCheckpoint = escort.routeCheckpoints[escort.routeCheckpointIndex];
+        if (nextCheckpoint) {
+          escort.targetX = nextCheckpoint.x;
+          escort.targetY = nextCheckpoint.y;
+        }
+        runtime.escortCheckpointPendingWave = 0;
+      }
       return;
     }
-
-    runtime.escortWavesSpawned += 1;
-    runtime.escortWaveTimerMs = MISSION_ESCORT_RAIDER_INTERVAL_MS + runtime.escortWavesSpawned * 1600;
-    this.spawnMissionEscortRaiders(missionId, step, escort, runtime.escortWavesSpawned);
   }
 
   private reassertActiveMissionZoneState(): void {
@@ -2135,7 +2350,8 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     if (step.targetHint === "station") {
-      const station = this.galaxyDefinition.stations[0];
+      const station = this.galaxyDefinition.stations.find((candidate) => !this.isStationEmpireRestricted(candidate))
+        ?? this.galaxyDefinition.stations[0];
       if (station) {
         return { x: station.x, y: station.y, radius: station.radius, label: station.name, color: station.borderColor };
       }
@@ -2261,7 +2477,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     if (context.step.type === "resource") {
-      this.completeMissionActivityStep(context.missionId, context.contract, context.step);
+      this.recoverMissionCargo(context.missionId, context.contract, context.step);
       return true;
     }
 
@@ -2284,6 +2500,27 @@ export class SpaceScene extends Phaser.Scene {
     step: MissionActivityStepDefinition,
   ): void {
     const waypoint = this.activeMissionWaypoint;
+    this.releaseTouchControls();
+    this.pendingCommsMission = { missionId, stepId: step.id };
+    this.stationOverlayStatusText = (step.commsText && step.commsText.length > 0 ? step.commsText : contract.briefing).join("\n");
+
+    if (step.targetHint === "station") {
+      const station = this.getMissionCommsStation();
+      if (station) {
+        this.stationOverlayStationId = station.id;
+        this.stationOverlay?.show(this.buildStationOverlayState(station));
+        this.syncSceneOverlayChrome();
+        return;
+      }
+    }
+
+    if (step.targetHint === "prime-world") {
+      this.stationOverlayStationId = null;
+      this.stationOverlay?.show(this.buildPrimeWorldOverlayState(waypoint?.label ?? "Prime World"));
+      this.syncSceneOverlayChrome();
+      return;
+    }
+
     const state: SpaceCommsOverlayState = {
       title: contract.title,
       speaker: contract.briefingSpeaker,
@@ -2295,10 +2532,97 @@ export class SpaceScene extends Phaser.Scene {
       continueLabel: "Continue",
     };
 
-    this.releaseTouchControls();
-    this.pendingCommsMission = { missionId, stepId: step.id };
     this.commsOverlay?.show(state);
     this.syncSceneOverlayChrome();
+  }
+
+  private getMissionCommsStation(): GalaxyStationRecord | null {
+    const waypoint = this.activeMissionWaypoint;
+    if (waypoint) {
+      const nearest = this.galaxyDefinition.stations
+        .filter((station) => !this.isStationEmpireRestricted(station))
+        .sort((left, right) => (
+          Phaser.Math.Distance.Between(left.x, left.y, waypoint.x, waypoint.y)
+          - Phaser.Math.Distance.Between(right.x, right.y, waypoint.x, waypoint.y)
+        ))[0];
+      if (nearest) {
+        return nearest;
+      }
+    }
+
+    return this.galaxyDefinition.stations.find((station) => !this.isStationEmpireRestricted(station))
+      ?? this.galaxyDefinition.stations[0]
+      ?? null;
+  }
+
+  private getMissionCargoItemId(missionId: string): string {
+    const state = gameSession.getMissionActivityState(missionId);
+    const stored = state.flags.cargoItemId;
+    return typeof stored === "string" ? stored : `mission-cargo-${missionId}`;
+  }
+
+  private buildMissionCargoItem(
+    missionId: string,
+    contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ) {
+    const isSmuggling = contract.activityType === "smuggling";
+    return createMissionQuestItem({
+      missionId,
+      itemId: this.getMissionCargoItemId(missionId),
+      name: isSmuggling ? "Sealed Grey-Market Cargo" : "Recovered Salvage Package",
+      shortLabel: isSmuggling ? "Sealed Cargo" : "Salvage",
+      description: isSmuggling
+        ? `Mission cargo for ${contract.title}. ${step.objective} Deliver it intact; it is lost if your ship is destroyed.`
+        : `Recovered wreckage manifest for ${contract.title}. ${step.objective} Deliver it to the assigned contact.`,
+      color: isSmuggling ? 0xc8ced7 : 0xf0d49c,
+    });
+  }
+
+  private recoverMissionCargo(
+    missionId: string,
+    contract: NonNullable<ReturnType<typeof getMissionContract>>,
+    step: MissionActivityStepDefinition,
+  ): void {
+    const itemId = this.getMissionCargoItemId(missionId);
+    if (!gameSession.hasCargoItemByInstanceId(itemId)) {
+      const added = gameSession.addItemToCargo(this.buildMissionCargoItem(missionId, contract, step));
+      if (!added) {
+        this.pushStatusMessage("Cargo inventory full. Free a slot before recovering this package.", 6400);
+        return;
+      }
+    }
+
+    const state = gameSession.getMissionActivityState(missionId);
+    gameSession.setMissionActivityState(missionId, {
+      ...state,
+      flags: {
+        ...state.flags,
+        cargoItemId: itemId,
+        cargoPickedUp: true,
+      },
+    }, true);
+    this.completeMissionActivityStep(missionId, contract, step);
+  }
+
+  private missionStepRequiresCargoDelivery(missionId: string, step: MissionActivityStepDefinition): boolean {
+    const state = gameSession.getMissionActivityState(missionId);
+    return Boolean(
+      typeof state.flags.cargoItemId === "string"
+      && step.type === "comms"
+      && (step.id.includes("deliver") || step.objective.toLowerCase().includes("deliver")),
+    );
+  }
+
+  private completeMissionCargoDelivery(missionId: string): boolean {
+    const itemId = this.getMissionCargoItemId(missionId);
+    if (!gameSession.hasCargoItemByInstanceId(itemId)) {
+      this.pushStatusMessage("Delivery failed. Required mission cargo is not in your inventory.", 6400);
+      return false;
+    }
+
+    gameSession.removeCargoItemByInstanceId(itemId);
+    return true;
   }
 
   private handleMissionCommsContinue(): void {
@@ -2312,6 +2636,11 @@ export class SpaceScene extends Phaser.Scene {
 
     this.pendingCommsMission = null;
     this.commsOverlay?.hide();
+    this.stationOverlay?.hide();
+    if (this.missionStepRequiresCargoDelivery(context.missionId, context.step) && !this.completeMissionCargoDelivery(context.missionId)) {
+      this.syncSceneOverlayChrome();
+      return;
+    }
     this.completeMissionActivityStep(context.missionId, context.contract, context.step);
     this.syncSceneOverlayChrome();
   }
@@ -3647,7 +3976,7 @@ export class SpaceScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  F interact / land  |  Space hyperdrive  |  T target  |  TAB inventory  |  M map  |  ESC pause  |  X return to ship", {
+    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  F interact / land  |  L missions  |  I inventory  |  K skills  |  O ship  |  M map  |  ESC pause", {
       fontFamily: "Arial",
       fontSize: "15px",
       color: "#dcecff",
@@ -3837,9 +4166,11 @@ export class SpaceScene extends Phaser.Scene {
       scene: this,
       onClose: () => {
         this.stationOverlayStationId = null;
+        this.pendingCommsMission = null;
         this.handleCommandOverlayClosed();
       },
       onRepair: () => this.handleStationRepairRequested(),
+      onMissionAction: () => this.handleMissionCommsContinue(),
     });
   }
 
@@ -3871,6 +4202,22 @@ export class SpaceScene extends Phaser.Scene {
       this.reportDesktopInput();
       this.openDataPadTab("map");
     });
+    keyboard.on("keydown-I", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("inventory");
+    });
+    keyboard.on("keydown-L", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("missions");
+    });
+    keyboard.on("keydown-K", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("skills");
+    });
+    keyboard.on("keydown-O", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("starship");
+    });
     keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
       event.preventDefault();
       this.reportDesktopInput();
@@ -3893,6 +4240,10 @@ export class SpaceScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
       keyboard.removeAllListeners("keydown-M");
+      keyboard.removeAllListeners("keydown-I");
+      keyboard.removeAllListeners("keydown-L");
+      keyboard.removeAllListeners("keydown-K");
+      keyboard.removeAllListeners("keydown-O");
       keyboard.removeAllListeners("keydown-TAB");
       keyboard.removeAllListeners("keydown-T");
       keyboard.removeAllListeners("keydown-F");
@@ -6022,6 +6373,7 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    this.failCarriedMissionCargoOnPlayerDeath();
     this.playerDestroyed = true;
     this.releaseTouchControls();
     this.returnButton?.setEnabled(false);
@@ -6036,6 +6388,25 @@ export class SpaceScene extends Phaser.Scene {
         routeTitle: this.routeTitle,
       });
     });
+  }
+
+  private failCarriedMissionCargoOnPlayerDeath(): void {
+    const missionId = gameSession.getSelectedMissionId();
+    if (!missionId) {
+      return;
+    }
+
+    const itemId = this.getMissionCargoItemId(missionId);
+    if (!gameSession.hasCargoItemByInstanceId(itemId)) {
+      return;
+    }
+
+    gameSession.removeCargoItemByInstanceId(itemId);
+    gameSession.abandonAcceptedMission(missionId);
+    this.activeMissionWaypoint = null;
+    this.activeMissionStepKey = null;
+    this.clearMissionObjects();
+    this.pushStatusMessage("Mission cargo lost with the ship. Delivery failed.", 8200);
   }
 
   private destroyProjectile(index: number): void {
@@ -6465,6 +6836,7 @@ export class SpaceScene extends Phaser.Scene {
       : "Repair bay scan: all ship systems are currently nominal.";
 
     return {
+      mode: "station",
       stationName: station.name,
       sectorLabel: getGalaxyRegionLabelAtPosition(this.galaxyDefinition, station.x, station.y, this.warState),
       credits,
@@ -6473,6 +6845,45 @@ export class SpaceScene extends Phaser.Scene {
       canAffordRepair: repairCost <= credits,
       repairSummary,
       statusText: this.stationOverlayStatusText || "Station traffic is open. Buy and Sell will come online in a later pass.",
+      ...this.getPendingMissionMenuState(),
+    };
+  }
+
+  private buildPrimeWorldOverlayState(label: string): SpaceStationOverlayState {
+    const credits = gameSession.getCredits();
+    const repairCost = gameSession.getShipRepairCost();
+    const damagedSystems = gameSession.getDamagedShipSystemIds();
+    const repairSummary = damagedSystems.length > 0
+      ? `Prime repair crews quote ${repairCost} credits for ${damagedSystems.map((systemId) => this.formatShipSystemName(systemId)).join(", ")}.`
+      : "Prime repair crews report your ship systems are nominal.";
+    return {
+      mode: "prime-world",
+      stationName: label,
+      sectorLabel: getGalaxyRegionLabelAtPosition(this.galaxyDefinition, this.shipRoot.x, this.shipRoot.y, this.warState),
+      credits,
+      repairCost,
+      hasDamage: repairCost > 0,
+      canAffordRepair: repairCost <= credits,
+      repairSummary,
+      statusText: this.stationOverlayStatusText || "Prime World channel open.",
+      ...this.getPendingMissionMenuState("Offer Assistance"),
+    };
+  }
+
+  private getPendingMissionMenuState(defaultLabel = "Mission"): Partial<SpaceStationOverlayState> {
+    if (!this.pendingCommsMission) {
+      return {};
+    }
+
+    const context = this.getActiveMissionStepContext();
+    if (!context || context.missionId !== this.pendingCommsMission.missionId || context.step.id !== this.pendingCommsMission.stepId) {
+      return {};
+    }
+
+    return {
+      missionActionLabel: context.step.dialogueOptions?.[0] ?? defaultLabel,
+      missionActionEnabled: true,
+      missionActionSummary: (context.step.commsText && context.step.commsText.length > 0 ? context.step.commsText : context.contract.briefing).join("\n"),
     };
   }
 
@@ -6832,6 +7243,16 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
+    if (
+      (tab === "missions" && this.logbookOverlay?.isVisible())
+      || (tab === "inventory" && this.inventoryOverlay?.isVisible())
+      || (tab === "map" && this.galaxyMapOverlay?.isVisible())
+      || ((tab === "skills" || tab === "starship") && this.logbookOverlay?.isVisible())
+    ) {
+      this.closeCommandOverlays();
+      return;
+    }
+
     this.fireHeld = false;
     this.hyperdriveTouchHeld = false;
     this.hyperdriveTouchTapQueued = false;
@@ -6858,7 +7279,11 @@ export class SpaceScene extends Phaser.Scene {
     if (tab === "map") {
       this.galaxyMapOverlay?.show();
       this.syncSceneOverlayChrome();
+      return;
     }
+
+    this.logbookOverlay?.show();
+    this.syncSceneOverlayChrome();
   }
 
   private openPauseMenu(): void {
@@ -7109,6 +7534,10 @@ export class SpaceScene extends Phaser.Scene {
         routeStarted: object.routeStarted,
         routeOriginLabel: object.routeOriginLabel,
         routeDestinationLabel: object.routeDestinationLabel,
+        routeCheckpointIndex: object.routeCheckpointIndex,
+        routeCheckpointCount: object.routeCheckpoints.length,
+        checkpointHoldMs: Math.round(object.checkpointHoldMs),
+        usesRealShipVisual: object.usesRealShipVisual,
         complete: object.complete,
       })),
       missionRuntime: Object.fromEntries([...this.missionStepRuntime.entries()].map(([key, runtime]) => [key, {
@@ -7117,6 +7546,8 @@ export class SpaceScene extends Phaser.Scene {
         escortWaveTimerMs: Math.round(runtime.escortWaveTimerMs),
         escortWavesSpawned: runtime.escortWavesSpawned,
         maxEscortWaves: runtime.maxEscortWaves,
+        escortCheckpointWarningMs: Math.round(runtime.escortCheckpointWarningMs),
+        escortCheckpointPendingWave: runtime.escortCheckpointPendingWave,
       }])),
       landingReady: this.canLandOnTrackedMissionPlanet(),
       nearestStation: nearestStation

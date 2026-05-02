@@ -740,7 +740,7 @@ ${getCompanionRoleDisplay(companion)}`, {
       .setStrokeStyle(2, 0x8ed2ff, 0.9)
       .setDepth(14)
       .setVisible(false);
-    this.interactionHintText = this.add.text(0, 0, "E", {
+    this.interactionHintText = this.add.text(0, 0, "F", {
       fontFamily: "Arial",
       fontSize: "18px",
       color: "#f5fbff",
@@ -1239,7 +1239,7 @@ ${getCompanionRoleDisplay(companion)}`, {
       down: Phaser.Input.Keyboard.KeyCodes.S,
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
-      interact: Phaser.Input.Keyboard.KeyCodes.E,
+      interact: Phaser.Input.Keyboard.KeyCodes.F,
       logbook: Phaser.Input.Keyboard.KeyCodes.L,
     }) as typeof this.moveKeys;
 
@@ -1257,17 +1257,41 @@ ${getCompanionRoleDisplay(companion)}`, {
       }
       this.openPauseMenu();
     });
-    keyboard.on("keydown-E", () => {
+    keyboard.on("keydown-F", () => {
       if (this.touchCapable) {
         gameSession.reportInputMode("desktop", this.touchCapable);
       }
       this.tryActivateCurrentTarget();
+    });
+    keyboard.on("keydown-I", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.openDataPadTab("inventory");
     });
     keyboard.on("keydown-L", () => {
       if (this.touchCapable) {
         gameSession.reportInputMode("desktop", this.touchCapable);
       }
       this.toggleLogbookOverlay();
+    });
+    keyboard.on("keydown-M", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.openDataPadTab("map");
+    });
+    keyboard.on("keydown-K", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.openDataPadTab("skills");
+    });
+    keyboard.on("keydown-O", () => {
+      if (this.touchCapable) {
+        gameSession.reportInputMode("desktop", this.touchCapable);
+      }
+      this.openDataPadTab("starship");
     });
     keyboard.on("keydown-TAB", (event: KeyboardEvent) => {
       event.preventDefault();
@@ -1279,8 +1303,12 @@ ${getCompanionRoleDisplay(companion)}`, {
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-ESC");
-      keyboard.removeAllListeners("keydown-E");
+      keyboard.removeAllListeners("keydown-F");
+      keyboard.removeAllListeners("keydown-I");
       keyboard.removeAllListeners("keydown-L");
+      keyboard.removeAllListeners("keydown-M");
+      keyboard.removeAllListeners("keydown-K");
+      keyboard.removeAllListeners("keydown-O");
       keyboard.removeAllListeners("keydown-TAB");
     });
   }
@@ -1968,6 +1996,17 @@ ${getCompanionRoleDisplay(companion)}`, {
   }
 
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
+    if (
+      (tab === "missions" && this.logbookOverlay?.isVisible())
+      || (tab === "inventory" && this.inventoryOverlay?.isVisible())
+      || (tab === "map" && this.galaxyMapOverlay?.isVisible())
+      || ((tab === "skills" || tab === "starship") && this.logbookOverlay?.isVisible())
+    ) {
+      this.closeCommandOverlays();
+      this.syncSceneOverlayChrome();
+      return;
+    }
+
     if (this.deployOverlay?.visible) {
       this.closeDeployOverlay();
     }
@@ -1988,7 +2027,11 @@ ${getCompanionRoleDisplay(companion)}`, {
     if (tab === "map") {
       this.galaxyMapOverlay?.show();
       this.syncSceneOverlayChrome();
+      return;
     }
+
+    this.logbookOverlay?.show();
+    this.syncSceneOverlayChrome();
   }
 
   private syncSceneOverlayChrome(): void {

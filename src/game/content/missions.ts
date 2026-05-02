@@ -10,7 +10,8 @@ export type MissionActivityType =
   | "kill-target"
   | "escort"
   | "boss"
-  | "resource";
+  | "resource"
+  | "smuggling";
 export type MissionSourceKind = "terminal" | "live-space";
 export type MissionTargetHint = "mission-planet" | "prime-world" | "station" | "zone" | "ship" | "resource" | "escort";
 export type MissionEnemyKind = "rusher" | "shooter" | "hexer";
@@ -463,6 +464,47 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     baseXp: 95,
     rewardPreview: getMissionRewardPreview("test-resource-salvage", 95),
     accentColor: 0xf0d49c,
+  },
+  {
+    id: "test-smuggling-run",
+    difficulty: "medium",
+    activityType: "smuggling",
+    source: { kind: "terminal", giver: "Grey Route Broker", label: "Terminal smuggling test" },
+    terminalVisible: true,
+    title: "Test: Smuggling Run",
+    location: "Restricted cargo route",
+    briefingSpeaker: "Grey Route Broker",
+    briefing: [
+      "This tests the first-pass smuggling loop using real cargo inventory.",
+      "Recover a sealed cargo package from a risky waypoint, carry it through restricted space, then deliver it to the marked contact.",
+      "If your ship is destroyed while carrying the cargo, the package is lost and the mission fails.",
+    ],
+    prompt: "Pick up the sealed cargo and deliver it through a risky route.",
+    objective: "Recover smuggled cargo, keep it in your inventory, and deliver it to the contact.",
+    activities: [
+      {
+        id: "pickup-cargo",
+        type: "resource",
+        objective: "Recover the sealed cargo package from the marked wreckage cache.",
+        targetHint: "resource",
+        completionText: "Smuggling cargo recovered.",
+      },
+      {
+        id: "deliver-smuggling",
+        type: "comms",
+        objective: "Deliver the sealed cargo to the marked contact.",
+        targetHint: "station",
+        completionText: "Smuggling delivery complete.",
+        commsText: [
+          "The station contact verifies the sealed cargo hash and opens a quiet transfer slot.",
+          "Hand over the package to complete the run.",
+        ],
+        dialogueOptions: ["Transfer sealed cargo", "Ask about route exposure"],
+      },
+    ],
+    baseXp: 135,
+    rewardPreview: getMissionRewardPreview("test-smuggling-run", 135),
+    accentColor: 0xc8ced7,
   },
 ] as const;
 

@@ -426,6 +426,26 @@ export function cloneInventoryItem(item: InventoryItem | null | undefined): Inve
   return JSON.parse(JSON.stringify(item)) as InventoryItem;
 }
 
+export function createMissionQuestItem(options: {
+  missionId: string;
+  itemId: string;
+  name: string;
+  shortLabel: string;
+  description: string;
+  color?: number;
+}): QuestItemInstance {
+  return {
+    instanceId: options.itemId,
+    kind: "quest",
+    name: options.name,
+    shortLabel: options.shortLabel,
+    description: options.description,
+    rarity: "Rare",
+    color: options.color ?? 0xf0d49c,
+    tag: `mission-cargo:${options.missionId}`,
+  };
+}
+
 export function cloneCraftingMaterials(materials: CraftingMaterials): CraftingMaterials {
   return {
     alloy: materials.alloy,

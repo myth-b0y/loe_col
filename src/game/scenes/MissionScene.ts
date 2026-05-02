@@ -1225,6 +1225,18 @@ export class MissionScene extends Phaser.Scene {
       this.reportDesktopInput();
       this.toggleLogbookOverlay();
     });
+    keyboard.on("keydown-M", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("map");
+    });
+    keyboard.on("keydown-K", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("skills");
+    });
+    keyboard.on("keydown-O", () => {
+      this.reportDesktopInput();
+      this.openDataPadTab("starship");
+    });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       keyboard.removeAllListeners("keydown-Q");
@@ -1237,6 +1249,9 @@ export class MissionScene extends Phaser.Scene {
       keyboard.removeAllListeners("keydown-ESC");
       keyboard.removeAllListeners("keydown-I");
       keyboard.removeAllListeners("keydown-L");
+      keyboard.removeAllListeners("keydown-M");
+      keyboard.removeAllListeners("keydown-K");
+      keyboard.removeAllListeners("keydown-O");
     });
   }
 
@@ -5161,6 +5176,19 @@ export class MissionScene extends Phaser.Scene {
   }
 
   private openDataPadTab(tab: "inventory" | "missions" | "skills" | "map" | "starship"): void {
+    if (
+      (tab === "missions" && this.logbookOverlay?.isVisible())
+      || (tab === "inventory" && this.inventoryOverlay?.isVisible())
+      || (tab === "map" && this.galaxyMapOverlay?.isVisible())
+      || ((tab === "skills" || tab === "starship") && this.logbookOverlay?.isVisible())
+    ) {
+      this.logbookOverlay?.hide();
+      this.inventoryOverlay?.hide();
+      this.galaxyMapOverlay?.hide();
+      this.updateHudState();
+      return;
+    }
+
     this.fireHeld = false;
     this.releaseMissionControls();
     this.logbookOverlay?.hide();
@@ -5182,7 +5210,11 @@ export class MissionScene extends Phaser.Scene {
     if (tab === "map") {
       this.galaxyMapOverlay?.show();
       this.updateHudState();
+      return;
     }
+
+    this.logbookOverlay?.show();
+    this.updateHudState();
   }
 
   private openPauseMenu(): void {
