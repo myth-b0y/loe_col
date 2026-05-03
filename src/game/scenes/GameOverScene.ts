@@ -31,9 +31,8 @@ export class GameOverScene extends Phaser.Scene {
     this.routeTitle = data.routeTitle ?? "Free roam launch";
 
     const subtitle = this.mode === "space"
-      ? "The ship was destroyed in space, but the route can still be retried."
-      : "The mission failed, but the contract is still active.";
-    const continueLabel = this.mode === "space" ? "Continue?" : "Continue?";
+      ? "The ship was destroyed. Continue loads the latest save and returns you to the ship."
+      : "The mission failed. Continue loads the latest save and returns you to the ship.";
 
     this.add.rectangle(640, 360, 1280, 720, 0x02060b, 0.76);
     this.add.rectangle(640, 360, 560, 520, 0x120916, 0.98).setStrokeStyle(3, 0xc96a88, 0.82);
@@ -58,10 +57,11 @@ export class GameOverScene extends Phaser.Scene {
       x: 640,
       y: 294,
       width: 280,
-      label: continueLabel,
-      onClick: () => this.restartFlow(),
+      label: "Continue",
+      onClick: () => this.continueFromLatestSave(),
       depth: 12,
       accentColor: 0x7b3651,
+      disabled: !gameSession.hasSaveData(),
     });
 
     createMenuButton({
@@ -69,18 +69,7 @@ export class GameOverScene extends Phaser.Scene {
       x: 640,
       y: 352,
       width: 280,
-      label: "Return To Ship",
-      onClick: () => this.returnToShip(),
-      depth: 12,
-      accentColor: 0x5a4678,
-    });
-
-    createMenuButton({
-      scene: this,
-      x: 640,
-      y: 410,
-      width: 280,
-      label: "Load Save",
+      label: "Load",
       onClick: () => this.saveSlotsOverlay?.show("load"),
       depth: 12,
       disabled: !gameSession.hasSaveData(),
@@ -89,10 +78,21 @@ export class GameOverScene extends Phaser.Scene {
     createMenuButton({
       scene: this,
       x: 640,
+      y: 410,
+      width: 280,
+      label: "Main Menu",
+      onClick: () => this.returnToMainMenu(),
+      depth: 12,
+      accentColor: 0x5a4678,
+    });
+
+    createMenuButton({
+      scene: this,
+      x: 640,
       y: 468,
       width: 280,
-      label: "Quit To Main Menu",
-      onClick: () => this.quitToMenu(),
+      label: "Quit",
+      onClick: () => this.quitGame(),
       depth: 12,
       accentColor: 0x4f2630,
     });
@@ -108,13 +108,14 @@ export class GameOverScene extends Phaser.Scene {
     this.saveSlotsOverlay = new SaveSlotsOverlay({
       scene: this,
       onClose: () => undefined,
-      onLoadSlot: (slotIndex) => {
-        const ok = gameSession.loadSave(slotIndex);
+      onLoadSlot: (slotIndex, kind) => {
+        const ok = gameSession.loadSave(slotIndex, kind);
         if (!ok) {
           this.statusText?.setText("No valid save found.");
           return;
         }
 
+        gameSession.prepareRespawnInShip();
         this.scene.start("hub");
       },
       onNewSlot: () => undefined,
@@ -128,51 +129,28 @@ export class GameOverScene extends Phaser.Scene {
       routeTitle: this.routeTitle,
       hasSaves: gameSession.hasSaveData(),
       status: this.statusText?.text ?? "",
+      buttons: ["Continue", "Load", "Main Menu", "Quit"],
     };
   }
 
-  private restartFlow(): void {
-    if (this.mode === "space") {
-      this.scene.start("space", {
-        missionId: this.missionId,
-      });
+  private continueFromLatestSave(): void {
+    const ok = gameSession.loadLatestSaveForContinue();
+    if (!ok) {
+      this.statusText?.setText("No valid save found.");
       return;
     }
 
-    if (!this.missionId) {
-      this.statusText?.setText("No active mission route is available.");
-      return;
-    }
-
-    gameSession.startMission(this.missionId);
-    this.scene.start("mission", { missionId: this.missionId });
-  }
-
-  private returnToShip(): void {
-    if (this.mode === "space") {
-      gameSession.clearShipTravel();
-      this.scene.start("hub");
-      return;
-    }
-
-    gameSession.leaveMission({
-      missionId: this.missionId,
-      requeue: Boolean(this.missionId),
-    });
     this.scene.start("hub");
   }
 
-  private quitToMenu(): void {
-    if (this.mode === "space") {
-      gameSession.clearShipTravel();
-      this.scene.start("main-menu");
-      return;
-    }
-
-    gameSession.leaveMission({
-      missionId: this.missionId,
-      requeue: false,
-    });
+  private returnToMainMenu(): void {
     this.scene.start("main-menu");
+  }
+
+  private quitGame(): void {
+    if (typeof window !== "undefined") {
+      window.close();
+    }
+    this.statusText?.setText("Quit requested. If the browser blocks it, use Main Menu.");
   }
 }

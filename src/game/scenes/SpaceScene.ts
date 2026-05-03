@@ -873,7 +873,6 @@ export class SpaceScene extends Phaser.Scene {
     const dt = Math.min(delta / 1000, 0.05);
     this.hudRefreshTimerMs = Math.max(0, this.hudRefreshTimerMs - delta);
     this.syncTrackedMissionPlanet();
-    this.updateLiveMissionGrants(delta);
 
     if (this.isMenuOverlayVisible()) {
       if (this.hudRefreshTimerMs <= 0) {
@@ -906,6 +905,7 @@ export class SpaceScene extends Phaser.Scene {
     this.updateCelestialMotion();
     this.updateMissionActivity(dt);
     this.updateFieldObjects(dt);
+    this.updateLiveMissionGrants(delta);
     this.updateFactionWar(delta);
     this.reassertActiveMissionZoneState();
     this.updateForceProduction(delta);
@@ -6624,7 +6624,7 @@ export class SpaceScene extends Phaser.Scene {
     this.releaseTouchControls();
     this.returnButton?.setEnabled(false);
     this.statusText?.setText("Ship destroyed. Routing to GAME OVER.");
-    this.contactText?.setText("Continue relaunches the current space route. Return To Ship docks back in the hub.");
+    this.contactText?.setText("Continue loads the latest save and returns you to the ship.");
     this.spawnExplosionRing(this.shipRoot.x, this.shipRoot.y, 24, 0xffe0bf, 0xff8f57);
     this.spawnBurst(this.shipRoot.x, this.shipRoot.y, 0x8ec7ff, 10, 120, 250);
     this.time.delayedCall(260, () => {
@@ -7621,7 +7621,7 @@ export class SpaceScene extends Phaser.Scene {
       },
     }, true);
     gameSession.setSelectedMission(missionId);
-    gameSession.startMission(missionId);
+    gameSession.markShipArrived(missionId);
 
     this.returningToShip = true;
     this.releaseTouchControls();
@@ -7629,10 +7629,10 @@ export class SpaceScene extends Phaser.Scene {
     this.returnButton?.setEnabled(false);
     this.logbookButton?.setEnabled(false);
     this.pauseButton?.setEnabled(false);
-    this.statusText?.setText(`Landing on ${target.planet.name} to reclaim ${target.zone.name}.`);
+    this.statusText?.setText(`Landing window confirmed for ${target.planet.name}. Returning to the ship interior to deploy ${target.zone.name} reclaim.`);
     this.cameras.main.fadeOut(220, 8, 12, 18);
     this.time.delayedCall(220, () => {
-      this.scene.start("mission", { missionId });
+      this.scene.start("hub");
     });
     return true;
   }

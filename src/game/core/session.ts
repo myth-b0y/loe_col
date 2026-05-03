@@ -378,7 +378,19 @@ export type SaveSlot = {
   index: number;
   label: string;
   data: SaveData | null;
+  autosaveData: SaveData | null;
+  latestData: SaveData | null;
+  manualSavedAt: string | null;
+  autosaveSavedAt: string | null;
+  hasAnyData: boolean;
   isActive: boolean;
+};
+
+export type SaveKind = "manual" | "autosave";
+
+type SaveSlotStorage = {
+  manual: SaveData | null;
+  autosave: SaveData | null;
 };
 
 const SLOT_COUNT = 3;
@@ -530,8 +542,15 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
 
 const DEFAULT_SAVE: SaveData = createDefaultSaveData(0x41c6_ce57);
 
-function createEmptySlots(): Array<SaveData | null> {
-  return Array.from({ length: SLOT_COUNT }, () => null);
+function createEmptySlotStorage(): SaveSlotStorage {
+  return {
+    manual: null,
+    autosave: null,
+  };
+}
+
+function createEmptySlots(): SaveSlotStorage[] {
+  return Array.from({ length: SLOT_COUNT }, () => createEmptySlotStorage());
 }
 
 function summarizeSquadAssignments(assignments: SquadAssignment[]): string {
@@ -676,14 +695,73 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   return merged;
 }
 
-function sortByMostRecent(slots: Array<SaveData | null>): number | null {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function looksLikeSaveData(value: unknown): value is Partial<SaveData> {
+  return isRecord(value)
+    && (
+      "version" in value
+      || "meta" in value
+      || "profile" in value
+      || "galaxy" in value
+      || "missions" in value
+    );
+}
+
+function normalizeSlotStorage(value: unknown): SaveSlotStorage {
+  if (!value) {
+    return createEmptySlotStorage();
+  }
+
+  if (looksLikeSaveData(value)) {
+    return {
+      manual: mergeSaveData(value),
+      autosave: null,
+    };
+  }
+
+  if (!isRecord(value)) {
+    return createEmptySlotStorage();
+  }
+
+  const manual = looksLikeSaveData(value.manual) ? mergeSaveData(value.manual) : null;
+  const autosave = looksLikeSaveData(value.autosave) ? mergeSaveData(value.autosave) : null;
+  return { manual, autosave };
+}
+
+function getSaveTimestampMs(save: SaveData | null): number {
+  const lastSavedAt = save?.meta.lastSavedAt;
+  const timestamp = lastSavedAt ? Date.parse(lastSavedAt) : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : -1;
+}
+
+function getLatestSaveFromSlot(slot: SaveSlotStorage): SaveData | null {
+  const manualTime = getSaveTimestampMs(slot.manual);
+  const autosaveTime = getSaveTimestampMs(slot.autosave);
+  if (!slot.manual && !slot.autosave) {
+    return null;
+  }
+
+  return autosaveTime > manualTime ? slot.autosave : slot.manual;
+}
+
+function selectSaveFromSlot(slot: SaveSlotStorage, kind: SaveKind | "latest"): SaveData | null {
+  if (kind === "latest") {
+    return getLatestSaveFromSlot(slot);
+  }
+
+  return kind === "autosave" ? slot.autosave : slot.manual;
+}
+
+function sortByMostRecent(slots: SaveSlotStorage[]): number | null {
   let bestIndex: number | null = null;
   let bestTime = -1;
 
   slots.forEach((slot, index) => {
-    const lastSavedAt = slot?.meta.lastSavedAt;
-    const timestamp = lastSavedAt ? Date.parse(lastSavedAt) : Number.NaN;
-    if (!Number.isFinite(timestamp) || timestamp <= bestTime) {
+    const timestamp = Math.max(getSaveTimestampMs(slot.manual), getSaveTimestampMs(slot.autosave));
+    if (timestamp <= bestTime) {
       return;
     }
 
@@ -701,7 +779,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   activeMissionId: string | null = null;
   pendingReward: RewardData | null = null;
   private activeSlotIndex = 0;
-  private saveSlots: Array<SaveData | null> = createEmptySlots();
+  private saveSlots: SaveSlotStorage[] = createEmptySlots();
   private hasTouchInput = false;
   private prefersCoarsePointer = false;
   private lastInputMode: ResolvedInputMode = "desktop";
@@ -716,7 +794,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
     const latestSlot = sortByMostRecent(this.saveSlots);
     if (latestSlot !== null) {
-      this.loadSave(latestSlot);
+      this.loadSave(latestSlot, "latest");
       return;
     }
 
@@ -729,12 +807,20 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   getSaveSlots(): SaveSlot[] {
-    return this.saveSlots.map((slot, index) => ({
-      index,
-      label: `Slot ${index + 1}`,
-      data: slot ? clone(slot) : null,
-      isActive: index === this.activeSlotIndex,
-    }));
+    return this.saveSlots.map((slot, index) => {
+      const latestData = getLatestSaveFromSlot(slot);
+      return {
+        index,
+        label: `Slot ${index + 1}`,
+        data: slot.manual ? clone(slot.manual) : null,
+        autosaveData: slot.autosave ? clone(slot.autosave) : null,
+        latestData: latestData ? clone(latestData) : null,
+        manualSavedAt: slot.manual?.meta.lastSavedAt ?? null,
+        autosaveSavedAt: slot.autosave?.meta.lastSavedAt ?? null,
+        hasAnyData: Boolean(slot.manual || slot.autosave),
+        isActive: index === this.activeSlotIndex,
+      };
+    });
   }
 
   getActiveSlotIndex(): number {
@@ -1489,6 +1575,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.saveData = createDefaultSaveData();
     this.saveData.ship = createDefaultShipState(this.saveData.profile.raceId, this.saveData.galaxy);
+    this.saveSlots[this.activeSlotIndex] = createEmptySlotStorage();
     this.activeMissionId = null;
     this.pendingReward = null;
     this.emit("save-changed", this.saveData);
@@ -1498,40 +1585,30 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   hasSaveData(slotIndex?: number): boolean {
     if (slotIndex !== undefined) {
-      return this.saveSlots[slotIndex] !== null;
+      const slot = this.saveSlots[slotIndex];
+      return Boolean(slot?.manual || slot?.autosave);
     }
 
-    return this.saveSlots.some((slot) => slot !== null);
+    return this.saveSlots.some((slot) => Boolean(slot.manual || slot.autosave));
   }
 
   saveToDisk(slotIndex = this.activeSlotIndex): boolean {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    const safeSlot = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
-
-    try {
-      this.activeSlotIndex = safeSlot;
-      this.saveData.meta.lastSavedAt = new Date().toISOString();
-      this.saveSlots[safeSlot] = clone(this.saveData);
-      window.localStorage.setItem(SAVE_SLOTS_KEY, JSON.stringify(this.saveSlots));
-      this.emit("save-changed", this.saveData);
-      this.emit("slots-changed", this.getSaveSlots());
-      return true;
-    } catch {
-      return false;
-    }
+    return this.writeSaveToSlot("manual", slotIndex);
   }
 
-  loadSave(slotIndex = this.activeSlotIndex): boolean {
+  autosaveToDisk(slotIndex = this.activeSlotIndex): boolean {
+    return this.writeSaveToSlot("autosave", slotIndex);
+  }
+
+  loadSave(slotIndex = this.activeSlotIndex, kind: SaveKind | "latest" = "manual"): boolean {
     const safeSlot = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
     const slot = this.saveSlots[safeSlot];
-    if (!slot) {
+    const save = selectSaveFromSlot(slot, kind);
+    if (!save) {
       return false;
     }
 
-    this.saveData = mergeSaveData(slot);
+    this.saveData = mergeSaveData(save);
     this.runConfig = clone(DEFAULT_RUN_CONFIG);
     this.activeSlotIndex = safeSlot;
     this.activeMissionId = null;
@@ -1542,18 +1619,61 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return true;
   }
 
+  loadLatestSaveForContinue(): boolean {
+    const latestSlot = sortByMostRecent(this.saveSlots);
+    if (latestSlot === null || !this.loadSave(latestSlot, "latest")) {
+      return false;
+    }
+
+    this.prepareRespawnInShip();
+    return true;
+  }
+
+  prepareRespawnInShip(): void {
+    this.activeMissionId = null;
+    this.pendingReward = null;
+    this.setShipDockedState();
+    this.saveData.ship.systems = createDefaultShipSystemsState();
+    this.saveData.ship.repair.lastRepairAt = new Date().toISOString();
+    this.emitShipTravelChanged();
+  }
+
+  private writeSaveToSlot(kind: SaveKind, slotIndex = this.activeSlotIndex): boolean {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    const safeSlot = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
+
+    try {
+      this.activeSlotIndex = safeSlot;
+      this.saveData.meta.lastSavedAt = new Date().toISOString();
+      const existing = this.saveSlots[safeSlot] ?? createEmptySlotStorage();
+      this.saveSlots[safeSlot] = {
+        ...existing,
+        [kind]: clone(this.saveData),
+      };
+      window.localStorage.setItem(SAVE_SLOTS_KEY, JSON.stringify(this.saveSlots));
+      this.emit("save-changed", this.saveData);
+      this.emit("slots-changed", this.getSaveSlots());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   deleteSave(slotIndex = this.activeSlotIndex): boolean {
     if (typeof window === "undefined") {
       return false;
     }
 
     const safeSlot = Phaser.Math.Clamp(slotIndex, 0, SLOT_COUNT - 1);
-    if (!this.saveSlots[safeSlot]) {
+    if (!this.hasSaveData(safeSlot)) {
       return false;
     }
 
     try {
-      this.saveSlots[safeSlot] = null;
+      this.saveSlots[safeSlot] = createEmptySlotStorage();
       if (this.activeSlotIndex === safeSlot) {
         const latestSlot = sortByMostRecent(this.saveSlots);
         this.activeSlotIndex = latestSlot ?? safeSlot;
@@ -1605,12 +1725,15 @@ export class GameSession extends Phaser.Events.EventEmitter {
       this.addItemToCargo(item);
     });
     this.pendingReward = clone(reward);
-    if (this.clearShipTravelForMission(missionId)) {
+
+    const shipTravelChanged = this.clearShipTravelForMission(missionId);
+    if (shipTravelChanged) {
       this.emitShipTravelChanged();
-      return;
+    } else {
+      this.emit("save-changed", this.saveData);
     }
 
-    this.emit("save-changed", this.saveData);
+    this.autosaveToDisk(this.activeSlotIndex);
   }
 
   extractMissionLoot(reward: RewardData): void {
@@ -1830,10 +1953,10 @@ export class GameSession extends Phaser.Events.EventEmitter {
     }
 
     try {
-      const parsed = JSON.parse(raw) as Array<Partial<SaveData> | null>;
+      const parsed = JSON.parse(raw) as unknown[];
       const normalized = createEmptySlots();
       parsed.slice(0, SLOT_COUNT).forEach((slot, index) => {
-        normalized[index] = slot ? mergeSaveData(slot) : null;
+        normalized[index] = normalizeSlotStorage(slot);
       });
       this.saveSlots = normalized;
     } catch {
@@ -1856,7 +1979,10 @@ export class GameSession extends Phaser.Events.EventEmitter {
     try {
       const parsed = JSON.parse(legacy) as Partial<SaveData>;
       this.saveSlots = createEmptySlots();
-      this.saveSlots[0] = mergeSaveData(parsed);
+      this.saveSlots[0] = {
+        manual: mergeSaveData(parsed),
+        autosave: null,
+      };
       window.localStorage.setItem(SAVE_SLOTS_KEY, JSON.stringify(this.saveSlots));
     } catch {
       this.saveSlots = createEmptySlots();
@@ -1887,7 +2013,7 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   private firstEmptySlotOrActive(): number {
-    const emptyIndex = this.saveSlots.findIndex((slot) => slot === null);
+    const emptyIndex = this.saveSlots.findIndex((slot) => !slot.manual && !slot.autosave);
     return emptyIndex >= 0 ? emptyIndex : this.activeSlotIndex;
   }
 }

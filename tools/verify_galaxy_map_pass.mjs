@@ -220,8 +220,8 @@ try {
   await page.evaluate((shipPosition) => {
     window.localStorage.clear();
     window.__loeSession?.startNewGame?.(0);
-    window.__loeSession?.acceptMission?.("ember-watch");
-    window.__loeSession?.setSelectedMission?.("ember-watch");
+    window.__loeSession?.acceptMission?.("test-chain-dispatch");
+    window.__loeSession?.setSelectedMission?.("test-chain-dispatch");
     window.__loeSession?.setShipSpacePosition?.(shipPosition.x, shipPosition.y);
     window.__loeGame?.scene.start("hub");
   }, TEST_SHIP_POSITION);
@@ -239,7 +239,7 @@ try {
     const hub = window.__loeGame?.scene.keys.hub;
     const overlay = hub?.galaxyMapOverlay;
     const galaxy = window.__loeSession?.getGalaxyDefinition?.() ?? null;
-    const missionPlanet = window.__loeSession?.getMissionPlanetForMission?.("ember-watch") ?? null;
+    const missionPlanet = window.__loeSession?.getMissionPlanetForMission?.("test-chain-dispatch") ?? null;
     const homeworldPlanets = window.__loeSession?.getHomeworldPlanets?.() ?? [];
     return {
       snapshot: hub?.getDebugSnapshot?.() ?? null,
@@ -332,7 +332,7 @@ try {
     `Hub map route text is missing shared ship coordinates: ${hubMapState.routeText}`);
   assert(hubMapState.routeText.includes("Region: "),
     `Hub map route text is missing the region label: ${hubMapState.routeText}`);
-  assert(hubMapState.missionPlanet, "Hub map did not resolve a generated mission planet for ember-watch");
+  assert(hubMapState.missionPlanet, "Hub map did not resolve a generated mission planet for test-chain-dispatch");
   assert(hubMapState.detailText.includes(hubMapState.missionPlanet.name),
     `Hub map detail text is missing the generated mission planet: ${hubMapState.detailText}`);
   assert(hubMapState.galaxySummary?.ringIds?.join("|") === "inner|second|third|outer|deep-space",
@@ -574,7 +574,7 @@ try {
 
   await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
-    hub?.launchIntoSpace?.("ember-watch");
+    hub?.launchIntoSpace?.("test-chain-dispatch");
   });
 
   await waitForScene(page, "space");
@@ -589,8 +589,8 @@ try {
     };
   });
 
-  assert(spaceStart.snapshot?.missionPlanet?.missionId === "ember-watch",
-    `Space scene did not expose the ember-watch mission planet: ${JSON.stringify(spaceStart.snapshot?.missionPlanet)}`);
+  assert(spaceStart.snapshot?.missionPlanet?.missionId === "test-chain-dispatch",
+    `Space scene did not expose the test-chain-dispatch mission planet: ${JSON.stringify(spaceStart.snapshot?.missionPlanet)}`);
   assert(spaceStart.snapshot?.missionPlanet?.name === hubMapState.missionPlanet.name,
     `Space scene mission planet does not match the generated mission target: ${JSON.stringify(spaceStart.snapshot?.missionPlanet)}`);
   assert(spaceStart.coordinateText.includes(`POS X ${TEST_SHIP_POSITION.x}  Y ${TEST_SHIP_POSITION.y}`),

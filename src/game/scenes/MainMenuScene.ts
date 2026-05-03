@@ -123,8 +123,8 @@ export class MainMenuScene extends Phaser.Scene {
     this.saveSlotsOverlay = new SaveSlotsOverlay({
       scene: this,
       onClose: () => undefined,
-      onLoadSlot: (slotIndex) => {
-        if (!gameSession.loadSave(slotIndex)) {
+      onLoadSlot: (slotIndex, kind) => {
+        if (!gameSession.loadSave(slotIndex, kind)) {
           return;
         }
 

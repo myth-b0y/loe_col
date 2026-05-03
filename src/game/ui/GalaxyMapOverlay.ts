@@ -20,6 +20,7 @@ import {
   type GalaxySectorConfig,
   type GalaxySystemRecord,
   type GalaxyZoneControllerId,
+  type GalaxyZoneRecord,
 } from "../content/galaxy";
 import { getFactionAssetBuildTimeMs } from "../content/factionAssets";
 import { isZoneActivelyContested } from "../content/factionWar";
@@ -44,6 +45,15 @@ type MapProductionIndicator = {
   assetId: string;
   progress: number;
   remainingMs: number;
+};
+
+type MapZoneCaptureIndicator = {
+  zoneId: string;
+  zoneName: string;
+  attackerId: GalaxyZoneRecord["captureAttackerRaceId"];
+  controllerId: GalaxyZoneRecord["currentControllerId"];
+  progress: number;
+  point: { x: number; y: number };
 };
 
 const PANEL_DEPTH = 60;
@@ -229,7 +239,7 @@ export class GalaxyMapOverlay {
       wordWrap: { width: INFO_RECT.width - 28 },
     }).setDepth(PANEL_DEPTH + 2).setScrollFactor(0);
 
-    this.hoverText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 316, "", {
+    this.hoverText = scene.add.text(INFO_RECT.x + 14, INFO_RECT.y + 300, "", {
       fontFamily: "Arial",
       fontSize: "13px",
       color: "#d7e8ff",
@@ -907,6 +917,65 @@ export class GalaxyMapOverlay {
     });
   }
 
+  private getVisibleZoneCaptureIndicators(
+    galaxy: GalaxyDefinition,
+    viewBounds: Phaser.Geom.Rectangle,
+  ): MapZoneCaptureIndicator[] {
+    const selectedSectorId = this.selectedSectorId;
+    if (!selectedSectorId) {
+      return [];
+    }
+
+    return galaxy.zones
+      .filter((zone) => (
+        zone.sectorId === selectedSectorId
+        && zone.territoryPoints.length >= 3
+        && this.isWorldPolygonVisible(zone.territoryPoints, viewBounds)
+        && (
+          isZoneActivelyContested(zone)
+          || zone.zoneCaptureProgress > 0.01
+          || zone.zoneConflictProgress > 0.01
+        )
+      ))
+      .map((zone) => ({
+        zoneId: zone.id,
+        zoneName: zone.name,
+        attackerId: zone.captureAttackerRaceId,
+        controllerId: zone.currentControllerId,
+        progress: Phaser.Math.Clamp(zone.zoneCaptureProgress, 0, 1),
+        point: this.getZoneCentroid(zone),
+      }));
+  }
+
+  private drawZoneCaptureIndicators(
+    galaxy: GalaxyDefinition,
+    viewBounds: Phaser.Geom.Rectangle,
+  ): void {
+    this.getVisibleZoneCaptureIndicators(galaxy, viewBounds).forEach((indicator) => {
+      const point = this.worldToMapWithBounds(indicator.point, viewBounds);
+      const palette = getGalaxyControllerPalette(indicator.attackerId ?? indicator.controllerId, this.selectedSectorId ?? undefined);
+      const radius = 13;
+      const start = -Math.PI / 2;
+      const end = start + (Math.PI * 2 * indicator.progress);
+      this.markerMap.fillStyle(0x050b13, 0.74);
+      this.markerMap.fillCircle(point.x, point.y, radius + 7);
+      this.markerMap.lineStyle(2, 0xdcecff, 0.32);
+      this.markerMap.strokeCircle(point.x, point.y, radius + 3);
+      this.markerMap.lineStyle(3.2, palette.borderColor, 0.94);
+      this.markerMap.beginPath();
+      this.markerMap.arc(point.x, point.y, radius, start, end, false);
+      this.markerMap.strokePath();
+      this.markerMap.fillStyle(palette.color, 0.92);
+      this.markerMap.fillCircle(point.x, point.y, 3.2);
+      this.markerMap.fillStyle(0x07111b, 0.92);
+      this.markerMap.fillRoundedRect(point.x + 14, point.y - 4, 64, 8, 4);
+      this.markerMap.fillStyle(palette.color, 0.94);
+      this.markerMap.fillRoundedRect(point.x + 16, point.y - 2, 60 * indicator.progress, 4, 2);
+      this.markerMap.lineStyle(1, palette.borderColor, 0.52);
+      this.markerMap.strokeRoundedRect(point.x + 14, point.y - 4, 64, 8, 4);
+    });
+  }
+
   private drawSystemStarGlyph(
     x: number,
     y: number,
@@ -1037,6 +1106,9 @@ export class GalaxyMapOverlay {
     const sectorStations = selectedSector ? galaxy.stations.filter((station) => station.sectorId === selectedSector.id) : [];
     const selectedSectorActiveControllerId = selectedSector ? this.getSectorActiveControllerId(selectedSector) : null;
     const selectedSectorDisplayLabel = selectedSector ? getGalaxySectorDisplayLabel(selectedSector, warState) : null;
+    const hoveredZone = this.hoverWorldPoint
+      ? this.getZoneAtWorldPoint(galaxy, this.hoverWorldPoint, selectedSector?.id ?? null)
+      : null;
 
     this.subtitle.setText(selectedSector ? `${selectedSectorDisplayLabel} Sector Detail` : "Galaxy Map");
     this.infoTitle.setText(selectedSector ? `${selectedSectorDisplayLabel} Readout` : "Current Readout");
@@ -1051,20 +1123,14 @@ export class GalaxyMapOverlay {
 
     this.detailText.setText(selectedSector
       ? [
-          `${selectedSectorDisplayLabel} uses the same galaxy coordinates as live space.`,
+          `${selectedSectorDisplayLabel} uses live galaxy coordinates.`,
           `Zones ${sectorZones.length}  |  Systems ${sectorSystems.length}  |  Planets ${sectorPlanets.length}  |  Moons ${sectorMoons.length}`,
           `Controller: ${selectedSectorActiveControllerId ? getGalaxyControllerDisplayLabel(selectedSectorActiveControllerId, warState, selectedSector.id) : selectedSectorDisplayLabel}  |  Stations ${sectorStations.length}`,
-          `Sector span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
-          sectorHomeworld
-            ? `Homeworld: ${sectorHomeworld.name}`
-            : "Homeworld: pending sector generation readout.",
-          sectorStations.length > 0
-            ? `Major station: ${sectorStations[0]?.name ?? "Station"}`
-            : "Major station: pending sector generation readout.",
+          `Span: ${Math.round(selectedSector.innerRadius)} - ${Math.round(selectedSector.outerRadius)} radius`,
           missionPlanet && getGalaxySectorAtPosition(missionPlanet.x, missionPlanet.y).id === selectedSector.id
             ? `Mission planet in sector: ${missionPlanet.name}`
             : "Mission planet is outside this sector detail view.",
-          "Zone territories are datapad-only strategic overlays on top of the same coordinates used in live space.",
+          `Homeworld: ${sectorHomeworld?.name ?? "pending"}  |  Station: ${sectorStations[0]?.name ?? "pending"}`,
         ].join("\n")
       : missionPlanet
         ? [
@@ -1080,19 +1146,36 @@ export class GalaxyMapOverlay {
     this.hoverText.setText(this.hoverWorldPoint
       ? (() => {
           const hoverRegion = getGalaxyRegionLabelAtPosition(galaxy, this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState);
-          return [
-            `Hover: X ${this.hoverWorldPoint.x}  Y ${this.hoverWorldPoint.y}`,
-            `Hover region: ${hoverRegion}`,
-          ].join("\n");
+          const lines = selectedSector && hoveredZone
+            ? [
+                `Zone: ${hoveredZone.name}`,
+                `Controller: ${getGalaxyControllerDisplayLabel(hoveredZone.currentControllerId, warState, hoveredZone.coreSectorId)}`,
+                `X ${this.hoverWorldPoint.x}  Y ${this.hoverWorldPoint.y}`,
+              ]
+            : [
+                `Hover: X ${this.hoverWorldPoint.x}  Y ${this.hoverWorldPoint.y}`,
+                `Hover region: ${hoverRegion}`,
+              ];
+          if (selectedSector && hoveredZone && (hoveredZone.zoneCaptureProgress > 0.01 || isZoneActivelyContested(hoveredZone))) {
+            lines.splice(2, 0, `Takeover progress: ${Math.round(hoveredZone.zoneCaptureProgress * 100)}%`);
+          } else if (hoveredZone) {
+            lines.push(`Zone: ${hoveredZone.name}`);
+            lines.push(`Controller: ${getGalaxyControllerDisplayLabel(hoveredZone.currentControllerId, warState, hoveredZone.coreSectorId)}`);
+            if (hoveredZone.zoneCaptureProgress > 0.01 || isZoneActivelyContested(hoveredZone)) {
+              lines.push(`Takeover progress: ${Math.round(hoveredZone.zoneCaptureProgress * 100)}%`);
+            }
+          }
+          return lines.join("\n");
         })()
       : "Hover over the map to inspect live galaxy coordinates.");
 
-    this.footerText.setText(selectedSector
-      ? "Sector detail is a zoomed view of the same playable galaxy. Zone territories are map-only and do not place tile overlays into flight space."
-      : "This is the same coordinate space used by the playable space map. The datapad adds strategic territorial partitions without turning space into a tile overlay.");
+    this.footerText
+      .setText("This is the same coordinate space used by the playable space map. The datapad adds strategic territorial partitions without turning space into a tile overlay.")
+      .setVisible(!selectedSector);
 
     this.markerMap.clear();
     this.drawProductionIndicators(viewBounds);
+    this.drawZoneCaptureIndicators(galaxy, viewBounds);
     this.homeworldLabel.setVisible(false);
     if (this.isWorldPointVisible(playerPosition, viewBounds)) {
       const playerMarker = this.worldToMapWithBounds(playerPosition, viewBounds);
@@ -1129,9 +1212,18 @@ export class GalaxyMapOverlay {
       const hoverMarker = this.worldToMapWithBounds(this.hoverWorldPoint, viewBounds);
       this.markerMap.lineStyle(2, 0xdde9ff, 0.96);
       this.markerMap.strokeCircle(hoverMarker.x, hoverMarker.y, 10);
+      const hoverLabelText = hoveredZone
+        ? [
+            hoveredZone.name,
+            getGalaxyControllerDisplayLabel(hoveredZone.currentControllerId, warState, hoveredZone.coreSectorId),
+            hoveredZone.zoneCaptureProgress > 0.01 || isZoneActivelyContested(hoveredZone)
+              ? `Takeover ${Math.round(hoveredZone.zoneCaptureProgress * 100)}%`
+              : null,
+          ].filter((line): line is string => typeof line === "string").join("\n")
+        : `${this.hoverWorldPoint.x}, ${this.hoverWorldPoint.y}`;
       this.hoverLabel
         .setPosition(hoverMarker.x + 16, hoverMarker.y - 4)
-        .setText(`${this.hoverWorldPoint.x}, ${this.hoverWorldPoint.y}`)
+        .setText(hoverLabelText)
         .setVisible(true);
     } else {
       this.hoverLabel.setVisible(false);
@@ -1184,6 +1276,10 @@ export class GalaxyMapOverlay {
       && this.isWorldPointVisible(station, viewBounds, station.radius)
     )).length;
     const productionIndicators = this.getVisibleProductionIndicators(viewBounds);
+    const zoneCaptureIndicators = this.getVisibleZoneCaptureIndicators(galaxy, viewBounds);
+    const hoveredZone = this.hoverWorldPoint
+      ? this.getZoneAtWorldPoint(galaxy, this.hoverWorldPoint, selectedSectorId)
+      : null;
     const visibleZones = galaxy.zones.filter((zone) => {
       if (selectedSectorId && zone.sectorId !== selectedSectorId) {
         return false;
@@ -1199,6 +1295,7 @@ export class GalaxyMapOverlay {
       visibleMoons,
       visibleStations,
       visibleProductionIndicators: productionIndicators.length,
+      visibleZoneCaptureIndicators: zoneCaptureIndicators.length,
       productionIndicators: productionIndicators.map((indicator) => ({
         poolId: indicator.poolId,
         systemId: indicator.systemId,
@@ -1208,6 +1305,13 @@ export class GalaxyMapOverlay {
         progress: Number(indicator.progress.toFixed(3)),
         remainingMs: indicator.remainingMs,
       })),
+      zoneCaptureIndicators: zoneCaptureIndicators.map((indicator) => ({
+        zoneId: indicator.zoneId,
+        zoneName: indicator.zoneName,
+        attackerId: indicator.attackerId,
+        controllerId: indicator.controllerId,
+        progress: Number(indicator.progress.toFixed(3)),
+      })),
       shipRegion: getGalaxyRegionLabelAtPosition(
         galaxy,
         gameSession.getShipSpacePosition().x,
@@ -1216,6 +1320,14 @@ export class GalaxyMapOverlay {
       ),
       hoverRegion: this.hoverWorldPoint
         ? getGalaxyRegionLabelAtPosition(galaxy, this.hoverWorldPoint.x, this.hoverWorldPoint.y, warState)
+        : null,
+      hoverZone: hoveredZone
+        ? {
+            id: hoveredZone.id,
+            name: hoveredZone.name,
+            currentControllerId: hoveredZone.currentControllerId,
+            zoneCaptureProgress: Number(hoveredZone.zoneCaptureProgress.toFixed(3)),
+          }
         : null,
       sectorLabels: GALAXY_SECTORS.map((sector) => ({
         id: sector.id,
@@ -1347,6 +1459,57 @@ export class GalaxyMapOverlay {
       && minX <= viewBounds.right
       && maxY >= viewBounds.y
       && minY <= viewBounds.bottom;
+  }
+
+  private getZoneAtWorldPoint(
+    galaxy: GalaxyDefinition,
+    point: { x: number; y: number },
+    sectorId: string | null,
+  ): GalaxyZoneRecord | null {
+    if (!sectorId) {
+      return null;
+    }
+
+    return galaxy.zones.find((zone) => (
+      zone.sectorId === sectorId
+      && zone.territoryPoints.length >= 3
+      && this.isPointInsideZonePolygon(point, zone.territoryPoints)
+    )) ?? null;
+  }
+
+  private isPointInsideZonePolygon(
+    point: { x: number; y: number },
+    polygon: Array<{ x: number; y: number }>,
+  ): boolean {
+    let inside = false;
+    for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+      const currentPoint = polygon[index];
+      const previousPoint = polygon[previous];
+      if (!currentPoint || !previousPoint) {
+        continue;
+      }
+      const intersects = ((currentPoint.y > point.y) !== (previousPoint.y > point.y))
+        && (point.x < ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) / ((previousPoint.y - currentPoint.y) || 1) + currentPoint.x);
+      if (intersects) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  private getZoneCentroid(zone: Pick<GalaxyZoneRecord, "territoryPoints">): { x: number; y: number } {
+    if (zone.territoryPoints.length <= 0) {
+      return { x: 0, y: 0 };
+    }
+
+    const sum = zone.territoryPoints.reduce((accumulator, point) => ({
+      x: accumulator.x + point.x,
+      y: accumulator.y + point.y,
+    }), { x: 0, y: 0 });
+    return {
+      x: sum.x / zone.territoryPoints.length,
+      y: sum.y / zone.territoryPoints.length,
+    };
   }
 
   private getSectorAtWorldPoint(point: { x: number; y: number }): GalaxySectorConfig | null {

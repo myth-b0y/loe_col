@@ -135,8 +135,8 @@ export class PauseScene extends Phaser.Scene {
     this.saveSlotsOverlay = new SaveSlotsOverlay({
       scene: this,
       onClose: () => undefined,
-      onLoadSlot: (slotIndex) => {
-        const ok = gameSession.loadSave(slotIndex);
+      onLoadSlot: (slotIndex, kind) => {
+        const ok = gameSession.loadSave(slotIndex, kind);
         if (!ok) {
           this.statusText?.setText("No valid save found.");
           return;

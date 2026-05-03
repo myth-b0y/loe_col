@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 
-import { gameSession } from "../core/session";
+import { gameSession, type SaveKind } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
 type SaveSlotsMode = "load" | "new";
@@ -8,7 +8,7 @@ type SaveSlotsMode = "load" | "new";
 type SaveSlotsOverlayOptions = {
   scene: Phaser.Scene;
   onClose: () => void;
-  onLoadSlot: (slotIndex: number) => void;
+  onLoadSlot: (slotIndex: number, kind: SaveKind) => void;
   onNewSlot: (slotIndex: number) => void;
 };
 
@@ -17,6 +17,7 @@ type SlotCard = {
   title: Phaser.GameObjects.Text;
   body: Phaser.GameObjects.Text;
   action: MenuButton;
+  autosaveAction: MenuButton;
   deleteAction: MenuButton;
 };
 
@@ -40,7 +41,7 @@ function formatTimestamp(value: string | null): string {
 
 export class SaveSlotsOverlay {
   private readonly onClose: () => void;
-  private readonly onLoadSlot: (slotIndex: number) => void;
+  private readonly onLoadSlot: (slotIndex: number, kind: SaveKind) => void;
   private readonly onNewSlot: (slotIndex: number) => void;
   private readonly root: Phaser.GameObjects.Container;
   private readonly backdrop: Phaser.GameObjects.Rectangle;
@@ -112,20 +113,32 @@ export class SaveSlotsOverlay {
       }).setDepth(92);
       const action = createMenuButton({
         scene,
-        x: 858,
+        x: 804,
         y,
-        width: 126,
+        width: 104,
         height: 46,
         label: "Load",
         onClick: () => this.handleSlot(slotIndex),
         depth: 92,
         accentColor: 0x1c4f7f,
       });
+      const autosaveAction = createMenuButton({
+        scene,
+        x: 912,
+        y,
+        width: 104,
+        height: 46,
+        label: "Auto",
+        onClick: () => this.handleSlot(slotIndex, "autosave"),
+        depth: 92,
+        accentColor: 0x285d65,
+        disabled: true,
+      });
       const deleteAction = createMenuButton({
         scene,
-        x: 970,
+        x: 1014,
         y,
-        width: 98,
+        width: 86,
         height: 46,
         label: "Delete",
         onClick: () => this.promptDelete(slotIndex),
@@ -134,7 +147,7 @@ export class SaveSlotsOverlay {
         disabled: true,
       });
 
-      return { frame, title, body, action, deleteAction };
+      return { frame, title, body, action, autosaveAction, deleteAction };
     });
 
     this.statusText = scene.add.text(640, 584, "", {
@@ -199,6 +212,7 @@ export class SaveSlotsOverlay {
         card.title,
         card.body,
         card.action.container,
+        card.autosaveAction.container,
         card.deleteAction.container,
       ]),
       this.confirmBackdrop,
@@ -244,30 +258,46 @@ export class SaveSlotsOverlay {
       const accent = slot.isActive ? 0x6aa5f2 : 0x35577f;
       card.frame.setStrokeStyle(2, accent, slot.isActive ? 0.95 : 0.76);
 
-      if (!slot.data) {
+      if (!slot.hasAnyData) {
         card.title.setText(`${slot.label} ${slot.isActive ? "- Active" : ""}`);
         card.body.setText("Empty slot\nNo campaign data saved yet.");
         card.action.setLabel(this.mode === "load" ? "Empty" : "Start");
         card.action.setEnabled(this.mode === "new");
         card.action.setOnClick(() => this.handleSlot(index));
+        card.autosaveAction.setEnabled(false);
+        card.autosaveAction.setInputEnabled(false);
+        card.autosaveAction.container.setVisible(false);
         card.deleteAction.setEnabled(false);
         card.deleteAction.setInputEnabled(false);
         card.deleteAction.container.setVisible(false);
         return;
       }
 
-      const save = slot.data;
+      const save = slot.latestData ?? slot.data ?? slot.autosaveData;
+      if (!save) {
+        return;
+      }
       const completedCount = save.progression.completedMissionIds.length;
       const queuedCount = save.missions?.acceptedMissionIds?.length ?? 0;
       card.title.setText(`${slot.label}${slot.isActive ? " - Active" : ""} | Lv ${save.profile.level} ${save.profile.callsign}`);
+      const manualLabel = slot.data
+        ? `${formatTimestamp(slot.manualSavedAt)} | Cr ${slot.data.profile.credits}`
+        : "Empty";
+      const autosaveLabel = slot.autosaveData
+        ? `${formatTimestamp(slot.autosaveSavedAt)} | Cr ${slot.autosaveData.profile.credits}`
+        : "Empty";
       card.body.setText([
-        `Saved: ${formatTimestamp(save.meta.lastSavedAt)} | Credits: ${save.profile.credits} | XP: ${save.profile.xp}`,
+        `Manual: ${manualLabel}  |  Autosave: ${autosaveLabel}`,
         `Weapon: ${save.loadout.weapon} | Squad: ${save.loadout.companion}`,
         `Queued missions: ${queuedCount} | Completed missions: ${completedCount}`,
       ]);
-      card.action.setLabel(this.mode === "load" ? "Load" : "Overwrite");
-      card.action.setEnabled(true);
-      card.action.setOnClick(() => this.handleSlot(index));
+      card.action.setLabel(this.mode === "load" ? "Manual" : "Overwrite");
+      card.action.setEnabled(this.mode === "new" || Boolean(slot.data));
+      card.action.setOnClick(() => this.handleSlot(index, "manual"));
+      card.autosaveAction.setLabel("Autosave");
+      card.autosaveAction.setEnabled(this.mode === "load" && Boolean(slot.autosaveData));
+      card.autosaveAction.setInputEnabled(this.mode === "load" && Boolean(slot.autosaveData));
+      card.autosaveAction.container.setVisible(this.mode === "load");
       card.deleteAction.setOnClick(() => this.promptDelete(index));
       card.deleteAction.setEnabled(this.mode === "load");
       card.deleteAction.setInputEnabled(this.mode === "load");
@@ -275,9 +305,9 @@ export class SaveSlotsOverlay {
     });
   }
 
-  private handleSlot(slotIndex: number): void {
+  private handleSlot(slotIndex: number, kind: SaveKind = "manual"): void {
     if (this.mode === "load") {
-      this.onLoadSlot(slotIndex);
+      this.onLoadSlot(slotIndex, kind);
       return;
     }
 
@@ -286,13 +316,14 @@ export class SaveSlotsOverlay {
 
   private promptDelete(slotIndex: number): void {
     const slot = gameSession.getSaveSlots()[slotIndex];
-    if (this.mode !== "load" || !slot?.data) {
+    if (this.mode !== "load" || !slot?.hasAnyData) {
       return;
     }
 
     this.pendingDeleteSlotIndex = slotIndex;
+    const save = slot.latestData ?? slot.data ?? slot.autosaveData;
     this.confirmBody.setText(
-      `Delete ${slot.label} (${slot.data.profile.callsign})?\nThis cannot be undone.`,
+      `Delete ${slot.label} (${save?.profile.callsign ?? "unknown"}) manual and autosave data?\nThis cannot be undone.`,
     );
     this.confirmBackdrop.setVisible(true);
     this.confirmPanel.setVisible(true);
@@ -305,6 +336,7 @@ export class SaveSlotsOverlay {
     this.closeButton.setInputEnabled(false);
     this.cards.forEach((card) => {
       card.action.setInputEnabled(false);
+      card.autosaveAction.setInputEnabled(false);
       card.deleteAction.setInputEnabled(false);
     });
   }
@@ -326,6 +358,7 @@ export class SaveSlotsOverlay {
     this.closeButton.setInputEnabled(true);
     this.cards.forEach((card) => {
       card.action.setInputEnabled(true);
+      card.autosaveAction.setInputEnabled(this.mode === "load" && card.autosaveAction.container.visible);
       card.deleteAction.setInputEnabled(this.mode === "load" && card.deleteAction.container.visible);
     });
   }
@@ -353,6 +386,7 @@ export class SaveSlotsOverlay {
     this.closeButton.setInputEnabled(enabled);
     this.cards.forEach((card) => {
       card.action.setInputEnabled(enabled);
+      card.autosaveAction.setInputEnabled(enabled && this.mode === "load" && card.autosaveAction.container.visible);
       card.deleteAction.setInputEnabled(enabled && this.mode === "load" && card.deleteAction.container.visible);
     });
     this.confirmDeleteButton.setInputEnabled(enabled && this.confirmBackdrop.visible);
