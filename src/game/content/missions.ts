@@ -97,6 +97,7 @@ export type MissionContractDefinition = {
   prompt: string;
   objective: string;
   activities: MissionActivityStepDefinition[];
+  distressTiming?: "timed" | "state";
   groundVariant?: "standard" | "short";
   baseXp: number;
   rewardPreview: MissionRewardPreview;
@@ -170,115 +171,142 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     briefingSpeaker: "Operations Desk",
     briefing: [
       "This proves a mission can advance through several activity types in order.",
-      "The source is a real terminal giver, then the route moves through travel, comms, escort, and a final heavy contact.",
-      "Encounter offsets and targets are seeded from the save so the chain is stable but not identical across saves.",
+      "The source is a real terminal giver, then the route moves through handoffs, defense, reclaim, smuggling, pirate pressure, and escort work.",
+      "Encounter offsets and targets are seeded from the save so the chain is stable but still follows the live galaxy state.",
     ],
     prompt: "Run a linked field dispatch from setup to climax.",
-    objective: "Travel, open comms, escort a courier, then destroy the final heavy contact.",
+    objective: "Move through a believable chain of comms, delivery, defense, reclaim, smuggling, pirate response, and escort work.",
     activities: [
       {
         id: "chain-travel",
         type: "travel",
-        objective: "Travel to the first generated waypoint.",
+        objective: "Travel to the generated planet that opened the dispatch.",
         targetHint: "mission-planet",
         completionText: "Dispatch waypoint reached.",
       },
       {
-        id: "chain-comms",
+        id: "chain-briefing",
         type: "comms",
-        objective: "Open comms with the field contact.",
-        targetHint: "prime-world",
-        completionText: "Field contact acknowledged.",
+        objective: "Open comms with the local contact.",
+        targetHint: "mission-planet",
+        completionText: "Local contact acknowledged.",
         commsText: [
-          "The field contact verifies the route and uploads the courier transponder.",
-          "Accept the handoff, then escort the transport to its real destination.",
+          "The local contact verifies your transponder and asks for a delivery before they can commit forces.",
+          "Take the package to the linked station contact, then stand by for the next front update.",
         ],
-        dialogueOptions: ["Accept courier handoff", "Request threat summary"],
+        dialogueOptions: ["Accept delivery handoff", "Ask why this route matters"],
+      },
+      {
+        id: "chain-delivery-pickup",
+        type: "comms",
+        objective: "Pick up the local delivery package.",
+        targetHint: "station",
+        completionText: "Delivery package loaded.",
+        commsText: [
+          "Station traffic control releases a marked civilian package into your hold.",
+          "Deliver it intact so the front can coordinate the next move.",
+        ],
+        dialogueOptions: ["Load delivery package", "Confirm destination"],
+      },
+      {
+        id: "chain-delivery-dropoff",
+        type: "comms",
+        objective: "Deliver the package to the assigned contact.",
+        targetHint: "station",
+        completionText: "Delivery package transferred.",
+        commsText: [
+          "The receiving contact verifies the package and forwards a live defense request.",
+          "A nearby zone is under pressure and needs help immediately.",
+        ],
+        dialogueOptions: ["Transfer package", "Ask where help is needed"],
+      },
+      {
+        id: "chain-defend-zone",
+        type: "space-battle",
+        objective: "Help defend the marked zone from real hostile pressure.",
+        targetHint: "ship",
+        completionText: "Defense wave cleared.",
+      },
+      {
+        id: "chain-assistance-checkin",
+        type: "comms",
+        objective: "Ask the nearest command contact where assistance is needed next.",
+        targetHint: "prime-world",
+        completionText: "Assistance request received.",
+        commsText: [
+          "Command confirms the defense bought them time.",
+          "They now need a captured zone reclaimed before the front collapses.",
+        ],
+        dialogueOptions: ["Ask where to reclaim", "Request enemy status"],
+      },
+      {
+        id: "chain-reclaim-zone",
+        type: "zone",
+        objective: "Clear real enemy ships from the marked zone and stabilize it.",
+        targetHint: "zone",
+        completionText: "Reclaim zone stabilized.",
+      },
+      {
+        id: "chain-return-contact",
+        type: "comms",
+        objective: "Return to the original contact for the next handoff.",
+        targetHint: "mission-planet",
+        completionText: "Original contact updated.",
+        commsText: [
+          "The original contact confirms the reclaimed zone and offers a risky cargo route.",
+          "This next package must pass through restricted traffic without being lost.",
+        ],
+        dialogueOptions: ["Accept smuggling handoff", "Ask about patrol lanes"],
       },
       {
         id: "chain-smuggle-pickup",
         type: "comms",
-        objective: "Pick up sealed cargo from a real station contact.",
+        objective: "Pick up sealed smuggling cargo.",
         targetHint: "station",
         completionText: "Sealed cargo loaded.",
         commsText: [
-          "The contact slides a sealed grey-route package into your hold.",
-          "Keep it intact and deliver it through the assigned route.",
+          "The broker confirms a sealed package is ready.",
+          "Keep it in your cargo hold until the delivery contact clears it.",
         ],
-        dialogueOptions: ["Load sealed cargo", "Decline the package"],
+        dialogueOptions: ["Load sealed cargo", "Confirm risk"],
       },
       {
         id: "chain-smuggle-delivery",
         type: "comms",
-        objective: "Deliver the sealed cargo to a real station contact.",
+        objective: "Deliver the sealed smuggling cargo.",
         targetHint: "station",
-        completionText: "Sealed cargo delivered.",
+        completionText: "Smuggling cargo delivered.",
         commsText: [
-          "The receiving clerk verifies the cargo hash and clears the transfer.",
-          "Your ship is clean to continue the dispatch.",
+          "The receiving contact clears the sealed cargo hash.",
+          "A pirate distress call interrupts the channel before you can leave.",
         ],
-        dialogueOptions: ["Transfer sealed cargo", "Request receipt"],
+        dialogueOptions: ["Transfer sealed cargo", "Ask about the distress call"],
       },
       {
-        id: "chain-salvage",
-        type: "resource",
-        objective: "Recover a package from real wreckage in space.",
-        targetHint: "resource",
-        completionText: "Wreckage package recovered.",
-      },
-      {
-        id: "chain-salvage-delivery",
-        type: "comms",
-        objective: "Deliver the recovered salvage package.",
-        targetHint: "station",
-        completionText: "Recovered package delivered.",
-        commsText: [
-          "Station salvage control confirms the package beacon.",
-          "Transfer the manifest and continue the operation.",
-        ],
-        dialogueOptions: ["Transfer salvage manifest", "Ask for recovery receipt"],
+        id: "chain-pirate-defense",
+        type: "space-battle",
+        objective: "Help defend against a pirate attack tied to the local zone.",
+        targetHint: "ship",
+        completionText: "Pirate attack broken.",
       },
       {
         id: "chain-escort",
         type: "escort",
-        objective: "Escort the courier ship to its exit marker.",
+        objective: "Escort the transport from the current contact to a real destination.",
         targetHint: "escort",
-        completionText: "Courier reached the transfer point.",
+        completionText: "Transport escort complete.",
       },
       {
-        id: "chain-skirmish",
-        type: "space-battle",
-        objective: "Clear a real hostile patrol tied to the current war state.",
-        targetHint: "ship",
-        completionText: "Hostile patrol cleared.",
-      },
-      {
-        id: "chain-zone",
-        type: "zone",
-        objective: "Help reclaim a real enemy-held or contested zone.",
-        targetHint: "zone",
-        completionText: "Zone stabilized.",
-      },
-      {
-        id: "chain-target",
-        type: "kill-target",
-        objective: "Destroy a real marked hostile command ship.",
-        targetHint: "ship",
-        completionText: "Marked command ship destroyed.",
-      },
-      {
-        id: "chain-boss",
-        type: "boss",
-        objective: "Destroy the heavy contact blocking extraction.",
-        targetHint: "ship",
-        completionText: "Linked dispatch complete.",
-      },
-      {
-        id: "chain-ground",
-        type: "ground",
-        objective: "Land and clear the final short ground operation.",
+        id: "chain-final-report",
+        type: "comms",
+        objective: "Return to the original dispatch contact and close the route.",
         targetHint: "mission-planet",
-        completionText: "Linked ground operation complete.",
+        completionText: "Linked dispatch complete.",
+        commsText: [
+          "The original contact logs the delivery, reclaim, smuggling, pirate response, and escort as complete.",
+          "The route is stable for now.",
+        ],
+        dialogueOptions: ["Close dispatch", "Request final receipt"],
       },
     ],
     baseXp: 230,
@@ -301,6 +329,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Escort the live transport to a real nearby destination.",
     objective: "Keep the escort ship alive until it reaches its destination.",
+    distressTiming: "timed",
     activities: [
       {
         id: "escort",
@@ -330,6 +359,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Recover the marked salvage package and deliver it.",
     objective: "Collect the salvage package from wreckage and deliver it to the station contact.",
+    distressTiming: "timed",
     activities: [
       {
         id: "resource",
@@ -371,6 +401,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Pick up the sealed cargo and deliver it through a risky route.",
     objective: "Recover smuggled cargo, keep it in your inventory, and deliver it to the contact.",
+    distressTiming: "timed",
     activities: [
       {
         id: "pickup-cargo",
@@ -416,6 +447,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Help reclaim a real enemy-held zone.",
     objective: "Clear real enemy ships in the zone and stabilize it.",
+    distressTiming: "state",
     activities: [
       {
         id: "reclaim-zone",
@@ -444,6 +476,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Help local defenders clear a pirate attack.",
     objective: "Destroy the pirate attackers.",
+    distressTiming: "timed",
     activities: [
       {
         id: "pirate-defense",
@@ -472,6 +505,7 @@ export const MISSION_CONTRACTS: readonly MissionContractDefinition[] = [
     ],
     prompt: "Help a neutral world fight off an Empire attack.",
     objective: "Destroy the Empire attackers.",
+    distressTiming: "state",
     activities: [
       {
         id: "neutral-defense",

@@ -42,6 +42,7 @@ export type SfxCue =
   | "hyperdrive-countdown"
   | "hyperdrive-engage"
   | "hyperdrive-disengage"
+  | "space-ambient"
   | "companion-revive";
 
 type CueOptions = {
@@ -121,6 +122,7 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "hyperdrive-countdown": 140,
   "hyperdrive-engage": 160,
   "hyperdrive-disengage": 140,
+  "space-ambient": 5200,
   "companion-revive": 140,
 };
 
@@ -342,6 +344,11 @@ class RetroSfxManager {
       case "hyperdrive-disengage":
         this.tone(context, { type: "triangle", startFreq: 760 * pitch, endFreq: 210 * pitch, duration: 0.18, volume: volume * 0.14, filterFreq: 1700, pan });
         this.noise(context, { duration: 0.05, volume: volume * 0.025, filterFreq: 1300, filterType: "bandpass", pan });
+        return;
+      case "space-ambient":
+        this.tone(context, { type: "sine", startFreq: 82 * pitch, endFreq: 58 * pitch, duration: 2.4, volume: volume * 0.045, filterFreq: 520, pan });
+        this.tone(context, { type: "triangle", startFreq: 144 * pitch, endFreq: 118 * pitch, duration: 1.8, volume: volume * 0.022, filterFreq: 760, pan, startOffset: 0.28 });
+        this.noise(context, { duration: 1.2, volume: volume * 0.012, filterFreq: 420, filterType: "lowpass", pan, playbackRate: 0.62 });
         return;
       case "companion-revive":
         this.playArpeggio(context, [262, 330, 392], "triangle", volume * 0.11, pan, pitch, 0.085, 1800);

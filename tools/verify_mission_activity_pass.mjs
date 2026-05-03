@@ -259,7 +259,7 @@ try {
   assert(contractState.livePresent, `Live distress mission set mismatch: ${JSON.stringify(contractState.liveIds)}`);
   assert(contractState.primePresent, `Prime/direct mission set mismatch: ${JSON.stringify(contractState.primeIds)}`);
   assert(contractState.removedPresent.length === 0, `Removed temp missions still present: ${contractState.removedPresent.join(", ")}`);
-  assert(contractState.chainSteps.join(">") === "travel>comms>comms>comms>resource>comms>escort>space-battle>zone>kill-target>boss>ground", `Linked chain steps changed unexpectedly: ${contractState.chainSteps}`);
+  assert(contractState.chainSteps.join(">") === "travel>comms>comms>comms>space-battle>comms>zone>comms>comms>comms>space-battle>escort>comms", `Linked chain steps changed unexpectedly: ${contractState.chainSteps}`);
   assert(contractState.smugglingSteps.join(">") === "comms>comms", `Smuggling should be pickup/delivery comms, got: ${contractState.smugglingSteps}`);
   assert(contractState.salvageSteps.join(">") === "resource>comms", `Salvage should recover then deliver, got: ${contractState.salvageSteps}`);
   assert(contractState.directReclaimStages === 2, `Direct/simple reclaim should use short ground variant, got ${contractState.directReclaimStages}`);
@@ -282,7 +282,12 @@ try {
   await capture(page, "accepted-not-course.png");
 
   await resetToSpace(page, "distress-smuggling", { source: "live-space" });
+  await page.evaluate(() => {
+    const space = window.__loeGame?.scene.keys.space;
+    space?.setDistressMissionTimingFlags?.("distress-smuggling");
+  });
   state = await snapshot(page);
+  assert(typeof state.activityState?.flags?.distressRemainingMs === "number" && state.activityState.flags.distressRemainingMs >= 590000, `Timed distress should expose a long remaining timer: ${JSON.stringify(state.activityState?.flags)}`);
   assert(state.activeMissionWaypoint?.kind === "comms", `Smuggling pickup should be a real comms pickup: ${JSON.stringify(state.activeMissionWaypoint)}`);
   assert(state.missionObjects.length === 0, "Smuggling pickup should not spawn salvage/resource objects");
   await completeCurrentComms(page);
@@ -313,6 +318,7 @@ try {
   });
   state = await snapshot(page);
   assert(state.cargo.some((item) => item?.tag === "mission-cargo:distress-salvage"), "Salvage recovery should place a real cargo item in inventory");
+  assert(state.missionObjects.filter((object) => object.kind === "debris" && object.lingerUntilDistance).length >= 3, "Salvage debris should linger after the package is gathered");
   await completeCurrentComms(page);
   state = await snapshot(page);
   assert(!state.acceptedMissionIds.includes("distress-salvage"), "Completed live salvage activity should clear from accepted missions");
@@ -336,6 +342,7 @@ try {
   const escort = state.missionObjects.find((object) => object.kind === "escort");
   assert(escort?.routeOriginLabel && escort?.routeDestinationLabel, `Escort transport missing real route labels: ${JSON.stringify(state.missionObjects)}`);
   assert(escort?.usesRealShipVisual, "Escort transport should use the real ship renderer");
+  assert(escort?.factionId === "homeguard" && escort?.originRaceId && escort.originRaceId !== state.war?.empireRaceId, `Escort transport should use a real non-Empire race identity: ${JSON.stringify(escort)}`);
   assert(escort?.routeCheckpointCount >= 3, `Escort route should include internal checkpoints plus destination: ${JSON.stringify(escort)}`);
   assert(escort?.routeStarted, "Escort transport should begin moving after launch delay");
   await capture(page, "transport-started.png");
@@ -374,7 +381,7 @@ try {
 
   await resetToSpace(page, "distress-neutral-empire-defense", { source: "live-space" });
   state = await snapshot(page);
-  assert(state.activeMissionWaypoint?.targetShipId, "Neutral defense should target a real Empire ship");
+  assert(state.activeMissionWaypoint?.targetShipId, `Neutral defense should target a real Empire ship: ${JSON.stringify(state)}`);
   assert(state.missionTargetShips.length > 0, "Neutral defense should register target ship ids");
   assert(state.missionTargetShips.every((ship) => ship.factionId === "empire" && ship.originRaceId), `Neutral defense targets should use this save's Empire identity: ${JSON.stringify(state.missionTargetShips)}`);
   await destroyActiveMissionTargetShips(page);
@@ -382,6 +389,8 @@ try {
   assert(!state.acceptedMissionIds.includes("distress-neutral-empire-defense"), "Neutral defense should complete after real Empire ships are destroyed");
 
   await resetToSpace(page, "distress-reclaim", { source: "live-space" });
+  state = await snapshot(page);
+  assert(state.activityState && typeof state.activityState.flags?.distressRemainingMs !== "number", `State-based reclaim distress should not use a timer: ${JSON.stringify(state.activityState?.flags)}`);
   const seededZone = await seedEmpireHeldForeignZone(page);
   assert(seededZone, "Could not seed a real foreign Empire-held zone for reclaim verification");
   await page.evaluate((zoneId) => {

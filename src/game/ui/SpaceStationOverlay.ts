@@ -53,18 +53,27 @@ export class SpaceStationOverlay {
       .setInteractive();
     this.backdrop.on("pointerdown", () => this.hide());
 
+    const stopPanelPointer = (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData): void => {
+      event.stopPropagation();
+    };
     const panel = scene.add.rectangle(640, 360, 560, 394, 0x08111b, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setScrollFactor(0)
-      .setStrokeStyle(3, 0x365a82, 0.86);
+      .setStrokeStyle(3, 0x365a82, 0.86)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const inset = scene.add.rectangle(640, 360, 540, 374, 0x0b1622, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setScrollFactor(0)
-      .setStrokeStyle(1, 0x294563, 0.7);
+      .setStrokeStyle(1, 0x294563, 0.7)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const header = scene.add.rectangle(640, 214, 512, 54, 0x0d1a2a, 0.98)
       .setDepth(PANEL_DEPTH + 1)
       .setScrollFactor(0)
-      .setStrokeStyle(2, 0x294563, 0.78);
+      .setStrokeStyle(2, 0x294563, 0.78)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
 
     this.title = scene.add.text(400, 215, "Station Comms", {
       fontFamily: "Arial",

@@ -124,15 +124,25 @@ export class GalaxyMapOverlay {
       .setInteractive();
     this.backdrop.on("pointerdown", () => this.hide());
 
+    const stopPanelPointer = (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData): void => {
+      event.stopPropagation();
+    };
+
     const panel = scene.add.rectangle(WINDOW.centerX, WINDOW.centerY, WINDOW.width, WINDOW.height, 0x08111b, 0.985)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(3, 0x365a82, 0.82);
+      .setStrokeStyle(3, 0x365a82, 0.82)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const panelInset = scene.add.rectangle(WINDOW.centerX, WINDOW.centerY, WINDOW.width - 18, WINDOW.height - 18, 0x091724, 0.985)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(1, 0x294563, 0.72);
+      .setStrokeStyle(1, 0x294563, 0.72)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const topBar = scene.add.rectangle(WINDOW.centerX, WINDOW.y + 42, WINDOW.width - 40, 58, 0x0b1522, 0.98)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(2, 0x294563, 0.78);
+      .setStrokeStyle(2, 0x294563, 0.78)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
 
     this.title = scene.add.text(WINDOW.x + 24, WINDOW.y + 20, "Data Pad", {
       fontFamily: "Arial",
@@ -333,7 +343,10 @@ export class GalaxyMapOverlay {
       .setScrollFactor(0)
       .setInteractive({ useHandCursor: true });
     this.mapInputZone.on("pointermove", (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer));
-    this.mapInputZone.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handlePointerDown(pointer));
+    this.mapInputZone.on("pointerdown", (pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData) => {
+      event.stopPropagation();
+      this.handlePointerDown(pointer);
+    });
     this.mapInputZone.on("pointerout", () => this.clearHover());
 
     this.root = scene.add.container(0, 0, [

@@ -41,14 +41,21 @@ export class SpaceCommsOverlay {
       .setInteractive();
     this.backdrop.on("pointerdown", () => this.hide());
 
+    const stopPanelPointer = (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData): void => {
+      event.stopPropagation();
+    };
     const panel = scene.add.rectangle(640, 360, 560, 364, 0x08111b, 0.98)
       .setScrollFactor(0)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(3, 0x3d647f, 0.88);
+      .setStrokeStyle(3, 0x3d647f, 0.88)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const header = scene.add.rectangle(640, 232, 520, 58, 0x0c1a28, 0.98)
       .setScrollFactor(0)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(2, 0x35556f, 0.78);
+      .setStrokeStyle(2, 0x35556f, 0.78)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
 
     this.title = scene.add.text(392, 210, "Mission Comms", {
       fontFamily: "Arial",

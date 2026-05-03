@@ -64,6 +64,44 @@ function getStatusLabel(contractId: string): string {
   return "Unknown";
 }
 
+function formatMissionTimer(valueMs: number): string {
+  const safeMs = Math.max(0, Math.floor(valueMs));
+  const totalSeconds = Math.ceil(safeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function getPreviousStepLine(contract: MissionContractDefinition): string {
+  const state = gameSession.getMissionActivityState(contract.id);
+  const previousStep = [...contract.activities]
+    .reverse()
+    .find((step) => state.completedStepIds.includes(step.id));
+  return previousStep
+    ? `Previous step: ${previousStep.completionText || previousStep.objective}`
+    : "Previous step: None yet";
+}
+
+function getDistressStatusLine(contract: MissionContractDefinition): string | null {
+  if (contract.source.kind !== "live-space") {
+    return null;
+  }
+
+  const state = gameSession.getMissionActivityState(contract.id);
+  if (contract.distressTiming === "timed") {
+    const remaining = state.flags.distressRemainingMs;
+    return typeof remaining === "number"
+      ? `Distress timer: ${formatMissionTimer(remaining)}`
+      : "Distress timer: Pending";
+  }
+
+  if (contract.distressTiming === "state") {
+    return "Distress timer: State-based; resolves when the battle is won or lost.";
+  }
+
+  return null;
+}
+
 export class LogbookOverlay {
   private readonly onClose: () => void;
   private readonly onOpenSettings: () => void;
@@ -104,15 +142,24 @@ export class LogbookOverlay {
       .setInteractive();
     this.backdrop.on("pointerdown", () => this.hide());
 
+    const stopPanelPointer = (_pointer: Phaser.Input.Pointer, _localX: number, _localY: number, event: Phaser.Types.Input.EventData): void => {
+      event.stopPropagation();
+    };
     const panel = scene.add.rectangle(WINDOW.centerX, WINDOW.centerY, WINDOW.width, WINDOW.height, 0x08111b, 0.985)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(3, FRAME_COLOR, FRAME_ALPHA);
+      .setStrokeStyle(3, FRAME_COLOR, FRAME_ALPHA)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const panelInset = scene.add.rectangle(WINDOW.centerX, WINDOW.centerY, WINDOW.width - 18, WINDOW.height - 18, 0x091724, 0.985)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(1, 0x294563, 0.72);
+      .setStrokeStyle(1, 0x294563, 0.72)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
     const topBar = scene.add.rectangle(WINDOW.centerX, WINDOW.y + 42, WINDOW.width - 40, 58, 0x0b1522, 0.98)
       .setDepth(PANEL_DEPTH + 1)
-      .setStrokeStyle(2, 0x294563, 0.78);
+      .setStrokeStyle(2, 0x294563, 0.78)
+      .setInteractive()
+      .on("pointerdown", stopPanelPointer);
 
     this.title = scene.add.text(WINDOW.x + 24, WINDOW.y + 20, "Data Pad", {
       fontFamily: "Arial",
@@ -552,12 +599,15 @@ export class LogbookOverlay {
     this.detailTitle.setText(selected.title);
     const activityState = gameSession.getMissionActivityState(selected.id);
     const currentStep = getCurrentMissionActivityStep(selected, activityState);
+    const distressStatusLine = getDistressStatusLine(selected);
     this.detailMeta.setText(`${selected.location} | ${getStatusLabel(selected.id)} | ${selected.source.label}`);
     this.detailBody.setText([
       selected.prompt,
       "",
       `Objective: ${selected.objective}`,
-      currentStep ? `Current step: ${currentStep.objective}` : "",
+      currentStep ? `Current task: ${currentStep.objective}` : "Current task: None",
+      getPreviousStepLine(selected),
+      distressStatusLine,
       "",
       `Rewards: +${selected.baseXp} XP | ${selected.rewardPreview.dropLines.join(" | ")} | ${selected.rewardPreview.salvageLine}`,
     ].filter(Boolean).join("\n"));
