@@ -1821,6 +1821,12 @@ ${getCompanionRoleDisplay(companion)}`, {
     const selectedMissionId = gameSession.getSelectedMissionId();
     const activeMissionId = gameSession.getArrivedMissionId();
     const activeMission = activeMissionId ? getMissionContract(activeMissionId) : null;
+    const activeMissionDeployable = Boolean(
+      activeMissionId
+      && activeMission
+      && isGroundMissionContract(activeMission)
+      && gameSession.canDeployArrivedMission(activeMissionId),
+    );
     const stagedMission = selectedMissionId ? getMissionContract(selectedMissionId) : null;
     const selectedCompanion = this.selectedDeployCompanionId ? getCompanionDefinition(this.selectedDeployCompanionId) : undefined;
     const fallbackStatus = selectedCompanion
@@ -1884,9 +1890,9 @@ ${getCompanionRoleDisplay(companion)}`, {
       slotUi.occupantText.setColor(occupant ? "#f7fbff" : validForSelection ? "#7f92a9" : "#d59595");
     });
 
-    this.deployLaunchButton?.setEnabled(Boolean(activeMission && isGroundMissionContract(activeMission)));
+    this.deployLaunchButton?.setEnabled(activeMissionDeployable);
     this.deployLaunchButton?.setLabel(activeMission
-      ? isGroundMissionContract(activeMission) ? "Begin Ground Mission" : "No Ground Step"
+      ? isGroundMissionContract(activeMission) ? activeMissionDeployable ? "Begin Ground Mission" : "Landing Invalid" : "No Ground Step"
       : stagedMission
         ? isGroundMissionContract(stagedMission) ? "Land First" : "Space Objective"
         : "Launch Locked");
@@ -2101,6 +2107,11 @@ ${getCompanionRoleDisplay(companion)}`, {
     const mission = missionId ? getMissionContract(missionId) : null;
     if (!missionId || !isGroundMissionContract(mission)) {
       this.refreshDeployOverlay("You can prep the squad now, but you still need to reach the mission planet and land before deployment.");
+      return;
+    }
+    if (!gameSession.canDeployArrivedMission(missionId)) {
+      gameSession.clearShipTravel();
+      this.refreshDeployOverlay("Reclaim target is no longer Empire-controlled. Landing authorization cleared.");
       return;
     }
 

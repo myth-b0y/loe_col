@@ -1063,7 +1063,8 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return Boolean(
       missionId
       && this.saveData.ship.travel.status === "arrived"
-      && this.saveData.ship.travel.arrivedMissionId === missionId,
+      && this.saveData.ship.travel.arrivedMissionId === missionId
+      && this.isMissionDeploymentStillValid(missionId),
     );
   }
 
@@ -1687,6 +1688,15 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   startMission(missionId: string): void {
+    if (!this.isMissionDeploymentStillValid(missionId)) {
+      if (this.clearShipTravelForMission(missionId)) {
+        this.emitShipTravelChanged();
+      } else {
+        this.emit("save-changed", this.saveData);
+      }
+      return;
+    }
+
     this.activeMissionId = missionId;
     this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((id) => id !== missionId);
     if (this.saveData.missions.selectedMissionId === missionId) {
@@ -1896,6 +1906,20 @@ export class GameSession extends Phaser.Events.EventEmitter {
     if (!coreRaceId) {
       return;
     }
+    const empireRaceId = this.saveData.war.empireRaceId;
+    const isPlayerDrivenReclaim = missionId === "world-zone-reclaim";
+    const isReclaimMission = missionId.includes("reclaim");
+    if (
+      isReclaimMission
+      && empireRaceId
+      && zone.currentControllerId !== empireRaceId
+      && zone.captureAttackerRaceId !== empireRaceId
+    ) {
+      return;
+    }
+    if (isPlayerDrivenReclaim && (!empireRaceId || coreRaceId === empireRaceId || zone.currentControllerId !== empireRaceId)) {
+      return;
+    }
 
     zone.currentControllerId = coreRaceId;
     zone.zoneState = "stable";
@@ -1909,6 +1933,36 @@ export class GameSession extends Phaser.Events.EventEmitter {
   private emitShipTravelChanged(): void {
     this.emit("ship-travel-changed", this.getShipTravelState());
     this.emitShipChanged();
+  }
+
+  private isMissionDeploymentStillValid(missionId: string | null | undefined): boolean {
+    if (missionId !== "world-zone-reclaim") {
+      return true;
+    }
+
+    const state = this.saveData.missions.activityStates[missionId];
+    const zoneId = typeof state?.flags.reclaimZoneId === "string"
+      ? state.flags.reclaimZoneId
+      : typeof state?.flags.targetZoneId === "string"
+        ? state.flags.targetZoneId
+        : null;
+    if (!zoneId || !this.saveData.war.empireRaceId) {
+      return false;
+    }
+
+    const zone = getGalaxyZoneByIdFromGalaxy(this.saveData.galaxy, zoneId);
+    if (!zone) {
+      return false;
+    }
+
+    const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId
+      ?? getGalaxySectorById(zone.sectorId)?.raceId
+      ?? null;
+    return Boolean(
+      coreRaceId
+      && coreRaceId !== this.saveData.war.empireRaceId
+      && zone.currentControllerId === this.saveData.war.empireRaceId,
+    );
   }
 
   private setShipDockedState(): void {

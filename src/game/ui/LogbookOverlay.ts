@@ -432,8 +432,8 @@ export class LogbookOverlay {
 
   show(): void {
     this.root.setVisible(true);
-    this.setInputEnabled(true);
     this.refresh();
+    this.setInputEnabled(true);
   }
 
   hide(): void {
@@ -542,6 +542,9 @@ export class LogbookOverlay {
       visibleCards.add(contract.id);
       const isSelected = selected?.id === contract.id;
       card.frame.setVisible(true);
+      if (card.frame.input) {
+        card.frame.input.enabled = this.root.visible;
+      }
       card.title.setVisible(true);
       card.status.setVisible(true);
       card.frame.setPosition(this.listRect.centerX, nextCardY);
@@ -575,6 +578,9 @@ export class LogbookOverlay {
       }
 
       card.frame.setVisible(false);
+      if (card.frame.input) {
+        card.frame.input.enabled = false;
+      }
       card.title.setVisible(false);
       card.status.setVisible(false);
     });

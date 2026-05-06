@@ -602,10 +602,15 @@ const HOMEGUARD_RACE_PROFILES: Record<RaceId, SpaceRaceDefenseProfile> = {
 const HOMEGUARD_RACE_CONFIGS: Record<RaceId, SpaceFactionConfig> = Object.fromEntries(
   (Object.keys(HOMEGUARD_RACE_PROFILES) as RaceId[]).map((raceId) => {
     const profile = HOMEGUARD_RACE_PROFILES[raceId];
+    const palette = getGalaxyControllerPalette(raceId);
     return [
       raceId,
       {
         ...SPACE_FACTIONS.homeguard,
+        label: `${palette.label} Guard`,
+        color: palette.color,
+        trimColor: palette.borderColor,
+        glowColor: palette.borderColor,
         maxHull: Math.max(4, SPACE_FACTIONS.homeguard.maxHull + profile.hullBonus),
         acceleration: SPACE_FACTIONS.homeguard.acceleration * profile.accelerationMultiplier,
         maxSpeed: SPACE_FACTIONS.homeguard.maxSpeed * profile.maxSpeedMultiplier,

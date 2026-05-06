@@ -43,6 +43,10 @@ export type SfxCue =
   | "hyperdrive-engage"
   | "hyperdrive-disengage"
   | "space-ambient"
+  | "space-ambient-drift"
+  | "space-ambient-signal"
+  | "ship-thruster"
+  | "npc-thruster"
   | "companion-revive";
 
 type CueOptions = {
@@ -123,6 +127,10 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "hyperdrive-engage": 160,
   "hyperdrive-disengage": 140,
   "space-ambient": 5200,
+  "space-ambient-drift": 4200,
+  "space-ambient-signal": 5000,
+  "ship-thruster": 260,
+  "npc-thruster": 900,
   "companion-revive": 140,
 };
 
@@ -349,6 +357,25 @@ class RetroSfxManager {
         this.tone(context, { type: "sine", startFreq: 82 * pitch, endFreq: 58 * pitch, duration: 2.4, volume: volume * 0.045, filterFreq: 520, pan });
         this.tone(context, { type: "triangle", startFreq: 144 * pitch, endFreq: 118 * pitch, duration: 1.8, volume: volume * 0.022, filterFreq: 760, pan, startOffset: 0.28 });
         this.noise(context, { duration: 1.2, volume: volume * 0.012, filterFreq: 420, filterType: "lowpass", pan, playbackRate: 0.62 });
+        return;
+      case "space-ambient-drift":
+        this.tone(context, { type: "sine", startFreq: 48 * pitch, endFreq: 66 * pitch, duration: 3.1, volume: volume * 0.038, filterFreq: 420, pan });
+        this.tone(context, { type: "triangle", startFreq: 94 * pitch, endFreq: 86 * pitch, duration: 2.7, volume: volume * 0.018, filterFreq: 620, pan: pan * -0.7, startOffset: 0.42 });
+        this.noise(context, { duration: 1.8, volume: volume * 0.01, filterFreq: 360, filterType: "lowpass", pan, playbackRate: 0.48, startOffset: 0.16 });
+        return;
+      case "space-ambient-signal":
+        this.playArpeggio(context, [196, 247, 330], "triangle", volume * 0.032, pan, pitch, 0.18, 1800);
+        this.tone(context, { type: "sine", startFreq: 72 * pitch, endFreq: 64 * pitch, duration: 1.6, volume: volume * 0.026, filterFreq: 520, pan: pan * 0.8 });
+        this.noise(context, { duration: 0.34, volume: volume * 0.006, filterFreq: 880, filterType: "bandpass", pan, playbackRate: 0.74, startOffset: 0.12 });
+        return;
+      case "ship-thruster":
+        this.tone(context, { type: "sawtooth", startFreq: 92 * pitch, endFreq: 74 * pitch, duration: 0.24, volume: volume * 0.07, filterFreq: 700, pan });
+        this.tone(context, { type: "triangle", startFreq: 138 * pitch, endFreq: 116 * pitch, duration: 0.18, volume: volume * 0.035, filterFreq: 820, pan, startOffset: 0.015 });
+        this.noise(context, { duration: 0.16, volume: volume * 0.018, filterFreq: 520, filterType: "lowpass", pan, playbackRate: 0.58 });
+        return;
+      case "npc-thruster":
+        this.tone(context, { type: "sawtooth", startFreq: 82 * pitch, endFreq: 68 * pitch, duration: 0.28, volume: volume * 0.052, filterFreq: 560, pan });
+        this.noise(context, { duration: 0.2, volume: volume * 0.012, filterFreq: 420, filterType: "lowpass", pan, playbackRate: 0.5 });
         return;
       case "companion-revive":
         this.playArpeggio(context, [262, 330, 392], "triangle", volume * 0.11, pan, pitch, 0.085, 1800);

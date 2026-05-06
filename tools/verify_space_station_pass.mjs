@@ -4,8 +4,8 @@ import { chromium } from "playwright";
 
 const OUTPUT_DIR = path.resolve("output/web-game/space-station-pass");
 const URL = process.env.LOE_VERIFY_URL ?? "http://127.0.0.1:4173/?renderer=canvas";
-const REPAIR_BUTTON = { x: 730, y: 512 };
-const LEAVE_BUTTON = { x: 858, y: 512 };
+const REPAIR_BUTTON = { x: 678, y: 546 };
+const LEAVE_BUTTON = { x: 948, y: 546 };
 
 function assert(condition, message) {
   if (!condition) {
@@ -209,8 +209,8 @@ try {
     `Station overlay is missing the repair summary: ${overlayOpenState.summaryText}`);
   assert(overlayOpenState.repairLabel.includes("Repair"),
     `Station overlay is missing the Repair option: ${overlayOpenState.repairLabel}`);
-  assert(overlayOpenState.leaveLabel.includes("Leave"),
-    `Station overlay is missing the Leave option: ${overlayOpenState.leaveLabel}`);
+  assert(overlayOpenState.leaveLabel.includes("Leave") || overlayOpenState.leaveLabel.includes("Depart"),
+    `Station overlay is missing the Leave/Depart option: ${overlayOpenState.leaveLabel}`);
   assert(overlayOpenState.buyLabel === "Buy" && overlayOpenState.sellLabel === "Sell",
     `Station overlay is missing Buy/Sell placeholders: ${JSON.stringify(overlayOpenState)}`);
 
@@ -251,7 +251,7 @@ try {
     };
   });
 
-  assert(overlayClosedState.visible === false, "Station overlay did not close after pressing Leave");
+  assert(overlayClosedState.visible === false, "Station overlay did not close after pressing Leave/Depart");
   assert(overlayClosedState.snapshot?.stationOverlayVisible === false,
     `Space debug snapshot still thinks the station overlay is visible: ${JSON.stringify(overlayClosedState.snapshot)}`);
 

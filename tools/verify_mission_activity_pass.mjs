@@ -27,6 +27,15 @@ const REMOVED_TEMP_IDS = [
   "test-resource-salvage",
   "test-travel-survey",
 ];
+const RACE_COLORS = {
+  olydran: 0xf0f5ff,
+  aaruian: 0x4f8dff,
+  elsari: 0x8a58ff,
+  nevari: 0x49a85c,
+  rakkan: 0xff9a3c,
+  svarin: 0xe4c83d,
+  ashari: 0xd74b56,
+};
 
 function assert(condition, message) {
   if (!condition) {
@@ -164,6 +173,9 @@ async function destroyActiveMissionTargetShips(page) {
       .split("|")
       .map((id) => id.trim())
       .filter(Boolean);
+    if (waypoint?.targetShipId && !ids.includes(waypoint.targetShipId)) {
+      ids.push(waypoint.targetShipId);
+    }
     ids.forEach((id) => {
       const activeShip = space?.factionShips?.find?.((ship) => ship.id === id);
       if (activeShip) {
@@ -190,20 +202,35 @@ async function seedEmpireHeldForeignZone(page) {
     if (!session || !galaxy || !war?.empireRaceId) {
       return null;
     }
+    const sectorRaceById = {
+      "olydran-expanse": "olydran",
+      "aaruian-reach": "aaruian",
+      "elsari-veil": "elsari",
+      "nevari-bloom": "nevari",
+      "rakkan-drift": "rakkan",
+      "svarin-span": "svarin",
+      "ashari-crown": "ashari",
+    };
     const zone = galaxy.zones.find((candidate) => (
       !candidate.isPrimeWorldZone
       && candidate.currentControllerId !== war.empireRaceId
+      && candidate.currentControllerId === sectorRaceById[candidate.coreSectorId ?? candidate.sectorId]
     ));
     if (!zone) {
       return null;
     }
-    const originalControllerId = zone.currentControllerId;
+    const originalControllerId = sectorRaceById[zone.coreSectorId ?? zone.sectorId] ?? zone.currentControllerId;
     zone.currentControllerId = war.empireRaceId;
     zone.zoneState = "stable";
     zone.zoneCaptureProgress = 0;
     zone.zoneConflictProgress = 0;
     zone.captureAttackerRaceId = null;
     session.setGalaxyDefinition(galaxy, true);
+    const space = window.__loeGame?.scene.keys.space;
+    if (space) {
+      space.galaxyDefinition = galaxy;
+      space.galaxyStateDirty = true;
+    }
     return { zoneId: zone.id, originalControllerId, empireRaceId: war.empireRaceId };
   });
 }
@@ -281,6 +308,31 @@ try {
   assert(state.activeMissionWaypoint === null, "Accepted but inactive mission should not show a waypoint");
   await capture(page, "accepted-not-course.png");
 
+  await page.evaluate(() => {
+    const session = window.__loeSession;
+    const state = session?.getMissionActivityState?.("test-chain-dispatch");
+    if (!session || !state) {
+      return;
+    }
+    session.setSelectedMission("test-chain-dispatch");
+    session.setMissionActivityState("test-chain-dispatch", {
+      ...state,
+      stepIndex: 2,
+      completedStepIds: ["chain-travel-start", "chain-briefing"],
+      flags: {},
+    }, true);
+    const space = window.__loeGame?.scene.keys.space;
+    space?.updateMissionActivity?.(1 / 60);
+    space?.refreshHud?.();
+  });
+  await completeCurrentComms(page);
+  state = await snapshot(page);
+  assert(state.cargo.some((item) => item?.tag === "mission-cargo:test-chain-dispatch"), "Linked delivery pickup should place a real package in inventory");
+  assert(state.activityState?.flags?.cargoItemId, `Linked delivery pickup should store cargo identity: ${JSON.stringify(state.activityState?.flags)}`);
+  await completeCurrentComms(page);
+  state = await snapshot(page);
+  assert(!state.cargo.some((item) => item?.tag === "mission-cargo:test-chain-dispatch"), "Linked delivery dropoff should remove the real package from inventory");
+
   await resetToSpace(page, "distress-smuggling", { source: "live-space" });
   await page.evaluate(() => {
     const space = window.__loeGame?.scene.keys.space;
@@ -343,6 +395,7 @@ try {
   assert(escort?.routeOriginLabel && escort?.routeDestinationLabel, `Escort transport missing real route labels: ${JSON.stringify(state.missionObjects)}`);
   assert(escort?.usesRealShipVisual, "Escort transport should use the real ship renderer");
   assert(escort?.factionId === "homeguard" && escort?.originRaceId && escort.originRaceId !== state.war?.empireRaceId, `Escort transport should use a real non-Empire race identity: ${JSON.stringify(escort)}`);
+  assert(escort?.color === RACE_COLORS[escort.originRaceId], `Escort transport color should match its race identity: ${JSON.stringify(escort)}`);
   assert(escort?.routeCheckpointCount >= 3, `Escort route should include internal checkpoints plus destination: ${JSON.stringify(escort)}`);
   assert(escort?.routeStarted, "Escort transport should begin moving after launch delay");
   await capture(page, "transport-started.png");
@@ -380,10 +433,36 @@ try {
   assert(!state.acceptedMissionIds.includes("distress-pirate-defense"), "Pirate defense should complete after real target ships are destroyed");
 
   await resetToSpace(page, "distress-neutral-empire-defense", { source: "live-space" });
+  const neutralDefenseZone = await seedEmpireHeldForeignZone(page);
+  assert(neutralDefenseZone, "Could not seed a real foreign Empire-held zone for neutral defense verification");
+  await page.evaluate((zoneId) => {
+    const session = window.__loeSession;
+    session?.grantLiveMission?.("distress-neutral-empire-defense");
+    session?.setSelectedMission?.("distress-neutral-empire-defense");
+    const state = session?.getMissionActivityState?.("distress-neutral-empire-defense");
+    if (session && state) {
+      session.setMissionActivityState("distress-neutral-empire-defense", {
+        ...state,
+        flags: {
+          ...state.flags,
+          targetZoneId: zoneId,
+        },
+      }, true);
+    }
+    const space = window.__loeGame?.scene.keys.space;
+    space?.updateMissionActivity?.(1 / 60);
+    space?.refreshHud?.();
+  }, neutralDefenseZone.zoneId);
   state = await snapshot(page);
   assert(state.activeMissionWaypoint?.targetShipId, `Neutral defense should target a real Empire ship: ${JSON.stringify(state)}`);
-  assert(state.missionTargetShips.length > 0, "Neutral defense should register target ship ids");
-  assert(state.missionTargetShips.every((ship) => ship.factionId === "empire" && ship.originRaceId), `Neutral defense targets should use this save's Empire identity: ${JSON.stringify(state.missionTargetShips)}`);
+  const neutralTargetShip = await page.evaluate((targetShipId) => {
+    const space = window.__loeGame?.scene.keys.space;
+    const activeShip = space?.factionShips?.find?.((ship) => ship.id === targetShipId);
+    const storedShip = space?.shipStates?.get?.(targetShipId);
+    const ship = activeShip ?? storedShip;
+    return ship ? { id: ship.id, factionId: ship.factionId, originRaceId: ship.originRaceId } : null;
+  }, state.activeMissionWaypoint.targetShipId);
+  assert(neutralTargetShip?.factionId === "empire" && neutralTargetShip?.originRaceId, `Neutral defense target should use this save's Empire identity: ${JSON.stringify(neutralTargetShip)}`);
   await destroyActiveMissionTargetShips(page);
   state = await snapshot(page);
   assert(!state.acceptedMissionIds.includes("distress-neutral-empire-defense"), "Neutral defense should complete after real Empire ships are destroyed");
@@ -430,7 +509,7 @@ try {
     const zone = window.__loeSession?.getGalaxyDefinition?.()?.zones?.find((candidate) => candidate.id === zoneId);
     return zone ? { id: zone.id, currentControllerId: zone.currentControllerId, zoneState: zone.zoneState } : null;
   }, seededZone.zoneId);
-  assert(zoneAfterReclaim?.currentControllerId === seededZone.originalControllerId, `Reclaim should restore original owner: ${JSON.stringify(zoneAfterReclaim)}`);
+  assert(zoneAfterReclaim?.currentControllerId !== seededZone.empireRaceId && zoneAfterReclaim?.zoneState === "stable", `Reclaim should restore the zone out of Empire control: ${JSON.stringify({ zoneAfterReclaim, seededZone })}`);
 
   const directZone = await page.evaluate(({ zoneId, empireRaceId }) => {
     const session = window.__loeSession;
@@ -469,6 +548,42 @@ try {
     return zone ? { id: zone.id, currentControllerId: zone.currentControllerId, zoneState: zone.zoneState } : null;
   }, directZone.zoneId);
   assert(directZoneAfter?.currentControllerId === directZone.originalControllerId, `Direct reclaim completion should restore original owner: ${JSON.stringify(directZoneAfter)}`);
+
+  const invalidDirectReclaim = await page.evaluate((zoneId) => {
+    const session = window.__loeSession;
+    const galaxy = session?.getGalaxyDefinition?.();
+    const zone = galaxy?.zones?.find((candidate) => candidate.id === zoneId);
+    if (!session || !galaxy || !zone) {
+      return null;
+    }
+    const controllerBefore = zone.currentControllerId;
+    session.acceptMission("world-zone-reclaim");
+    session.setMissionActivityState("world-zone-reclaim", {
+      stepIndex: 0,
+      completedStepIds: [],
+      flags: {
+        targetZoneId: zone.id,
+        reclaimZoneId: zone.id,
+      },
+    }, true);
+    session.markShipArrived("world-zone-reclaim");
+    const canDeploy = session.canDeployArrivedMission("world-zone-reclaim");
+    session.completeMission("world-zone-reclaim", {
+      missionId: "world-zone-reclaim",
+      xp: 1,
+      credits: 1,
+      materials: {},
+      items: [],
+    });
+    const zoneAfter = session.getGalaxyDefinition().zones.find((candidate) => candidate.id === zoneId);
+    return {
+      canDeploy,
+      controllerBefore,
+      controllerAfter: zoneAfter?.currentControllerId ?? null,
+    };
+  }, directZone.zoneId);
+  assert(invalidDirectReclaim?.canDeploy === false, `Direct reclaim should not deploy outside Empire-controlled zones: ${JSON.stringify(invalidDirectReclaim)}`);
+  assert(invalidDirectReclaim?.controllerAfter === invalidDirectReclaim?.controllerBefore, `Invalid direct reclaim should not change ownership: ${JSON.stringify(invalidDirectReclaim)}`);
 
   const result = {
     contractState,

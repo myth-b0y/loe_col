@@ -350,15 +350,15 @@ try {
   await page.evaluate(() => {
     window.localStorage.clear();
     window.__loeSession?.startNewGame?.(0);
-    window.__loeSession?.acceptMission?.("ember-watch");
-    window.__loeSession?.setSelectedMission?.("ember-watch");
+    window.__loeSession?.acceptMission?.("test-chain-dispatch");
+    window.__loeSession?.setSelectedMission?.("test-chain-dispatch");
     window.__loeGame?.scene.start("hub");
   });
 
   await waitForScene(page, "hub");
   await page.evaluate(() => {
     const hub = window.__loeGame?.scene.keys.hub;
-    hub?.launchIntoSpace?.("ember-watch");
+    hub?.launchIntoSpace?.("test-chain-dispatch");
   });
 
   await waitForScene(page, "space");
