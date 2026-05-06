@@ -15,6 +15,7 @@ import {
 import { getMissionContract, isGroundMissionContract } from "../content/missions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { gameSession } from "../core/session";
+import { retroSfx } from "../audio/retroSfx";
 import {
   createLightingRig,
   LIGHTING_PRESETS,
@@ -1556,6 +1557,7 @@ ${getCompanionRoleDisplay(companion)}`, {
       return;
     }
 
+    retroSfx.play("terminal-use", { volume: 0.62 });
     this.openStation(station.id);
   }
 
@@ -1721,6 +1723,9 @@ ${getCompanionRoleDisplay(companion)}`, {
   }
 
   private closePanel(): void {
+    if (this.panel?.visible) {
+      retroSfx.play("ui-datapad-close", { volume: 0.42 });
+    }
     this.panel?.setVisible(false);
     this.syncSceneOverlayChrome();
   }
@@ -1994,6 +1999,7 @@ ${getCompanionRoleDisplay(companion)}`, {
     }
 
     if (this.logbookOverlay?.isVisible()) {
+      retroSfx.play("ui-datapad-close", { volume: 0.48 });
       this.logbookOverlay.hide();
       return;
     }
@@ -2008,6 +2014,7 @@ ${getCompanionRoleDisplay(companion)}`, {
       || (tab === "map" && this.galaxyMapOverlay?.isVisible())
       || ((tab === "skills" || tab === "starship") && this.logbookOverlay?.isVisible())
     ) {
+      retroSfx.play("ui-datapad-close", { volume: 0.48 });
       this.closeCommandOverlays();
       this.syncSceneOverlayChrome();
       return;
@@ -2017,6 +2024,7 @@ ${getCompanionRoleDisplay(companion)}`, {
       this.closeDeployOverlay();
     }
     this.closeCommandOverlays();
+    retroSfx.play("ui-datapad-open", { volume: 0.56 });
 
     if (tab === "missions") {
       this.logbookOverlay?.show();

@@ -5157,6 +5157,7 @@ export class MissionScene extends Phaser.Scene {
     this.fireHeld = false;
     this.releaseMissionControls();
     if (this.logbookOverlay?.isVisible()) {
+      retroSfx.play("ui-datapad-close", { volume: 0.46 });
       this.logbookOverlay.hide();
       return;
     }
@@ -5168,6 +5169,7 @@ export class MissionScene extends Phaser.Scene {
     this.fireHeld = false;
     this.releaseMissionControls();
     if (this.inventoryOverlay?.isVisible()) {
+      retroSfx.play("ui-datapad-close", { volume: 0.46 });
       this.inventoryOverlay.hide();
       return;
     }
@@ -5182,6 +5184,7 @@ export class MissionScene extends Phaser.Scene {
       || (tab === "map" && this.galaxyMapOverlay?.isVisible())
       || ((tab === "skills" || tab === "starship") && this.logbookOverlay?.isVisible())
     ) {
+      retroSfx.play("ui-datapad-close", { volume: 0.46 });
       this.logbookOverlay?.hide();
       this.inventoryOverlay?.hide();
       this.galaxyMapOverlay?.hide();
@@ -5194,6 +5197,7 @@ export class MissionScene extends Phaser.Scene {
     this.logbookOverlay?.hide();
     this.inventoryOverlay?.hide();
     this.galaxyMapOverlay?.hide();
+    retroSfx.play("ui-datapad-open", { volume: 0.54 });
 
     if (tab === "missions") {
       this.logbookOverlay?.show();
@@ -5224,6 +5228,11 @@ export class MissionScene extends Phaser.Scene {
 
     this.fireHeld = false;
     this.releaseMissionControls();
+    const datapadWasVisible = Boolean(
+      this.logbookOverlay?.isVisible()
+      || this.inventoryOverlay?.isVisible()
+      || this.galaxyMapOverlay?.isVisible()
+    );
     if (this.logbookOverlay?.isVisible()) {
       this.logbookOverlay.hide();
     }
@@ -5232,6 +5241,9 @@ export class MissionScene extends Phaser.Scene {
     }
     if (this.galaxyMapOverlay?.isVisible()) {
       this.galaxyMapOverlay.hide();
+    }
+    if (datapadWasVisible) {
+      retroSfx.play("ui-datapad-close", { volume: 0.42 });
     }
 
     if (typeof document !== "undefined" && document.pointerLockElement) {

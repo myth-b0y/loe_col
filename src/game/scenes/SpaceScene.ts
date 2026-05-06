@@ -426,8 +426,8 @@ const NEUTRAL_WARNING_HIT_LIMIT = 5;
 const SALVAGE_WRECKAGE_LINGER_DISTANCE = 1700;
 const SPACE_AMBIENT_CUE_INTERVAL_MIN_MS = 4200;
 const SPACE_AMBIENT_CUE_INTERVAL_MAX_MS = 8200;
-const PLAYER_THRUSTER_CUE_INTERVAL_MS = 360;
-const NPC_THRUSTER_CUE_INTERVAL_MS = 1450;
+const PLAYER_THRUSTER_CUE_INTERVAL_MS = 230;
+const NPC_THRUSTER_CUE_INTERVAL_MS = 1280;
 const NPC_THRUSTER_AUDIO_RANGE = SHIP_RADAR_CONFIG.range * 0.92;
 const TOUCH_STICK_RADIUS = 72;
 const TOUCH_STICK_DEADZONE = 18;
@@ -3005,6 +3005,7 @@ export class SpaceScene extends Phaser.Scene {
       const station = this.getMissionCommsStation();
       if (station) {
         this.stationOverlayStationId = station.id;
+        retroSfx.play("station-channel-open", { volume: 0.58 });
         this.stationOverlay?.show(this.buildStationOverlayState(station));
         this.syncSceneOverlayChrome();
         return;
@@ -3013,6 +3014,7 @@ export class SpaceScene extends Phaser.Scene {
 
     if (step.targetHint === "prime-world") {
       this.stationOverlayStationId = null;
+      retroSfx.play("station-channel-open", { volume: 0.6, pitch: 1.04 });
       this.stationOverlay?.show(this.buildPrimeWorldOverlayState(waypoint?.label ?? "Prime World"));
       this.syncSceneOverlayChrome();
       return;
@@ -3029,6 +3031,7 @@ export class SpaceScene extends Phaser.Scene {
       continueLabel: "Continue",
     };
 
+    retroSfx.play("comms-open", { volume: 0.56 });
     this.commsOverlay?.show(state);
     this.syncSceneOverlayChrome();
   }
@@ -3181,6 +3184,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     this.pendingCommsMission = null;
+    retroSfx.play("comms-confirm", { volume: 0.58 });
     this.commsOverlay?.hide();
     this.stationOverlay?.hide();
     if (this.missionStepLoadsCargo(context.step)) {
@@ -5779,8 +5783,8 @@ export class SpaceScene extends Phaser.Scene {
       const speedFactor = Phaser.Math.Clamp(this.shipVelocity.length() / topSpeed, 0, 1);
       retroSfx.play("ship-thruster", {
         pan: 0,
-        pitch: this.hyperdrive.state === "active" ? 1.16 : 0.9 + speedFactor * 0.18,
-        volume: this.hyperdrive.state === "active" ? 0.26 : 0.16 + speedFactor * 0.12,
+        pitch: this.hyperdrive.state === "active" ? 1.04 : 0.92 + speedFactor * 0.08,
+        volume: this.hyperdrive.state === "active" ? 0.34 : 0.22 + speedFactor * 0.16,
       });
       this.playerThrusterCueTimerMs = PLAYER_THRUSTER_CUE_INTERVAL_MS;
     }
@@ -5813,7 +5817,7 @@ export class SpaceScene extends Phaser.Scene {
     retroSfx.play("npc-thruster", {
       pan: mix.pan,
       pitch: rolePitch + (hashStringToUnitInterval(`${nearest.id}:thruster`) - 0.5) * 0.08,
-      volume: 0.2 * mix.volume,
+      volume: 0.26 * mix.volume,
     });
   }
 
@@ -6861,6 +6865,7 @@ export class SpaceScene extends Phaser.Scene {
     missionObject.root.destroy(true);
     Phaser.Utils.Array.Remove(this.missionObjects, missionObject);
     this.spawnBurst(x, y, 0xffd2bc, missionObject.kind === "boss" ? 16 : 8, 90, 210);
+    this.playWorldCue("ship-explosion", x, y, missionObject.kind === "boss" ? 0.92 : 0.7, missionObject.kind === "boss" ? 0.88 : 1);
     if (missionObject.kind === "escort") {
       this.pushStatusMessage("Transport destroyed. Escort failed. Set course again to retry.", 8200);
       gameSession.setSelectedMission(null);
@@ -6924,7 +6929,7 @@ export class SpaceScene extends Phaser.Scene {
         : 160,
     );
 
-    this.playWorldCue("loot-burst", x, y, fieldObject.kind === "asteroid" ? (fieldObject.isLarge ? 0.92 : 0.86) : 0.64);
+    this.playWorldCue("asteroid-break", x, y, fieldObject.kind === "asteroid" ? (fieldObject.isLarge ? 0.92 : 0.78) : 0.58, fieldObject.isLarge ? 0.86 : 1);
   }
 
   private damageFactionShip(
@@ -7055,7 +7060,7 @@ export class SpaceScene extends Phaser.Scene {
     this.spawnExplosionRing(x, y, ship.radius * 0.7, palette.trimColor, palette.glowColor);
     this.spawnBurst(x, y, palette.color, ship.factionId === "pirate" ? 7 : 6, 100, 220);
 
-    this.playWorldCue("loot-burst", x, y, 0.76, ship.factionId === "pirate" ? 1.06 : 0.96);
+    this.playWorldCue("ship-explosion", x, y, ship.shipRole === "attack-warship" || ship.shipRole === "defense-warship" ? 0.92 : 0.72, ship.factionId === "pirate" ? 1.06 : 0.96);
   }
 
   private damagePlayerShip(amount: number, sourceFactionId: SpaceFactionId | null): void {
@@ -7097,6 +7102,7 @@ export class SpaceScene extends Phaser.Scene {
     this.contactText?.setText("Continue loads the latest save and returns you to the ship.");
     this.spawnExplosionRing(this.shipRoot.x, this.shipRoot.y, 24, 0xffe0bf, 0xff8f57);
     this.spawnBurst(this.shipRoot.x, this.shipRoot.y, 0x8ec7ff, 10, 120, 250);
+    retroSfx.play("ship-explosion", { volume: 0.9, pitch: 0.92 });
     this.time.delayedCall(260, () => {
       this.scene.start("game-over", {
         mode: "space",
@@ -7735,6 +7741,7 @@ export class SpaceScene extends Phaser.Scene {
     this.releaseTouchControls();
     this.stationOverlayStationId = stationInteraction.station.id;
     this.stationOverlayStatusText = "Station traffic is open. Buy and Sell will come online in a later pass.";
+    retroSfx.play("station-channel-open", { volume: 0.58 });
     this.stationOverlay?.show(this.buildStationOverlayState(stationInteraction.station));
     this.syncSceneOverlayChrome();
     return true;
@@ -7756,6 +7763,7 @@ export class SpaceScene extends Phaser.Scene {
     this.stationOverlayStatusText = this.primeAssistanceMissionId
       ? "Prime World command has an assistance request ready."
       : "Prime World command has no urgent assistance request right now.";
+    retroSfx.play("station-channel-open", { volume: 0.62, pitch: 1.04 });
     this.stationOverlay?.show(this.buildPrimeWorldOverlayState(interaction.planet.name));
     this.syncSceneOverlayChrome();
     return true;
@@ -8177,6 +8185,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private toggleLogbookOverlay(): void {
     if (this.logbookOverlay?.isVisible()) {
+      retroSfx.play("ui-datapad-close", { volume: 0.46 });
       this.logbookOverlay.hide();
       return;
     }
@@ -8191,6 +8200,7 @@ export class SpaceScene extends Phaser.Scene {
       || (tab === "map" && this.galaxyMapOverlay?.isVisible())
       || ((tab === "skills" || tab === "starship") && this.logbookOverlay?.isVisible())
     ) {
+      retroSfx.play("ui-datapad-close", { volume: 0.46 });
       this.closeCommandOverlays();
       return;
     }
@@ -8205,6 +8215,7 @@ export class SpaceScene extends Phaser.Scene {
     }
     this.releaseTouchControls();
     this.closeCommandOverlays();
+    retroSfx.play("ui-datapad-open", { volume: 0.54 });
 
     if (tab === "missions") {
       this.logbookOverlay?.show();

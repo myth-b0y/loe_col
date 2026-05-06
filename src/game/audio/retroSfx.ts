@@ -47,6 +47,14 @@ export type SfxCue =
   | "space-ambient-signal"
   | "ship-thruster"
   | "npc-thruster"
+  | "ui-datapad-open"
+  | "ui-datapad-close"
+  | "terminal-use"
+  | "comms-open"
+  | "comms-confirm"
+  | "station-channel-open"
+  | "ship-explosion"
+  | "asteroid-break"
   | "companion-revive";
 
 type CueOptions = {
@@ -129,8 +137,16 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "space-ambient": 5200,
   "space-ambient-drift": 4200,
   "space-ambient-signal": 5000,
-  "ship-thruster": 260,
-  "npc-thruster": 900,
+  "ship-thruster": 180,
+  "npc-thruster": 760,
+  "ui-datapad-open": 90,
+  "ui-datapad-close": 90,
+  "terminal-use": 130,
+  "comms-open": 180,
+  "comms-confirm": 120,
+  "station-channel-open": 220,
+  "ship-explosion": 90,
+  "asteroid-break": 75,
   "companion-revive": 140,
 };
 
@@ -369,13 +385,51 @@ class RetroSfxManager {
         this.noise(context, { duration: 0.34, volume: volume * 0.006, filterFreq: 880, filterType: "bandpass", pan, playbackRate: 0.74, startOffset: 0.12 });
         return;
       case "ship-thruster":
-        this.tone(context, { type: "sawtooth", startFreq: 92 * pitch, endFreq: 74 * pitch, duration: 0.24, volume: volume * 0.07, filterFreq: 700, pan });
-        this.tone(context, { type: "triangle", startFreq: 138 * pitch, endFreq: 116 * pitch, duration: 0.18, volume: volume * 0.035, filterFreq: 820, pan, startOffset: 0.015 });
-        this.noise(context, { duration: 0.16, volume: volume * 0.018, filterFreq: 520, filterType: "lowpass", pan, playbackRate: 0.58 });
+        this.noise(context, { attack: 0.045, duration: 0.62, volume: volume * 0.1, filterFreq: 430, filterType: "lowpass", pan, playbackRate: 0.42 });
+        this.noise(context, { attack: 0.035, duration: 0.44, volume: volume * 0.038, filterFreq: 980, filterType: "bandpass", pan, playbackRate: 0.72, startOffset: 0.02 });
+        this.tone(context, { attack: 0.05, type: "sine", startFreq: 54 * pitch, endFreq: 47 * pitch, duration: 0.58, volume: volume * 0.045, filterFreq: 260, pan });
         return;
       case "npc-thruster":
-        this.tone(context, { type: "sawtooth", startFreq: 82 * pitch, endFreq: 68 * pitch, duration: 0.28, volume: volume * 0.052, filterFreq: 560, pan });
-        this.noise(context, { duration: 0.2, volume: volume * 0.012, filterFreq: 420, filterType: "lowpass", pan, playbackRate: 0.5 });
+        this.noise(context, { attack: 0.04, duration: 0.52, volume: volume * 0.075, filterFreq: 390, filterType: "lowpass", pan, playbackRate: 0.38 });
+        this.noise(context, { attack: 0.03, duration: 0.34, volume: volume * 0.024, filterFreq: 820, filterType: "bandpass", pan, playbackRate: 0.64, startOffset: 0.02 });
+        this.tone(context, { attack: 0.045, type: "sine", startFreq: 46 * pitch, endFreq: 42 * pitch, duration: 0.48, volume: volume * 0.032, filterFreq: 220, pan });
+        return;
+      case "ui-datapad-open":
+        this.noise(context, { duration: 0.08, volume: volume * 0.022, filterFreq: 1800, filterType: "bandpass", pan, playbackRate: 1.18 });
+        this.playArpeggio(context, [196, 247], "triangle", volume * 0.055, pan, pitch, 0.05, 1600);
+        return;
+      case "ui-datapad-close":
+        this.noise(context, { duration: 0.07, volume: volume * 0.018, filterFreq: 1400, filterType: "bandpass", pan, playbackRate: 0.92 });
+        this.tone(context, { type: "triangle", startFreq: 220 * pitch, endFreq: 140 * pitch, duration: 0.1, volume: volume * 0.05, filterFreq: 1100, pan });
+        return;
+      case "terminal-use":
+        this.noise(context, { duration: 0.09, volume: volume * 0.028, filterFreq: 1150, filterType: "bandpass", pan, playbackRate: 0.78 });
+        this.tone(context, { type: "sawtooth", startFreq: 116 * pitch, endFreq: 92 * pitch, duration: 0.14, volume: volume * 0.062, filterFreq: 720, pan });
+        this.tone(context, { type: "triangle", startFreq: 330 * pitch, endFreq: 294 * pitch, duration: 0.07, volume: volume * 0.035, filterFreq: 1600, pan, startOffset: 0.055 });
+        return;
+      case "comms-open":
+        this.noise(context, { duration: 0.16, volume: volume * 0.03, filterFreq: 920, filterType: "bandpass", pan, playbackRate: 0.58 });
+        this.tone(context, { type: "sine", startFreq: 180 * pitch, endFreq: 150 * pitch, duration: 0.28, volume: volume * 0.06, filterFreq: 650, pan });
+        this.noise(context, { duration: 0.08, volume: volume * 0.01, filterFreq: 2100, filterType: "highpass", pan, playbackRate: 1.2, startOffset: 0.04 });
+        return;
+      case "comms-confirm":
+        this.noise(context, { duration: 0.06, volume: volume * 0.018, filterFreq: 1450, filterType: "bandpass", pan, playbackRate: 1.05 });
+        this.playArpeggio(context, [247, 330], "triangle", volume * 0.052, pan, pitch, 0.045, 1700);
+        return;
+      case "station-channel-open":
+        this.noise(context, { attack: 0.02, duration: 0.24, volume: volume * 0.04, filterFreq: 560, filterType: "lowpass", pan, playbackRate: 0.46 });
+        this.tone(context, { type: "sawtooth", startFreq: 94 * pitch, endFreq: 78 * pitch, duration: 0.24, volume: volume * 0.05, filterFreq: 520, pan });
+        this.playArpeggio(context, [164, 220], "triangle", volume * 0.03, pan, pitch, 0.07, 1200);
+        return;
+      case "ship-explosion":
+        this.noise(context, { attack: 0.003, duration: 0.38, volume: volume * 0.12, filterFreq: 520, filterType: "lowpass", pan, playbackRate: 0.46 });
+        this.noise(context, { duration: 0.13, volume: volume * 0.08, filterFreq: 1200, filterType: "bandpass", pan, playbackRate: 0.72 });
+        this.tone(context, { type: "sawtooth", startFreq: 112 * pitch, endFreq: 42 * pitch, duration: 0.42, volume: volume * 0.13, filterFreq: 580, pan });
+        return;
+      case "asteroid-break":
+        this.noise(context, { attack: 0.002, duration: 0.24, volume: volume * 0.1, filterFreq: 720, filterType: "bandpass", pan, playbackRate: 0.58 });
+        this.noise(context, { duration: 0.3, volume: volume * 0.08, filterFreq: 360, filterType: "lowpass", pan, playbackRate: 0.44 });
+        this.tone(context, { type: "triangle", startFreq: 86 * pitch, endFreq: 50 * pitch, duration: 0.22, volume: volume * 0.07, filterFreq: 420, pan });
         return;
       case "companion-revive":
         this.playArpeggio(context, [262, 330, 392], "triangle", volume * 0.11, pan, pitch, 0.085, 1800);
