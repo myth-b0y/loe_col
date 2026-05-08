@@ -278,6 +278,8 @@ const COMPANION_BAR_SPACING = 108;
 const PLAYER_BUFF_ROW_Y = 160;
 const COMPANION_HUD_START_Y = 196;
 const HEX_DEBUFF_DURATION = 2.2;
+const GROUND_AMBIENT_INTERVAL_MIN_MS = 4200;
+const GROUND_AMBIENT_INTERVAL_MAX_MS = 7600;
 const COVER_INSET = 4;
 const PICKUP_RARITY_COLORS: Record<PickupVisualRarity, number> = {
   Common: 0x63d77b,
@@ -424,6 +426,7 @@ export class MissionScene extends Phaser.Scene {
   private galaxyMapOverlay?: GalaxyMapOverlay;
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
   private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
+  private groundAmbientCueTimerMs = 1500;
 
   private aimLine!: Phaser.GameObjects.Graphics;
   private reticle!: Phaser.GameObjects.Arc;
@@ -474,6 +477,7 @@ export class MissionScene extends Phaser.Scene {
   create(): void {
     this.touchCapable = this.sys.game.device.input.touch;
     this.touchMode = gameSession.shouldUseTouchUi(this.touchCapable);
+    this.groundAmbientCueTimerMs = 1500;
     this.cameras.main.setBackgroundColor("#050911");
     this.brightnessLayer = createBrightnessLayer(this, {
       ambientAlpha: 0.16,
@@ -548,6 +552,7 @@ export class MissionScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
+    this.updateGroundAmbientSoundscape(delta);
     if (this.isMenuOverlayVisible()) {
       this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
       if (this.hudRefreshCooldown <= 0) {
@@ -596,6 +601,24 @@ export class MissionScene extends Phaser.Scene {
       this.updateHudState();
       this.hudRefreshCooldown = 0.1;
     }
+  }
+
+  private updateGroundAmbientSoundscape(deltaMs: number): void {
+    this.groundAmbientCueTimerMs -= deltaMs;
+    if (this.groundAmbientCueTimerMs > 0) {
+      return;
+    }
+
+    this.groundAmbientCueTimerMs = Phaser.Math.Between(
+      GROUND_AMBIENT_INTERVAL_MIN_MS,
+      GROUND_AMBIENT_INTERVAL_MAX_MS,
+    );
+    const cue = Math.random() < 0.68 ? "ground-ambient" : "ground-ambient-rumble";
+    retroSfx.play(cue, {
+      pan: Phaser.Math.FloatBetween(-0.16, 0.16),
+      pitch: Phaser.Math.FloatBetween(0.95, 1.06),
+      volume: cue === "ground-ambient-rumble" ? 0.16 : 0.18,
+    });
   }
 
   private resetMissionRuntime(): void {

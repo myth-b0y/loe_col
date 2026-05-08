@@ -424,11 +424,8 @@ const PLAYER_TARGET_LOCK_RANGE = 980;
 const MENU_FIRE_SUPPRESS_MS = 180;
 const NEUTRAL_WARNING_HIT_LIMIT = 5;
 const SALVAGE_WRECKAGE_LINGER_DISTANCE = 1700;
-const SPACE_AMBIENT_CUE_INTERVAL_MIN_MS = 4200;
-const SPACE_AMBIENT_CUE_INTERVAL_MAX_MS = 8200;
-const PLAYER_THRUSTER_CUE_INTERVAL_MS = 230;
-const NPC_THRUSTER_CUE_INTERVAL_MS = 1280;
-const NPC_THRUSTER_AUDIO_RANGE = SHIP_RADAR_CONFIG.range * 0.92;
+const SPACE_AMBIENT_CUE_INTERVAL_MIN_MS = 3400;
+const SPACE_AMBIENT_CUE_INTERVAL_MAX_MS = 6800;
 const TOUCH_STICK_RADIUS = 72;
 const TOUCH_STICK_DEADZONE = 18;
 const HUD_REFRESH_INTERVAL_MS = 120;
@@ -663,8 +660,7 @@ export class SpaceScene extends Phaser.Scene {
   private neutralWarningHits = new Map<string, number>();
   private fireInputSuppressUntilMs = 0;
   private ambientSpaceCueTimerMs = 2400;
-  private playerThrusterCueTimerMs = 0;
-  private npcThrusterCueTimerMs = 900;
+  private announcedReadyReclaimZoneIds = new Set<string>();
   private activeFieldCellKeys: SpaceWorldCellKey[] = [];
   private activeShipCellKeys: SpaceWorldCellKey[] = [];
   private routeMissionId: string | null = null;
@@ -849,8 +845,7 @@ export class SpaceScene extends Phaser.Scene {
     this.neutralWarningHits.clear();
     this.fireInputSuppressUntilMs = 0;
     this.ambientSpaceCueTimerMs = 2400;
-    this.playerThrusterCueTimerMs = 0;
-    this.npcThrusterCueTimerMs = 700 + Math.random() * 700;
+    this.announcedReadyReclaimZoneIds.clear();
 
     this.cameras.main.setBackgroundColor("#040810");
     this.input.mouse?.disableContextMenu();
@@ -938,7 +933,7 @@ export class SpaceScene extends Phaser.Scene {
     this.reassertActiveMissionZoneState();
     this.updateForceProduction(delta);
     this.updateFactionShips(dt);
-    this.updateThrusterAudio(delta);
+    this.updateAutoReclaimReadiness();
     this.resolveFactionShipCollisions();
     this.updateProjectiles(dt);
     this.updateBurstParticles(dt);
@@ -2576,6 +2571,48 @@ export class SpaceScene extends Phaser.Scene {
     });
   }
 
+  private isFactionShipAlive(ship: Pick<SpaceFactionShip, "id" | "hp">): boolean {
+    const state = this.shipStates.get(ship.id);
+    return ship.hp > 0 && (!state || (!state.destroyed && state.hp > 0));
+  }
+
+  private getActiveFactionShipCountInZoneSystem(
+    zone: GalaxyZoneRecord,
+    factionId: SpaceFactionId,
+    radius = 1320,
+  ): number {
+    const system = this.galaxySystemsById.get(zone.systemId);
+    if (!system) {
+      return 0;
+    }
+
+    return this.factionShips.filter((ship) => {
+      if (ship.factionId !== factionId || !this.isFactionShipAlive(ship)) {
+        return false;
+      }
+
+      if (ship.assignmentZoneId === zone.id || ship.originZoneId === zone.id || ship.originSystemId === system.id) {
+        return true;
+      }
+
+      const assignedZone = this.getAssignedZoneForShip(ship);
+      if (assignedZone?.id === zone.id || assignedZone?.systemId === system.id) {
+        return true;
+      }
+
+      return Phaser.Math.Distance.Between(ship.root.x, ship.root.y, system.x, system.y) <= radius;
+    }).length;
+  }
+
+  private isZoneReadyForDirectReclaim(zone: GalaxyZoneRecord): boolean {
+    const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId ?? null;
+    if (!coreRaceId || coreRaceId === this.warState.empireRaceId || zone.currentControllerId !== this.warState.empireRaceId) {
+      return false;
+    }
+
+    return !this.hasHostileShipsInZone(zone);
+  }
+
   private hasActiveMissionZoneHostiles(
     missionId: string,
     contract: NonNullable<ReturnType<typeof getMissionContract>>,
@@ -2996,6 +3033,16 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     if (context.step.type === "zone") {
+      const zone = this.getMissionTargetZone(context.missionId, context.step);
+      if (zone && this.isZoneReadyForDirectReclaim(zone)) {
+        const landingTarget = this.getDirectReclaimLandingTargetForZone(zone);
+        if (landingTarget) {
+          return false;
+        }
+
+        this.pushStatusMessage(`${zone.name} is clear. Land on a local world to begin the reclaim operation.`, 5600);
+        return true;
+      }
       if (this.hasActiveMissionZoneHostiles(context.missionId, context.contract, context.step)) {
         this.pushStatusMessage("Clear the real hostile ships before stabilizing this zone.", 4800);
         return true;
@@ -4542,37 +4589,37 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private createHud(): void {
-    this.add.rectangle(236, 100, 412, 140, 0x07111d, 0.84)
+    this.add.rectangle(236, 104, 412, 156, 0x07111d, 0.84)
       .setStrokeStyle(2, 0x365983, 0.72)
       .setScrollFactor(0)
       .setDepth(50);
 
-    this.add.text(38, 34, "SPACE TEST FIELD", {
+    this.add.rectangle(GAME_WIDTH - 164, 104, 260, 168, 0x07111d, 0.84)
+      .setStrokeStyle(2, 0x365983, 0.72)
+      .setScrollFactor(0)
+      .setDepth(50);
+
+    this.routeText = this.add.text(38, 32, "", {
       fontFamily: "Arial",
-      fontSize: "22px",
-      color: "#f3fbff",
+      fontSize: "18px",
+      color: "#edf7ff",
       fontStyle: "bold",
+      wordWrap: { width: 386 },
     }).setScrollFactor(0).setDepth(51);
 
-    this.routeText = this.add.text(38, 64, "", {
+    this.statusText = this.add.text(38, 60, "", {
       fontFamily: "Arial",
-      fontSize: "15px",
-      color: "#8fd4ff",
-      wordWrap: { width: 376 },
+      fontSize: "13px",
+      color: "#9ecaf1",
+      wordWrap: { width: 386 },
     }).setScrollFactor(0).setDepth(51);
 
-    this.statusText = this.add.text(38, 90, "", {
-      fontFamily: "Arial",
-      fontSize: "14px",
-      color: "#d7eaff",
-      wordWrap: { width: 376 },
-    }).setScrollFactor(0).setDepth(51);
-
-    this.contactText = this.add.text(38, 114, "", {
+    this.contactText = this.add.text(38, 106, "", {
       fontFamily: "Arial",
       fontSize: "13px",
       color: "#c8def9",
-      wordWrap: { width: 376 },
+      lineSpacing: 3,
+      wordWrap: { width: 386 },
     }).setScrollFactor(0).setDepth(51);
 
     this.radarEventText = this.add.text(GAME_WIDTH * 0.5, 164, "", {
@@ -4586,14 +4633,14 @@ export class SpaceScene extends Phaser.Scene {
       lineSpacing: 4,
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.coordinateText = this.add.text(GAME_WIDTH - 34, 92, "", {
+    this.coordinateText = this.add.text(GAME_WIDTH - 280, 34, "", {
       fontFamily: "Arial",
-      fontSize: "14px",
+      fontSize: "13px",
       color: "#eef7ff",
-      align: "right",
-      backgroundColor: "#09131fcc",
-      padding: { x: 10, y: 8 },
-    }).setOrigin(1, 0).setScrollFactor(0).setDepth(51);
+      align: "left",
+      lineSpacing: 3,
+      wordWrap: { width: 236 },
+    }).setOrigin(0, 0).setScrollFactor(0).setDepth(51);
 
     this.waypointArrow = this.add.triangle(GAME_WIDTH * 0.5, 124, 0, 18, 13, -12, -13, -12, 0xffc56e, 0.96)
       .setStrokeStyle(2, 0xfff1cf, 0.86)
@@ -5776,65 +5823,17 @@ export class SpaceScene extends Phaser.Scene {
 
     this.ambientSpaceCueTimerMs = randomBetween(SPACE_AMBIENT_CUE_INTERVAL_MIN_MS, SPACE_AMBIENT_CUE_INTERVAL_MAX_MS);
     const roll = Math.random();
-    const cue = roll < 0.44
+    const cue = roll < 0.32
       ? "space-ambient"
-      : roll < 0.78
+      : roll < 0.6
+        ? "space-ambient-hum"
+        : roll < 0.84
         ? "space-ambient-drift"
         : "space-ambient-signal";
     retroSfx.play(cue, {
-      pan: randomBetween(-0.34, 0.34),
-      pitch: randomBetween(0.86, 1.14),
-      volume: cue === "space-ambient-signal" ? 0.18 : 0.24,
-    });
-  }
-
-  private updateThrusterAudio(deltaMs: number): void {
-    this.playerThrusterCueTimerMs -= deltaMs;
-    if (
-      this.playerThrusterCueTimerMs <= 0
-      && !this.playerDestroyed
-      && (this.thrusting || this.hyperdrive.state === "active")
-      && this.shipVelocity.lengthSq() > 900
-    ) {
-      const topSpeed = this.hyperdrive.state === "active" ? this.playerHyperdriveMaxSpeed : this.playerMaxSpeed;
-      const speedFactor = Phaser.Math.Clamp(this.shipVelocity.length() / topSpeed, 0, 1);
-      retroSfx.play("ship-thruster", {
-        pan: 0,
-        pitch: this.hyperdrive.state === "active" ? 1.04 : 0.92 + speedFactor * 0.08,
-        volume: this.hyperdrive.state === "active" ? 0.34 : 0.22 + speedFactor * 0.16,
-      });
-      this.playerThrusterCueTimerMs = PLAYER_THRUSTER_CUE_INTERVAL_MS;
-    }
-
-    this.npcThrusterCueTimerMs -= deltaMs;
-    if (this.npcThrusterCueTimerMs > 0) {
-      return;
-    }
-    this.npcThrusterCueTimerMs = NPC_THRUSTER_CUE_INTERVAL_MS + Math.random() * 620;
-
-    const movingShips = this.factionShips
-      .filter((ship) => ship.velocity.lengthSq() > 1600)
-      .map((ship) => ({
-        ship,
-        distance: Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y),
-      }))
-      .filter(({ distance }) => distance <= NPC_THRUSTER_AUDIO_RANGE)
-      .sort((left, right) => left.distance - right.distance);
-    const nearest = movingShips[0]?.ship;
-    if (!nearest) {
-      return;
-    }
-
-    const mix = this.getWorldAudioMix(nearest.root.x, nearest.root.y, NPC_THRUSTER_AUDIO_RANGE);
-    if (!mix) {
-      return;
-    }
-
-    const rolePitch = nearest.shipRole === "attack-warship" || nearest.shipRole === "defense-warship" ? 0.82 : 1;
-    retroSfx.play("npc-thruster", {
-      pan: mix.pan,
-      pitch: rolePitch + (hashStringToUnitInterval(`${nearest.id}:thruster`) - 0.5) * 0.08,
-      volume: 0.26 * mix.volume,
+      pan: randomBetween(-0.28, 0.28),
+      pitch: randomBetween(0.9, 1.1),
+      volume: cue === "space-ambient-signal" ? 0.16 : cue === "space-ambient-hum" ? 0.28 : 0.24,
     });
   }
 
@@ -7230,11 +7229,19 @@ export class SpaceScene extends Phaser.Scene {
     const missionWaypoint = this.activeMissionWaypoint;
     const trackedMissionId = missionWaypoint?.missionId ?? missionPlanet?.missionId ?? this.getActiveCourseMissionId();
     const trackedMission = trackedMissionId ? getMissionContract(trackedMissionId) : null;
+    const sectorLabel = getGalaxySectorDisplayLabel(this.getCurrentGalaxySector(), this.warState);
+    const currentZone = this.getCurrentGalaxyZone();
+    const zoneLabel = currentZone?.name ?? (this.currentRegionIsDeepSpace ? "Deep Space" : "Open Sector");
+    const zoneControllerLabel = currentZone
+      ? getGalaxyControllerDisplayLabel(currentZone.currentControllerId, this.warState, currentZone.coreSectorId)
+      : null;
     const localCounts = this.getFactionCounts(1400);
     const localBreakables = this.countNearbyBreakables(1200);
     const speed = Math.round(this.shipVelocity.length());
     const hyperdriveStatus = this.getHyperdriveStatusLabel();
     const hyperdriveHint = this.getHyperdriveHintLabel();
+    const shipStats = gameSession.getShipStats().total;
+    const shipSystems = gameSession.getShipSystemsState();
     const planetDistance = missionPlanet
       ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionPlanet.x, missionPlanet.y)
       : null;
@@ -7245,6 +7252,15 @@ export class SpaceScene extends Phaser.Scene {
     const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, planetDistance);
     const directReclaimTarget = landingReady ? null : this.getDirectReclaimLandingTarget();
     const directReclaimReady = Boolean(directReclaimTarget);
+    const activeZoneContext = this.getActiveMissionStepContext();
+    const activeZone = activeZoneContext?.step.type === "zone"
+      ? this.getMissionTargetZone(activeZoneContext.missionId, activeZoneContext.step)
+      : null;
+    const reclaimReadyZone = activeZone && this.isZoneReadyForDirectReclaim(activeZone)
+      ? activeZone
+      : currentZone && this.isZoneReadyForDirectReclaim(currentZone)
+        ? currentZone
+        : null;
     const missionActionReady = Boolean(
       missionWaypoint
       && missionWaypoint.actionLabel
@@ -7277,7 +7293,9 @@ export class SpaceScene extends Phaser.Scene {
     const stationStatus = landingReady
       ? `Mission world ${missionPlanet?.name ?? "target"} | Press F to land`
       : directReclaimTarget
-        ? `Enemy-held system ${directReclaimTarget.zone.name} | Press F to land and reclaim`
+        ? `${directReclaimTarget.zone.name} clear | Press F to land on ${directReclaimTarget.planet.name}`
+      : reclaimReadyZone
+        ? `${reclaimReadyZone.name} clear | Move to a local world and press F to reclaim`
       : missionActionReady
         ? `${missionWaypoint?.label ?? "Mission target"} | Press F to ${missionWaypoint?.actionLabel?.toLowerCase() ?? "interact"}`
       : stationInteraction
@@ -7305,18 +7323,32 @@ export class SpaceScene extends Phaser.Scene {
         : primeWorldInteraction?.inRange
           ? "Comms"
         : "Interact";
+    const waypointStatus = missionWaypoint || missionPlanet
+      ? `Waypoint ${missionWaypoint?.label ?? missionPlanet?.name ?? "target"}  |  Dist ${Math.round(missionDistance ?? 0)}${landingReady ? "  |  Landing ready" : missionActionReady ? "  |  Interaction ready" : ""}`
+      : "Waypoint none set";
+    const localContactSummary = `Contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guards ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
 
     this.routeText?.setText(trackedMission
-      ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
-      : `Free roam launch  |  Region: ${regionLabel}`);
-    this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${this.playerMaxHull}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady || directReclaimReady ? "  |  Landing ready" : ""}`);
-    const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guardians ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
-    this.contactText?.setText(missionWaypoint || missionPlanet
-      ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionWaypoint?.label ?? missionPlanet?.name ?? "target"} ${landingReady ? "| Landing window open." : missionActionReady ? "| Interaction ready." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
-      : `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}\n${stationStatus}`);
-    this.coordinateText?.setText(missionWaypoint || missionPlanet
-      ? `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nTARGET ${missionWaypoint?.label ?? missionPlanet?.name ?? "Mission"}  X ${Math.round(missionWaypoint?.x ?? missionPlanet?.x ?? 0)}  Y ${Math.round(missionWaypoint?.y ?? missionPlanet?.y ?? 0)}\nDIST ${Math.round(missionDistance ?? 0)}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : `REGION ${regionLabel}`}\nHYPER ${hyperdriveStatus}`
-      : `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}\nREGION ${regionLabel}\n${stationInteraction ? `STATION ${stationInteraction.station.name}  ${Math.round(stationInteraction.distance)}` : "STATION none nearby"}\nHYPER ${hyperdriveStatus}`);
+      ? `Active Course: ${trackedMission.title}`
+      : `Sector: ${sectorLabel}`);
+    this.statusText?.setText(
+      `Sector ${sectorLabel}  |  Zone ${zoneLabel}${zoneControllerLabel ? `  |  Control ${zoneControllerLabel}` : ""}\n`
+      + `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}  |  Region ${regionLabel}`,
+    );
+    this.contactText?.setText(
+      `${waypointStatus}\n`
+      + `${stationStatus}\n`
+      + `${localContactSummary}  |  Nearby hostiles ${playerHostiles}  |  Debris ${localBreakables}\n`
+      + `Target ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`,
+    );
+    this.coordinateText?.setText(
+      `HULL ${Math.max(0, this.playerHull)}/${this.playerMaxHull}  |  FRAME ${shipSystems.hull.integrity}%\n`
+      + `SHIELDS ${Math.round(shipStats.shields)}  |  DEF ${Math.round(shipStats.defense)}\n`
+      + `THRUSTERS ${shipSystems.engines.integrity}% ${shipSystems.engines.online ? "ONLINE" : "OFFLINE"}\n`
+      + `REACTOR ${Math.round(shipStats.reactorEnergy)}  |  REGEN ${Math.round(shipStats.reactorRegen)}/s\n`
+      + `HYPERDRIVE ${hyperdriveStatus}\n`
+      + `SPEED ${speed}  |  BOOST ${Math.round(shipStats.boostEfficiency)}`,
+    );
     this.returnButton?.setLabel("Return To Ship");
     this.attackButton?.setLabel("Attack");
     this.attackButton?.setCooldownProgress(0);
@@ -7503,6 +7535,39 @@ export class SpaceScene extends Phaser.Scene {
 
   private getCurrentRegionLabel(): string {
     return this.currentRegionLabel;
+  }
+
+  private getCurrentGalaxyZone(): GalaxyZoneRecord | null {
+    if (this.currentRegionIsDeepSpace) {
+      return null;
+    }
+
+    const sectorZones = this.galaxyDefinition.zones.filter((zone) => zone.sectorId === this.currentSector.id);
+    const containingZone = sectorZones.find((zone) => {
+      if (zone.territoryPoints.length < 3) {
+        return false;
+      }
+      const polygon = new Phaser.Geom.Polygon(zone.territoryPoints.flatMap((point) => [point.x, point.y]));
+      return Phaser.Geom.Polygon.Contains(polygon, this.shipRoot.x, this.shipRoot.y);
+    });
+    if (containingZone) {
+      return containingZone;
+    }
+
+    let nearestZone: GalaxyZoneRecord | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    sectorZones.forEach((zone) => {
+      const system = this.galaxySystemsById.get(zone.systemId);
+      if (!system) {
+        return;
+      }
+      const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, system.x, system.y);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestZone = zone;
+      }
+    });
+    return nearestZone;
   }
 
   private getTrackedMissionPlanet(): GalaxyMissionPlanet | null {
@@ -7974,36 +8039,82 @@ export class SpaceScene extends Phaser.Scene {
     );
   }
 
+  private getDirectReclaimLandingTargetForZone(
+    zone: GalaxyZoneRecord,
+    orbitTimeMs = this.getOrbitTimeMs(),
+  ): { planet: GalaxyPlanetRecord; zone: GalaxyZoneRecord; x: number; y: number; distance: number } | null {
+    if (!this.isZoneReadyForDirectReclaim(zone)) {
+      return null;
+    }
+
+    let nearest: { planet: GalaxyPlanetRecord; zone: GalaxyZoneRecord; x: number; y: number; distance: number } | null = null;
+    this.galaxyDefinition.planets
+      .filter((planet) => planet.systemId === zone.systemId)
+      .forEach((planet) => {
+        const position = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, planet, orbitTimeMs);
+        const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, position.x, position.y);
+        if (distance > planet.radius + MISSION_LANDING_RANGE_BUFFER || (nearest && distance >= nearest.distance)) {
+          return;
+        }
+        nearest = { planet, zone, x: position.x, y: position.y, distance };
+      });
+
+    return nearest;
+  }
+
   private getDirectReclaimLandingTarget(): { planet: GalaxyPlanetRecord; zone: GalaxyZoneRecord; x: number; y: number; distance: number } | null {
     const orbitTimeMs = this.getOrbitTimeMs();
     let nearest: { planet: GalaxyPlanetRecord; zone: GalaxyZoneRecord; x: number; y: number; distance: number } | null = null;
 
     this.galaxyDefinition.zones.forEach((zone) => {
-      const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId ?? null;
-      if (!coreRaceId || coreRaceId === this.warState.empireRaceId || zone.currentControllerId !== this.warState.empireRaceId) {
-        return;
+      const candidate = this.getDirectReclaimLandingTargetForZone(zone, orbitTimeMs);
+      if (candidate && (!nearest || candidate.distance < nearest.distance)) {
+        nearest = candidate;
       }
-      if (this.hasHostileShipsInZone(zone)) {
-        return;
-      }
-
-      this.galaxyDefinition.planets
-        .filter((planet) => planet.systemId === zone.systemId)
-        .forEach((planet) => {
-          const position = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, planet, orbitTimeMs);
-          const distance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, position.x, position.y);
-          if (distance > planet.radius + MISSION_LANDING_RANGE_BUFFER || (nearest && distance >= nearest.distance)) {
-            return;
-          }
-          nearest = { planet, zone, x: position.x, y: position.y, distance };
-        });
     });
 
     return nearest;
   }
 
   private hasHostileShipsInZone(zone: GalaxyZoneRecord): boolean {
-    return this.hasActiveFactionShipsNearZone(zone, "empire", 1900);
+    return this.getActiveFactionShipCountInZoneSystem(zone, "empire") > 0;
+  }
+
+  private updateAutoReclaimReadiness(): void {
+    const activeZoneContext = this.getActiveMissionStepContext();
+    const watchedZones: GalaxyZoneRecord[] = [];
+    if (activeZoneContext?.step.type === "zone") {
+      const targetZone = this.getMissionTargetZone(activeZoneContext.missionId, activeZoneContext.step);
+      if (targetZone) {
+        watchedZones.push(targetZone);
+      }
+    }
+
+    const localZone = this.getCurrentGalaxyZone();
+    if (localZone && !watchedZones.some((zone) => zone.id === localZone.id)) {
+      watchedZones.push(localZone);
+    }
+
+    const readyZoneIds = new Set<string>();
+    watchedZones.forEach((zone) => {
+      if (!this.isZoneReadyForDirectReclaim(zone)) {
+        return;
+      }
+
+      readyZoneIds.add(zone.id);
+      if (this.announcedReadyReclaimZoneIds.has(zone.id)) {
+        return;
+      }
+
+      this.announcedReadyReclaimZoneIds.add(zone.id);
+      this.pushStatusMessage(`${zone.name} is clear. Land on a local world to begin reclaim.`, 6200);
+    });
+
+    [...this.announcedReadyReclaimZoneIds].forEach((zoneId) => {
+      if (!readyZoneIds.has(zoneId)) {
+        this.announcedReadyReclaimZoneIds.delete(zoneId);
+      }
+    });
   }
 
   private updateMissionPlanetVisuals(missionPlanet: GalaxyMissionPlanet | null, landingReady: boolean): void {
@@ -8117,6 +8228,14 @@ export class SpaceScene extends Phaser.Scene {
       return false;
     }
 
+    const activeZoneContext = this.getActiveMissionStepContext();
+    const sourceMissionId = activeZoneContext?.step.type === "zone"
+      && this.getMissionTargetZone(activeZoneContext.missionId, activeZoneContext.step)?.id === target.zone.id
+      ? activeZoneContext.missionId
+      : "";
+    const sourceStepId = sourceMissionId && activeZoneContext?.step.type === "zone"
+      ? activeZoneContext.step.id
+      : "";
     const missionId = "world-zone-reclaim";
     gameSession.acceptMission(missionId);
     gameSession.setMissionActivityState(missionId, {
@@ -8126,6 +8245,8 @@ export class SpaceScene extends Phaser.Scene {
         targetZoneId: target.zone.id,
         reclaimZoneId: target.zone.id,
         targetPlanetId: target.planet.id,
+        sourceMissionId,
+        sourceStepId,
       },
     }, true);
     gameSession.setSelectedMission(missionId);
@@ -8344,6 +8465,8 @@ export class SpaceScene extends Phaser.Scene {
     const activeFactionCounts = this.getFactionCounts();
     const worldFactionCounts = this.getRemainingWorldFactionCounts();
     const nearestStation = this.getNearestStationInteraction();
+    const currentZone = this.getCurrentGalaxyZone();
+    const directReclaimTarget = this.getDirectReclaimLandingTarget();
     const nearestFieldObjects = [...this.asteroids]
       .sort((left, right) => {
         const leftDistance = Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, left.root.x, left.root.y);
@@ -8417,6 +8540,14 @@ export class SpaceScene extends Phaser.Scene {
       sector: getGalaxySectorDisplayLabel(this.getCurrentGalaxySector(), this.warState),
       region: this.getCurrentRegionLabel(),
       isDeepSpace: this.currentRegionIsDeepSpace,
+      currentZone: currentZone
+        ? {
+            id: currentZone.id,
+            name: currentZone.name,
+            currentControllerId: currentZone.currentControllerId,
+            coreSectorId: currentZone.coreSectorId,
+          }
+        : null,
       playerRaceId: gameSession.getPlayerRaceId(),
       war: {
         empireRaceId: this.warState.empireRaceId,
@@ -8526,6 +8657,16 @@ export class SpaceScene extends Phaser.Scene {
         escortCheckpointPendingWave: runtime.escortCheckpointPendingWave,
       }])),
       landingReady: this.canLandOnTrackedMissionPlanet(),
+      directReclaimReady: Boolean(directReclaimTarget),
+      directReclaimTarget: directReclaimTarget
+        ? {
+            zoneId: directReclaimTarget.zone.id,
+            zoneName: directReclaimTarget.zone.name,
+            planetId: directReclaimTarget.planet.id,
+            planetName: directReclaimTarget.planet.name,
+            distance: Math.round(directReclaimTarget.distance),
+          }
+        : null,
       nearestStation: nearestStation
         ? {
             id: nearestStation.station.id,

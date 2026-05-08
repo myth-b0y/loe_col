@@ -2051,6 +2051,32 @@ export class GameSession extends Phaser.Events.EventEmitter {
     zone.captureAttackerRaceId = null;
     this.saveData.war = normalizeFactionWarState(this.saveData.war, this.saveData.galaxy);
     this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
+
+    if (missionId === "world-zone-reclaim") {
+      const sourceMissionId = typeof state?.flags.sourceMissionId === "string" && state.flags.sourceMissionId.length > 0
+        ? state.flags.sourceMissionId
+        : null;
+      const sourceStepId = typeof state?.flags.sourceStepId === "string" && state.flags.sourceStepId.length > 0
+        ? state.flags.sourceStepId
+        : null;
+      if (sourceMissionId && sourceStepId) {
+        const sourceContract = getMissionContract(sourceMissionId);
+        const sourceState = this.saveData.missions.activityStates[sourceMissionId];
+        if (sourceContract && sourceState && !sourceState.completedStepIds.includes(sourceStepId)) {
+          const nextState = this.advanceMissionActivityStep(sourceMissionId, sourceStepId);
+          if (nextState.stepIndex >= sourceContract.activities.length) {
+            this.saveData.missions.acceptedMissionIds = this.saveData.missions.acceptedMissionIds.filter((acceptedId) => acceptedId !== sourceMissionId);
+            if (this.saveData.missions.selectedMissionId === sourceMissionId) {
+              this.saveData.missions.selectedMissionId = null;
+            }
+            if (sourceContract.source.kind !== "terminal") {
+              this.saveData.missions.liveGrantedMissionIds = this.saveData.missions.liveGrantedMissionIds.filter((grantedId) => grantedId !== sourceMissionId);
+            }
+            delete this.saveData.missions.activityStates[sourceMissionId];
+          }
+        }
+      }
+    }
   }
 
   private emitShipTravelChanged(): void {

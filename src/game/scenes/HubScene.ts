@@ -126,6 +126,8 @@ const HUB_CREW_ANCHORS = [
 const HUB_SPEED = 250;
 const STICK_RADIUS = 72;
 const STICK_DEADZONE = 18;
+const SHIP_INTERIOR_AMBIENT_INTERVAL_MIN_MS = 5400;
+const SHIP_INTERIOR_AMBIENT_INTERVAL_MAX_MS = 9200;
 
 function getShortFormationLabel(slotId: FormationSlotId | null): string {
   switch (slotId) {
@@ -306,6 +308,7 @@ export class HubScene extends Phaser.Scene {
   private stickBase?: Phaser.GameObjects.Arc;
   private stickKnob?: Phaser.GameObjects.Arc;
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
+  private interiorAmbientCueTimerMs = 1800;
 
   constructor() {
     super("hub");
@@ -316,6 +319,7 @@ export class HubScene extends Phaser.Scene {
     this.spaceLaunching = false;
     this.currentInteraction = null;
     this.movePointerId = null;
+    this.interiorAmbientCueTimerMs = 1800;
     this.touchUiObjects = [];
     this.ambientLights = [];
     this.hubShadowCasters = [];
@@ -373,6 +377,7 @@ export class HubScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
+    this.updateShipInteriorAmbient(delta);
     this.updateKeyboardVector();
     this.updateMovement(dt);
     this.updateCrew(dt);
@@ -380,6 +385,23 @@ export class HubScene extends Phaser.Scene {
     this.updateInteractionTarget();
     this.updatePrompt();
     this.updateHubLighting();
+  }
+
+  private updateShipInteriorAmbient(deltaMs: number): void {
+    this.interiorAmbientCueTimerMs -= deltaMs;
+    if (this.interiorAmbientCueTimerMs > 0) {
+      return;
+    }
+
+    this.interiorAmbientCueTimerMs = Phaser.Math.Between(
+      SHIP_INTERIOR_AMBIENT_INTERVAL_MIN_MS,
+      SHIP_INTERIOR_AMBIENT_INTERVAL_MAX_MS,
+    );
+    retroSfx.play("ship-interior-ambient", {
+      pan: Phaser.Math.FloatBetween(-0.12, 0.12),
+      pitch: Phaser.Math.FloatBetween(0.94, 1.06),
+      volume: 0.2,
+    });
   }
 
   private drawBackdrop(): void {
