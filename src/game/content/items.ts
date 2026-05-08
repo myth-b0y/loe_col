@@ -1,3 +1,12 @@
+import {
+  LEVEL_ONE_KNIGHT_CHARACTER_STATS,
+  resolveCharacterStats,
+  summarizeCharacterStats,
+  type CharacterStatModifierBlock,
+  type ResolvedCharacterStats,
+  type StatModifierSource,
+} from "./stats";
+
 export type RaceId = "olydran" | "rakkan" | "nevari" | "elsari" | "svarin" | "ashari" | "aaruian";
 
 export type EquipmentSlotId =
@@ -631,6 +640,28 @@ export function summarizeItemStats(stats: ItemStatBlock): string[] {
     .map(([key, value]) => `+${value} ${ITEM_STAT_LABELS[key as ItemStatKey]}`);
 }
 
+export function summarizeRealItemStatEffects(stats: ItemStatBlock): string[] {
+  const modifiers = itemStatsToCharacterModifiers(stats);
+  const entries: Array<[string, number]> = [
+    ["Health", modifiers.health ?? 0],
+    ["Shield", modifiers.shield ?? 0],
+    ["Defense", modifiers.defense ?? 0],
+    ["Resonance", modifiers.resonance ?? 0],
+    ["Regen", modifiers.resonanceRegen ?? 0],
+    ["Power", modifiers.power ?? 0],
+    ["Crit", modifiers.critChance ?? 0],
+    ["Crit Dmg", modifiers.critDamage ?? 0],
+    ["Cooldown", modifiers.cooldownReduction ?? 0],
+    ["Move", modifiers.moveSpeed ?? 0],
+    ["Healing", modifiers.healingPower ?? 0],
+  ];
+  const parts = entries
+    .filter(([, value]) => value > 0)
+    .slice(0, 5)
+    .map(([label, value]) => `+${Number.isInteger(value) ? value : value.toFixed(1)} ${label}`);
+  return parts.length > 0 ? [`Real stats: ${parts.join(", ")}`] : [];
+}
+
 export function describeInventoryItem(item: InventoryItem | null | undefined): string[] {
   if (!item) {
     return [];
@@ -651,6 +682,7 @@ export function describeInventoryItem(item: InventoryItem | null | undefined): s
   return [
     `${item.rarity} ${getSlotLabel(item.slot)}`,
     ...summarizeItemStats(item.stats),
+    ...summarizeRealItemStatEffects(item.stats),
     ...item.perks.map((perk) => `${perk.label}: ${perk.description}`),
   ];
 }
@@ -666,69 +698,121 @@ export function countSetPieces(loadout: EquipmentLoadout, setId: string): number
   }, 0);
 }
 
-export function calculatePlayerCombatProfile(loadout: EquipmentLoadout): PlayerCombatProfile {
-  const stats = ALL_EQUIPMENT_SLOT_IDS.reduce<ItemStatBlock>((accumulator, slotId) => {
-    const item = loadout[slotId];
-    if (!item) {
-      return accumulator;
-    }
-
-    Object.entries(item.stats).forEach(([key, value]) => {
-      const statKey = key as ItemStatKey;
-      accumulator[statKey] = (accumulator[statKey] ?? 0) + (value ?? 0);
-    });
-
-    return accumulator;
-  }, {});
-
-  const setPieces = countSetPieces(loadout, LEGENDARY_SET_ID);
-  const activeSetBonuses: string[] = [];
-  let bonusVitality = 0;
-  let bonusPowerFactor = 0;
-  let bonusAbilityFactor = 0;
-
-  if (setPieces >= 2) {
-    activeSetBonuses.push(LEGENDARY_SET_BONUS_LABELS[2]);
-    bonusVitality += 18;
-  }
-  if (setPieces >= 3) {
-    activeSetBonuses.push(LEGENDARY_SET_BONUS_LABELS[3]);
-    bonusPowerFactor += 0.1;
-    bonusAbilityFactor += 0.12;
-  }
-
-  const vitality = (stats.vitality ?? 0) + bonusVitality;
+export function itemStatsToCharacterModifiers(stats: ItemStatBlock): CharacterStatModifierBlock {
+  const vitality = stats.vitality ?? 0;
   const power = stats.power ?? 0;
   const focus = stats.focus ?? 0;
   const guard = stats.guard ?? 0;
-  const shieldCapacityStat = stats.shieldCapacity ?? 0;
+  const shieldCapacity = stats.shieldCapacity ?? 0;
   const shieldRecovery = stats.shieldRecovery ?? 0;
   const haste = stats.haste ?? 0;
 
-  const powerFactor = 1 + power * 0.045 + bonusPowerFactor;
-  const hasteFactor = 1 + haste * 0.014;
-  const abilityFactor = 1 + focus * 0.018 + haste * 0.006 + bonusAbilityFactor;
-  const shieldCapacity = shieldCapacityStat > 0 ? Math.round(shieldCapacityStat * 4.6) : 0;
-  const shieldRecoveryRate = shieldCapacity > 0
-    ? Math.round(10 + shieldRecovery * 2.5 + shieldCapacity * 0.08)
+  return {
+    health: vitality * 6,
+    shield: shieldCapacity * 4.6 + shieldRecovery * 0.9,
+    defense: guard,
+    resonance: focus * 2,
+    resonanceRegen: focus * 0.18 + shieldRecovery * 0.34,
+    power,
+    critChance: power * 0.16 + focus * 0.08,
+    critDamage: power * 0.55,
+    cooldownReduction: focus * 0.34 + haste * 0.28,
+    moveSpeed: haste * 1.2,
+    healingPower: focus * 0.36 + shieldRecovery * 0.2,
+  };
+}
+
+export function getEquipmentCharacterStatModifiers(loadout: EquipmentLoadout): StatModifierSource[] {
+  const modifiers: StatModifierSource[] = [];
+
+  ALL_EQUIPMENT_SLOT_IDS.forEach((slotId) => {
+    const item = loadout[slotId];
+    if (!item) {
+      return;
+    }
+
+    modifiers.push({
+      id: item.instanceId,
+      label: item.name,
+      sourceType: "equipment",
+      character: itemStatsToCharacterModifiers(item.stats),
+      tags: [item.rarity.toLowerCase(), item.category, item.slot, item.raceTag],
+    });
+  });
+
+  const setPieces = countSetPieces(loadout, LEGENDARY_SET_ID);
+  if (setPieces >= 2) {
+    modifiers.push({
+      id: `${LEGENDARY_SET_ID}-2-piece`,
+      label: LEGENDARY_SET_BONUS_LABELS[2],
+      sourceType: "equipment",
+      character: {
+        health: 18 * 6,
+        shield: 12,
+        defense: 4,
+      },
+      tags: ["legendary-set", LEGENDARY_SET_ID],
+    });
+  }
+  if (setPieces >= 3) {
+    modifiers.push({
+      id: `${LEGENDARY_SET_ID}-3-piece`,
+      label: LEGENDARY_SET_BONUS_LABELS[3],
+      sourceType: "equipment",
+      character: {
+        power: 5,
+        cooldownReduction: 8,
+        critDamage: 10,
+      },
+      tags: ["legendary-set", LEGENDARY_SET_ID],
+    });
+  }
+
+  return modifiers;
+}
+
+export function calculatePlayerCharacterStats(loadout: EquipmentLoadout): ResolvedCharacterStats {
+  return resolveCharacterStats(LEVEL_ONE_KNIGHT_CHARACTER_STATS, getEquipmentCharacterStatModifiers(loadout));
+}
+
+export function summarizePlayerCharacterStats(loadout: EquipmentLoadout): string[] {
+  return summarizeCharacterStats(calculatePlayerCharacterStats(loadout), "Player");
+}
+
+export function calculatePlayerCombatProfile(loadout: EquipmentLoadout): PlayerCombatProfile {
+  const characterStats = calculatePlayerCharacterStats(loadout);
+  const stats = characterStats.total;
+  const setPieces = countSetPieces(loadout, LEGENDARY_SET_ID);
+  const activeSetBonuses: string[] = [];
+  if (setPieces >= 2) {
+    activeSetBonuses.push(LEGENDARY_SET_BONUS_LABELS[2]);
+  }
+  if (setPieces >= 3) {
+    activeSetBonuses.push(LEGENDARY_SET_BONUS_LABELS[3]);
+  }
+
+  const cooldownFactor = 1 + stats.cooldownReduction / 100;
+  const moveSpeedMultiplier = stats.moveSpeed / 100;
+  const shieldRecoveryRate = stats.shield > 0
+    ? Math.round(8 + stats.resonanceRegen * 2 + stats.shield * 0.06)
     : 0;
-  const companionShieldCapacity = shieldCapacity > 0 ? Math.round(shieldCapacity * 0.62) : 0;
+  const companionShieldCapacity = stats.shield > 0 ? Math.round(stats.shield * 0.42) : 0;
   const companionShieldRecoveryRate = companionShieldCapacity > 0
-    ? Math.max(8, Math.round(shieldRecoveryRate * 0.68))
+    ? Math.max(8, Math.round(shieldRecoveryRate * 0.64))
     : 0;
 
   return {
-    maxHp: 100 + vitality * 6,
-    primaryFireDamage: Math.round(12 * powerFactor + power * 0.4),
-    primaryFireCooldown: Math.max(0.09, 0.16 / hasteFactor),
-    pulseDamage: Math.round(28 * powerFactor + power * 0.8),
-    arcDamage: Math.round(40 * powerFactor + power * 1.1),
-    moveSpeedMultiplier: 1 + haste * 0.012,
-    abilityCooldownMultiplier: abilityFactor,
-    guardMitigation: Math.min(0.34, guard * 0.018),
-    shieldCapacity,
+    maxHp: Math.round(stats.health),
+    primaryFireDamage: Math.round(8 + stats.power * 0.75 + stats.critChance * 0.08),
+    primaryFireCooldown: Math.max(0.09, 0.16 / Math.max(0.6, cooldownFactor)),
+    pulseDamage: Math.round(14 + stats.power * 1.2 + stats.critDamage * 0.06),
+    arcDamage: Math.round(20 + stats.power * 1.45 + stats.resonance * 0.05),
+    moveSpeedMultiplier,
+    abilityCooldownMultiplier: cooldownFactor,
+    guardMitigation: Math.min(0.42, stats.defense * 0.012),
+    shieldCapacity: Math.round(stats.shield),
     shieldRecoveryRate,
-    shieldRegenDelay: shieldCapacity > 0 ? Math.max(1.75, 3.25 - shieldRecovery * 0.07) : 3.25,
+    shieldRegenDelay: stats.shield > 0 ? Math.max(1.6, 3.25 - stats.resonanceRegen * 0.08) : 3.25,
     companionShieldCapacity,
     companionShieldRecoveryRate,
     activeSetBonuses,

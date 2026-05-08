@@ -673,6 +673,11 @@ export class SpaceScene extends Phaser.Scene {
   private destroyedObjects = 0;
   private destroyedFactionShips = 0;
   private playerHull = PLAYER_MAX_HULL;
+  private playerMaxHull = PLAYER_MAX_HULL;
+  private playerAcceleration = PLAYER_ACCELERATION;
+  private playerMaxSpeed = PLAYER_MAX_SPEED;
+  private playerHyperdriveMaxSpeed = PLAYER_HYPERDRIVE_MAX_SPEED;
+  private playerDamage = PLAYER_DAMAGE;
   private playerFlash = 0;
   private hyperdrive: ShipHyperdriveSystemState = createShipHyperdriveSystemState();
   private hyperdriveCountdownValue = 0;
@@ -810,6 +815,7 @@ export class SpaceScene extends Phaser.Scene {
     this.activeShipCellKeys = [];
     this.destroyedObjects = 0;
     this.destroyedFactionShips = 0;
+    this.syncPlayerShipStatsFromSession();
     this.restorePlayerHullFromSession();
     this.playerFlash = 0;
     this.hyperdrive = createShipHyperdriveSystemState();
@@ -1292,16 +1298,27 @@ export class SpaceScene extends Phaser.Scene {
     return Phaser.Math.Clamp(hullSystem.integrity, 0, 100);
   }
 
+  private syncPlayerShipStatsFromSession(): void {
+    const stats = gameSession.getShipStats().total;
+    const speedFactor = Phaser.Math.Clamp(stats.speed / 100, 0.65, 1.5);
+    const boostFactor = Phaser.Math.Clamp(stats.boostEfficiency / 100, 0.7, 1.4);
+    this.playerMaxHull = Math.max(4, Math.round(stats.hull / 16));
+    this.playerAcceleration = PLAYER_ACCELERATION * speedFactor;
+    this.playerMaxSpeed = PLAYER_MAX_SPEED * speedFactor;
+    this.playerHyperdriveMaxSpeed = getShipHyperdriveTopSpeed(this.playerMaxSpeed * boostFactor, SHIP_HYPERDRIVE_CONFIG);
+    this.playerDamage = Math.max(1, Math.round(stats.weaponPower / 20));
+  }
+
   private getPlayerHullFromSession(): number {
     return Phaser.Math.Clamp(
-      Math.round((this.getSessionHullIntegrity() / 100) * PLAYER_MAX_HULL),
+      Math.round((this.getSessionHullIntegrity() / 100) * this.playerMaxHull),
       0,
-      PLAYER_MAX_HULL,
+      this.playerMaxHull,
     );
   }
 
   private syncPlayerHullToSession(): void {
-    const integrity = Phaser.Math.Clamp(Math.round((Math.max(0, this.playerHull) / PLAYER_MAX_HULL) * 100), 0, 100);
+    const integrity = Phaser.Math.Clamp(Math.round((Math.max(0, this.playerHull) / this.playerMaxHull) * 100), 0, 100);
     gameSession.setShipSystemIntegrity("hull", integrity);
     gameSession.setShipSystemOnline("hull", integrity > 0);
   }
@@ -5095,7 +5112,7 @@ export class SpaceScene extends Phaser.Scene {
     this.hyperdrive.lastDisengageReason = "Hyperdrive engaged.";
     this.hyperdriveCountdownValue = 0;
     this.fireHeld = false;
-    this.shipVelocity.copy(lockedDirection.scale(PLAYER_HYPERDRIVE_MAX_SPEED));
+    this.shipVelocity.copy(lockedDirection.scale(this.playerHyperdriveMaxSpeed));
     retroSfx.play("hyperdrive-engage", {
       volume: 0.9,
       pitch: 1.02,
@@ -5109,7 +5126,7 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     const lockedDirection = this.getLockedHyperdriveDirection();
-    const recoverySpeed = PLAYER_MAX_SPEED * SHIP_HYPERDRIVE_CONFIG.postDropSpeedMultiplier;
+    const recoverySpeed = this.playerMaxSpeed * SHIP_HYPERDRIVE_CONFIG.postDropSpeedMultiplier;
     this.hyperdrive.state = "cooldown";
     this.hyperdrive.chargeElapsedMs = 0;
     this.hyperdrive.cooldownRemainingMs = SHIP_HYPERDRIVE_CONFIG.cooldownDurationMs;
@@ -5118,7 +5135,7 @@ export class SpaceScene extends Phaser.Scene {
     this.fireHeld = false;
 
     if (lockedDirection.lengthSq() > 0.001) {
-      const preservedSpeed = Math.max(recoverySpeed, Math.min(this.shipVelocity.length(), PLAYER_HYPERDRIVE_MAX_SPEED));
+      const preservedSpeed = Math.max(recoverySpeed, Math.min(this.shipVelocity.length(), this.playerHyperdriveMaxSpeed));
       this.shipVelocity.copy(lockedDirection.scale(preservedSpeed));
     }
 
@@ -5233,13 +5250,13 @@ export class SpaceScene extends Phaser.Scene {
       const lockedDirection = this.getLockedHyperdriveDirection();
       this.thrusting = true;
       this.moveDirection.copy(lockedDirection);
-      this.shipVelocity.copy(lockedDirection.scale(PLAYER_HYPERDRIVE_MAX_SPEED));
+      this.shipVelocity.copy(lockedDirection.scale(this.playerHyperdriveMaxSpeed));
     } else {
       this.thrusting = this.moveDirection.lengthSq() > 0;
       if (this.thrusting) {
         this.moveDirection.normalize();
-        this.shipVelocity.x += this.moveDirection.x * PLAYER_ACCELERATION * dt;
-        this.shipVelocity.y += this.moveDirection.y * PLAYER_ACCELERATION * dt;
+        this.shipVelocity.x += this.moveDirection.x * this.playerAcceleration * dt;
+        this.shipVelocity.y += this.moveDirection.y * this.playerAcceleration * dt;
         this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_THRUST_DRAG * dt)));
       } else {
         this.shipVelocity.scale(Math.max(0, 1 - (PLAYER_COAST_DRAG * dt)));
@@ -5250,16 +5267,16 @@ export class SpaceScene extends Phaser.Scene {
       }
     }
 
-    let maxSpeed = PLAYER_MAX_SPEED;
+    let maxSpeed = this.playerMaxSpeed;
     if (hyperdriveActive) {
-      maxSpeed = PLAYER_HYPERDRIVE_MAX_SPEED;
+      maxSpeed = this.playerHyperdriveMaxSpeed;
     } else if (this.hyperdrive.exitBlendRemainingMs > 0) {
       const blendProgress = Phaser.Math.Clamp(
         this.hyperdrive.exitBlendRemainingMs / SHIP_HYPERDRIVE_CONFIG.exitBlendDurationMs,
         0,
         1,
       );
-      maxSpeed = Phaser.Math.Linear(PLAYER_MAX_SPEED, PLAYER_HYPERDRIVE_MAX_SPEED, blendProgress);
+      maxSpeed = Phaser.Math.Linear(this.playerMaxSpeed, this.playerHyperdriveMaxSpeed, blendProgress);
     }
 
     if (this.shipVelocity.length() > maxSpeed) {
@@ -5282,7 +5299,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private updatePlayerVisuals(): void {
-    const activeTopSpeed = this.hyperdrive.state === "active" ? PLAYER_HYPERDRIVE_MAX_SPEED : PLAYER_MAX_SPEED;
+    const activeTopSpeed = this.hyperdrive.state === "active" ? this.playerHyperdriveMaxSpeed : this.playerMaxSpeed;
     const speedPulse = Phaser.Math.Clamp(this.shipVelocity.length() / activeTopSpeed, 0, 1);
     if (this.hyperdrive.state === "active") {
       this.shipThruster.setFillStyle(0xfff0b0, 0.92);
@@ -5663,7 +5680,7 @@ export class SpaceScene extends Phaser.Scene {
 
     const playerInSupportRange = ship.factionId === "republic"
       && !this.playerDestroyed
-      && this.playerHull < PLAYER_MAX_HULL
+      && this.playerHull < this.playerMaxHull
       && Phaser.Math.Distance.Between(ship.root.x, ship.root.y, this.shipRoot.x, this.shipRoot.y) <= roleProfile.supportRepairRange;
 
     const repairTarget = this.factionShips
@@ -5680,10 +5697,10 @@ export class SpaceScene extends Phaser.Scene {
       .sort((left, right) => (left.hp / Math.max(1, left.maxHp)) - (right.hp / Math.max(1, right.maxHp)))[0];
     const playerNeedsHelpMore = playerInSupportRange && (
       !repairTarget
-      || (this.playerHull / PLAYER_MAX_HULL) <= (repairTarget.hp / Math.max(1, repairTarget.maxHp))
+      || (this.playerHull / this.playerMaxHull) <= (repairTarget.hp / Math.max(1, repairTarget.maxHp))
     );
     if (playerNeedsHelpMore) {
-      this.playerHull = Math.min(PLAYER_MAX_HULL, this.playerHull + roleProfile.supportRepairAmount);
+      this.playerHull = Math.min(this.playerMaxHull, this.playerHull + roleProfile.supportRepairAmount);
       this.syncPlayerHullToSession();
       this.playerFlash = Math.max(this.playerFlash, 0.26);
       ship.supportRepairCooldown = roleProfile.supportRepairCooldownMs / 1000;
@@ -5779,7 +5796,7 @@ export class SpaceScene extends Phaser.Scene {
       && (this.thrusting || this.hyperdrive.state === "active")
       && this.shipVelocity.lengthSq() > 900
     ) {
-      const topSpeed = this.hyperdrive.state === "active" ? PLAYER_HYPERDRIVE_MAX_SPEED : PLAYER_MAX_SPEED;
+      const topSpeed = this.hyperdrive.state === "active" ? this.playerHyperdriveMaxSpeed : this.playerMaxSpeed;
       const speedFactor = Phaser.Math.Clamp(this.shipVelocity.length() / topSpeed, 0, 1);
       retroSfx.play("ship-thruster", {
         pan: 0,
@@ -5949,7 +5966,7 @@ export class SpaceScene extends Phaser.Scene {
       velocity,
       life: PLAYER_PROJECTILE_LIFETIME,
       radius: 4,
-      damage: PLAYER_DAMAGE,
+      damage: this.playerDamage,
       canHitPlayer: false,
     });
 
@@ -7292,7 +7309,7 @@ export class SpaceScene extends Phaser.Scene {
     this.routeText?.setText(trackedMission
       ? `Route staged: ${trackedMission.title}  |  Region: ${regionLabel}`
       : `Free roam launch  |  Region: ${regionLabel}`);
-    this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${PLAYER_MAX_HULL}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady || directReclaimReady ? "  |  Landing ready" : ""}`);
+    this.statusText?.setText(`Hull ${Math.max(0, this.playerHull)}/${this.playerMaxHull}  |  Speed ${speed}  |  Hyper ${hyperdriveStatus}  |  Nearby hostiles ${playerHostiles}  |  Nearby debris ${localBreakables}${landingReady || directReclaimReady ? "  |  Landing ready" : ""}`);
     const localContactSummary = `Local contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guardians ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
     this.contactText?.setText(missionWaypoint || missionPlanet
       ? `${localContactSummary}\nTarget ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}  |  Waypoint ${missionWaypoint?.label ?? missionPlanet?.name ?? "target"} ${landingReady ? "| Landing window open." : missionActionReady ? "| Interaction ready." : `| Dist ${Math.round(missionDistance ?? 0)}`}\n${stationStatus}`
@@ -8439,7 +8456,7 @@ export class SpaceScene extends Phaser.Scene {
         cooldownRemainingMs: Math.round(this.hyperdrive.cooldownRemainingMs),
         cooldownDurationMs: SHIP_HYPERDRIVE_CONFIG.cooldownDurationMs,
         exitBlendRemainingMs: Math.round(this.hyperdrive.exitBlendRemainingMs),
-        maxSpeed: PLAYER_HYPERDRIVE_MAX_SPEED,
+        maxSpeed: Math.round(this.playerHyperdriveMaxSpeed),
         lockedDirection: {
           x: Number(this.hyperdrive.lockedDirectionX.toFixed(3)),
           y: Number(this.hyperdrive.lockedDirectionY.toFixed(3)),
@@ -8448,7 +8465,7 @@ export class SpaceScene extends Phaser.Scene {
       },
       playerHull: {
         current: Math.max(0, this.playerHull),
-        max: PLAYER_MAX_HULL,
+        max: this.playerMaxHull,
       },
       ship: {
         x: Math.round(this.shipRoot.x),

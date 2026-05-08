@@ -50,6 +50,7 @@ import {
   addItemToCargoSlots,
   addCraftingMaterials,
   canItemEquipToSlot,
+  calculatePlayerCharacterStats,
   calculatePlayerCombatProfile,
   cloneCargoSlots,
   cloneCraftingMaterials,
@@ -67,6 +68,22 @@ import {
   type PlayerCombatProfile,
   type RaceId,
 } from "../content/items";
+import {
+  createDefaultShipComponentLoadout,
+  normalizeShipComponentLoadout,
+  resolveCompanionStats,
+  resolveShipStats,
+  summarizeCharacterStatDeltas,
+  summarizeCharacterStats,
+  summarizeShipComponents,
+  summarizeShipStats,
+  type ResolvedCharacterStats,
+  type ResolvedShipStats,
+  type ShipComponentLoadout,
+  type ShipComponentRecord,
+  type ShipComponentSlotId,
+  type StatModifierSource,
+} from "../content/stats";
 import { type MissionRewardBundle } from "../content/loot";
 import {
   createDefaultMissionActivityState,
@@ -123,6 +140,7 @@ export type ShipStorageState = {
 export type ShipState = {
   travel: ShipTravelState;
   systems: ShipSystemsState;
+  components: ShipComponentLoadout;
   repair: ShipRepairState;
   storage: ShipStorageState;
   spacePosition: ShipSpacePosition;
@@ -252,6 +270,7 @@ function createDefaultShipState(raceId?: RaceId, galaxy?: GalaxyDefinition): Shi
       lastArrivalAt: null,
     },
     systems: createDefaultShipSystemsState(),
+    components: createDefaultShipComponentLoadout(),
     repair: {
       lastInspectionAt: null,
       lastRepairAt: null,
@@ -336,7 +355,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 12;
+  version: 13;
   meta: {
     lastSavedAt: string | null;
   };
@@ -501,7 +520,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
   const galaxy = createGalaxyDefinition(galaxySeed);
   const war = createFactionWarState(galaxy);
   return {
-    version: 12,
+    version: 13,
     meta: {
       lastSavedAt: null,
     },
@@ -630,7 +649,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 12 as const,
+    version: 13 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -662,6 +681,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...parsed.ship,
       travel: normalizeShipTravelState(parsed.ship?.travel),
       systems: normalizeShipSystemsState(parsed.ship?.systems as Partial<Record<ShipSystemId, Partial<ShipSystemState>>> | undefined),
+      components: normalizeShipComponentLoadout(parsed.ship?.components as Partial<Record<ShipComponentSlotId, Partial<ShipComponentRecord> | null>> | undefined),
       repair: normalizeShipRepairState(parsed.ship?.repair),
       storage: {
         cargo: normalizeCargoSlots(parsed.ship?.storage?.cargo, DEFAULT_SHIP_STORAGE_SLOT_COUNT),
@@ -1109,6 +1129,44 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return clone(this.saveData.ship.systems);
   }
 
+  getShipComponentLoadout(): ShipComponentLoadout {
+    return clone(this.saveData.ship.components);
+  }
+
+  getShipStats(): ResolvedShipStats {
+    return resolveShipStats(this.saveData.ship.components);
+  }
+
+  getShipCoreStatSummary(): string[] {
+    return summarizeShipStats(this.getShipStats(), "Starship");
+  }
+
+  getShipComponentSummary(): string[] {
+    return summarizeShipComponents(this.saveData.ship.components);
+  }
+
+  getShipStatSummary(): string[] {
+    return [
+      ...this.getShipCoreStatSummary(),
+      "",
+      ...this.getShipComponentSummary(),
+    ];
+  }
+
+  installShipComponent(slotId: ShipComponentSlotId, component: ShipComponentRecord | null): boolean {
+    if (!(slotId in this.saveData.ship.components)) {
+      return false;
+    }
+
+    if (component && component.slot !== slotId) {
+      return false;
+    }
+
+    this.saveData.ship.components[slotId] = component ? clone(component) : null;
+    this.emitShipChanged();
+    return true;
+  }
+
   getDamagedShipSystemIds(): ShipSystemId[] {
     return SHIP_SYSTEM_IDS.filter((systemId) => {
       const system = this.saveData.ship.systems[systemId];
@@ -1298,6 +1356,71 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   getPlayerRaceId(): RaceId {
     return this.saveData.profile.raceId;
+  }
+
+  getPlayerCharacterStats(): ResolvedCharacterStats {
+    return calculatePlayerCharacterStats(this.saveData.loadout.equipment);
+  }
+
+  getPlayerStatSummary(): string[] {
+    const playerStats = this.getPlayerCharacterStats();
+    const squadLine = this.getSquadCompactStatSummary();
+    return [
+      ...summarizeCharacterStats(playerStats, "Player"),
+      ...summarizeCharacterStatDeltas(playerStats),
+      squadLine,
+    ];
+  }
+
+  getCompanionStats(companionId: CompanionId): ResolvedCharacterStats | null {
+    const companion = getCompanionDefinition(companionId);
+    if (!companion) {
+      return null;
+    }
+
+    return resolveCompanionStats(companion, this.getCompanionSharedStatModifiers());
+  }
+
+  getSquadStatSummary(): string[] {
+    return this.saveData.loadout.squad.map((assignment) => {
+      const companion = getCompanionDefinition(assignment.companionId);
+      const stats = companion ? this.getCompanionStats(companion.id) : null;
+      if (!companion || !stats) {
+        return `${assignment.companionId}: unavailable`;
+      }
+      return `${companion.name}: HP ${Math.round(stats.total.health)} | Shield ${Math.round(stats.total.shield)} | ${companion.roleLabel}`;
+    });
+  }
+
+  getSquadCompactStatSummary(): string {
+    const parts = this.saveData.loadout.squad.map((assignment) => {
+      const companion = getCompanionDefinition(assignment.companionId);
+      const stats = companion ? this.getCompanionStats(companion.id) : null;
+      if (!companion || !stats) {
+        return assignment.companionId;
+      }
+      return `${companion.name.slice(0, 2)}${Math.round(stats.total.health)}/${Math.round(stats.total.shield)}`;
+    });
+    return parts.length > 0 ? `Squad ${parts.join(" ")}` : "Squad: none assigned";
+  }
+
+  private getCompanionSharedStatModifiers(): StatModifierSource[] {
+    const playerStats = calculatePlayerCharacterStats(this.saveData.loadout.equipment);
+    const shared: StatModifierSource = {
+      id: "squad-field-gear",
+      label: "Shared field gear",
+      sourceType: "equipment",
+      character: {
+        shield: Math.round(playerStats.equipment.shield * 0.32),
+        defense: Math.round(playerStats.equipment.defense * 0.22),
+        resonanceRegen: Number((playerStats.equipment.resonanceRegen * 0.28).toFixed(2)),
+        healingPower: Math.round(playerStats.equipment.healingPower * 0.35),
+      },
+      tags: ["squad", "support"],
+    };
+
+    const hasValue = Object.values(shared.character ?? {}).some((value) => typeof value === "number" && value !== 0);
+    return hasValue ? [shared] : [];
   }
 
   getPlayerCombatProfile(): PlayerCombatProfile {

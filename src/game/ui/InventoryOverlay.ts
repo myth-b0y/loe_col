@@ -8,7 +8,6 @@ import {
   getItemName,
   getItemShortLabel,
   isGearItem,
-  summarizeCombatProfile,
   type CraftingMaterials,
   type EquipmentLoadout,
   type EquipmentSlotId,
@@ -191,7 +190,6 @@ export class InventoryOverlay {
       });
     });
     this.tabButtons.skills?.setEnabled(false);
-    this.tabButtons.starship?.setEnabled(false);
 
     this.closeButton = createMenuButton({
       scene,
@@ -447,7 +445,7 @@ export class InventoryOverlay {
       `Credits: ${gameSession.saveData.profile.credits}`,
       ...(describeCraftingMaterials(materials).length > 0 ? [describeCraftingMaterials(materials).join(" | ")] : ["No salvage"]) ,
     ]).join("\n"));
-    this.statsText.setText((this.currentSnapshot.statLines ?? summarizeCombatProfile(gameSession.getPlayerCombatProfile())).join("\n"));
+    this.statsText.setText((this.currentSnapshot.statLines ?? gameSession.getPlayerStatSummary()).join("\n"));
     this.pageText.setText(`${this.cargoPage + 1}/${pageCount}`);
     const showPager = pageCount > 1;
     this.prevPageButton.container.setVisible(showPager);
@@ -497,8 +495,19 @@ export class InventoryOverlay {
       return;
     }
 
-    if (tab === "skills" || tab === "starship") {
+    if (tab === "skills") {
       this.statusText.setText(`${TAB_LAYOUT.find((entry) => entry.tab === tab)?.label ?? "This"} tab is scaffolded in the new UI system and will be wired in next.`);
+      return;
+    }
+
+    if (tab === "starship") {
+      this.hideActionMenu();
+      this.statsText.setText(gameSession.getShipCoreStatSummary().join("\n"));
+      this.selectedText.setText([
+        "Starship Components",
+        ...gameSession.getShipComponentSummary(),
+      ].join("\n"));
+      this.statusText.setText("Starship stats are live values: baseline + installed components + future skill modifiers.");
       return;
     }
 
@@ -635,7 +644,7 @@ export class InventoryOverlay {
       cargo: gameSession.getCargoSlots(),
       materials: gameSession.getCraftingMaterials(),
       allowEquip: true,
-      statLines: summarizeCombatProfile(gameSession.getPlayerCombatProfile()),
+      statLines: gameSession.getPlayerStatSummary(),
       subtitle: "Inventory",
     };
   }

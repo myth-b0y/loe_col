@@ -1625,6 +1625,8 @@ ${getCompanionRoleDisplay(companion)}`, {
           "",
           ...this.getShipSystemConsoleLines(),
           "",
+          ...gameSession.getShipStatSummary(),
+          "",
           `Travel state: ${getShipTravelStatusLabel(travel.status)}`,
         ],
         footer: gameSession.hasShipSystemDamage()

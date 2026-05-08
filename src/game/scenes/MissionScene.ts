@@ -27,7 +27,6 @@ import {
   addItemToCargoSlots,
   cloneInventoryItem,
   getItemShortLabel,
-  summarizeCombatProfile,
   type InventoryItem,
   type ItemRarity,
 } from "../content/items";
@@ -752,6 +751,9 @@ export class MissionScene extends Phaser.Scene {
       }).setOrigin(0.5).setDepth(16).setVisible(false);
 
       sprite.setVisible(gameSession.getModeRules().companionsEnabled);
+      const companionStats = gameSession.getCompanionStats(companion.id);
+      const companionMaxHp = Math.round(companionStats?.total.health ?? companion.maxHp);
+      const companionMaxShield = Math.round(companionStats?.total.shield ?? this.playerCombatProfile.companionShieldCapacity);
 
       return {
         id: companion.id,
@@ -764,10 +766,10 @@ export class MissionScene extends Phaser.Scene {
         trimColor: companion.trimColor,
         projectileColor: companion.projectileColor,
         radius: companion.radius,
-        hp: companion.maxHp,
-        maxHp: companion.maxHp,
-        shield: this.playerCombatProfile.companionShieldCapacity,
-        maxShield: this.playerCombatProfile.companionShieldCapacity,
+        hp: companionMaxHp,
+        maxHp: companionMaxHp,
+        shield: companionMaxShield,
+        maxShield: companionMaxShield,
         shieldDelay: 0,
         shieldRechargeStarted: false,
         slowDebuff: 0,
@@ -5145,7 +5147,7 @@ export class MissionScene extends Phaser.Scene {
       equipment,
       cargo,
       materials,
-      statLines: summarizeCombatProfile(gameSession.getPlayerCombatProfile()),
+      statLines: gameSession.getPlayerStatSummary(),
       currencyLines: [
         `Credits: ${gameSession.saveData.profile.credits} | Run +${this.missionCreditsEarned}`,
         `Recovered loot: ${this.missionItemsEarned.length} | Extract to keep it`,
