@@ -304,8 +304,8 @@ export class SettingsOverlay {
       this.setRow(4, "", "", () => undefined, false);
 
       this.info.setText([
-        "Sound sliders are wired into saveable settings now, even though the slice is still light on real audio assets.",
-        "That means we can drop in real music and SFX later without rebuilding the options framework.",
+        "Music controls the main-menu track, while SFX controls combat, comms, UI, and world feedback.",
+        "All audio sliders are saveable settings, so new tracks and cues can keep using the same mix framework.",
       ]);
       return;
     }

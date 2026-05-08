@@ -9,6 +9,14 @@ import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSetting
 
 const MAIN_MENU_LOGO_KEY = "main-menu-logo";
 const MAIN_MENU_LOGO_URL = "assets/ui/main-menu-logo.png";
+const MAIN_MENU_MUSIC_KEY = "main-menu-music";
+const MAIN_MENU_MUSIC_URL = "assets/audio/main-menu-once-upon-a-myth-16bit.mp3";
+
+type MenuMusicSound = Phaser.Sound.BaseSound & {
+  setVolume?: (value: number) => Phaser.Sound.BaseSound;
+  volume?: number;
+  loop?: boolean;
+};
 
 export class MainMenuScene extends Phaser.Scene {
   private brightnessLayer?: BrightnessLayer;
@@ -18,6 +26,9 @@ export class MainMenuScene extends Phaser.Scene {
   private uiVisionButton?: MenuButton;
   private creditsPanel?: Phaser.GameObjects.Container;
   private creditsCloseButton?: MenuButton;
+  private menuMusic?: MenuMusicSound;
+  private menuMusicVolume = 0;
+  private menuMusicStartQueued = false;
 
   constructor() {
     super("main-menu");
@@ -25,6 +36,7 @@ export class MainMenuScene extends Phaser.Scene {
 
   preload(): void {
     this.load.image(MAIN_MENU_LOGO_KEY, MAIN_MENU_LOGO_URL);
+    this.load.audio(MAIN_MENU_MUSIC_KEY, [MAIN_MENU_MUSIC_URL]);
   }
 
   create(): void {
@@ -117,10 +129,16 @@ export class MainMenuScene extends Phaser.Scene {
 
     this.creditsPanel = this.createCreditsPanel();
     this.bindKeyboard();
+    this.startMenuMusic();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.stopMenuMusic();
       this.brightnessLayer?.destroy();
     });
+  }
+
+  update(): void {
+    this.updateMenuMusicVolume();
   }
 
   private drawBackdrop(): void {
@@ -232,6 +250,71 @@ export class MainMenuScene extends Phaser.Scene {
     this.creditsCloseButton?.setInputEnabled(visible);
   }
 
+  private startMenuMusic(): void {
+    this.menuMusic = this.sound.add(MAIN_MENU_MUSIC_KEY, {
+      loop: true,
+      volume: this.getMenuMusicVolume(),
+    }) as MenuMusicSound;
+
+    this.updateMenuMusicVolume();
+    this.tryPlayMenuMusic();
+  }
+
+  private stopMenuMusic(): void {
+    if (!this.menuMusic) {
+      return;
+    }
+
+    this.menuMusic.stop();
+    this.menuMusic.destroy();
+    this.menuMusic = undefined;
+    this.menuMusicStartQueued = false;
+  }
+
+  private tryPlayMenuMusic(): void {
+    if (!this.menuMusic || this.menuMusic.isPlaying) {
+      return;
+    }
+
+    const started = this.menuMusic.play({ loop: true, volume: this.menuMusicVolume });
+    if (!started) {
+      this.queueMenuMusicStart();
+    }
+  }
+
+  private queueMenuMusicStart(): void {
+    if (this.menuMusicStartQueued) {
+      return;
+    }
+
+    this.menuMusicStartQueued = true;
+    const retry = (): void => {
+      this.menuMusicStartQueued = false;
+      this.tryPlayMenuMusic();
+    };
+
+    this.input.once(Phaser.Input.Events.POINTER_DOWN, retry);
+    this.input.keyboard?.once("keydown", retry);
+  }
+
+  private updateMenuMusicVolume(): void {
+    const nextVolume = this.getMenuMusicVolume();
+    if (Math.abs(nextVolume - this.menuMusicVolume) < 0.005) {
+      return;
+    }
+
+    this.menuMusicVolume = nextVolume;
+    this.menuMusic?.setVolume?.(nextVolume);
+    if (this.menuMusic && typeof this.menuMusic.setVolume !== "function") {
+      this.menuMusic.volume = nextVolume;
+    }
+  }
+
+  private getMenuMusicVolume(): number {
+    const { master, music } = gameSession.settings.audio;
+    return Phaser.Math.Clamp((master / 100) * (music / 100), 0, 1);
+  }
+
   getDebugSnapshot(): Record<string, unknown> {
     return {
       version: GAME_BUILD,
@@ -240,6 +323,13 @@ export class MainMenuScene extends Phaser.Scene {
       hasSaves: gameSession.hasSaveData(),
       creditsVisible: this.creditsPanel?.visible ?? false,
       uiVisionReady: Boolean(this.uiVisionButton),
+      menuMusic: {
+        key: MAIN_MENU_MUSIC_KEY,
+        playing: this.menuMusic?.isPlaying ?? false,
+        paused: this.menuMusic?.isPaused ?? false,
+        loop: this.menuMusic?.loop ?? true,
+        volume: this.menuMusicVolume,
+      },
     };
   }
 }
