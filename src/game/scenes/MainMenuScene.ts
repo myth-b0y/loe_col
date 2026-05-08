@@ -1,11 +1,14 @@
 import Phaser from "phaser";
 
-import { GAME_BUILD, GAME_IP, GAME_MILESTONE, GAME_SERIES, GAME_TITLE } from "../core/buildInfo";
+import { GAME_BUILD, GAME_MILESTONE } from "../core/buildInfo";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
 import { SettingsOverlay } from "../ui/SettingsOverlay";
 import { createBrightnessLayer, type BrightnessLayer } from "../ui/visualSettings";
+
+const MAIN_MENU_LOGO_KEY = "main-menu-logo";
+const MAIN_MENU_LOGO_URL = "assets/ui/main-menu-logo.png";
 
 export class MainMenuScene extends Phaser.Scene {
   private brightnessLayer?: BrightnessLayer;
@@ -20,46 +23,21 @@ export class MainMenuScene extends Phaser.Scene {
     super("main-menu");
   }
 
+  preload(): void {
+    this.load.image(MAIN_MENU_LOGO_KEY, MAIN_MENU_LOGO_URL);
+  }
+
   create(): void {
     this.drawBackdrop();
     this.brightnessLayer = createBrightnessLayer(this);
 
-    this.add.text(324, 84, GAME_IP, {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#9fc6ff",
-      fontStyle: "bold",
-    }).setOrigin(0.5, 0);
-
-    this.add.text(324, 126, GAME_SERIES, {
-      fontFamily: "Arial",
-      fontSize: "50px",
-      color: "#f6fbff",
-      fontStyle: "bold",
-    }).setOrigin(0.5, 0);
-    this.add.text(324, 216, GAME_TITLE, {
-      fontFamily: "Arial",
-      fontSize: "32px",
-      color: "#d8eaff",
-      fontStyle: "bold",
-    }).setOrigin(0.5, 0);
-
-    this.add.text(324, 274, "Age of Legends tactical action RPG prototype", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#d2e5ff",
-    }).setOrigin(0.5, 0);
-
-    this.add.text(324, 318, "Build the crew. Launch the mission. Clear the outpost. Return stronger.", {
-      fontFamily: "Arial",
-      fontSize: "18px",
-      color: "#b4cbed",
-    }).setOrigin(0.5, 0);
+    const logo = this.add.image(640, 8, MAIN_MENU_LOGO_KEY).setOrigin(0.5, 0);
+    logo.setDisplaySize(500, 500 * (logo.height / logo.width));
 
     const buttons: MenuButton[] = [
       createMenuButton({
         scene: this,
-        x: 286,
+        x: 640,
         y: 372,
         width: 250,
         label: "New Game",
@@ -67,7 +45,7 @@ export class MainMenuScene extends Phaser.Scene {
       }),
       createMenuButton({
         scene: this,
-        x: 286,
+        x: 640,
         y: 432,
         width: 250,
         label: "Load Game",
@@ -75,7 +53,7 @@ export class MainMenuScene extends Phaser.Scene {
       }),
       createMenuButton({
         scene: this,
-        x: 286,
+        x: 640,
         y: 492,
         width: 250,
         label: "Options",
@@ -83,7 +61,7 @@ export class MainMenuScene extends Phaser.Scene {
       }),
       createMenuButton({
         scene: this,
-        x: 286,
+        x: 640,
         y: 552,
         width: 250,
         label: "Credits",
@@ -91,7 +69,7 @@ export class MainMenuScene extends Phaser.Scene {
       }),
       createMenuButton({
         scene: this,
-        x: 286,
+        x: 640,
         y: 612,
         width: 250,
         label: "UI Vision",
@@ -147,9 +125,6 @@ export class MainMenuScene extends Phaser.Scene {
 
   private drawBackdrop(): void {
     this.add.rectangle(640, 360, 1280, 720, 0x060a12).setDepth(-10);
-    this.add.rectangle(950, 358, 520, 540, 0x0c1422, 0.94).setStrokeStyle(2, 0x31557f, 0.7).setDepth(-8);
-    this.add.circle(1020, 202, 120, 0x3a79c5, 0.16).setDepth(-9);
-    this.add.circle(1068, 214, 54, 0x8ed2ff, 0.18).setDepth(-9);
 
     const stars = this.add.graphics().setDepth(-9);
     stars.fillStyle(0xcfe2ff, 0.9);
@@ -160,14 +135,6 @@ export class MainMenuScene extends Phaser.Scene {
         Phaser.Math.FloatBetween(1, 2.4),
       );
     }
-
-    const ship = this.add.graphics().setDepth(-7);
-    ship.fillStyle(0x8ca9cf, 0.18);
-    ship.fillRoundedRect(890, 282, 240, 118, 26);
-    ship.fillTriangle(1118, 324, 1200, 342, 1118, 362);
-    ship.fillRect(842, 320, 48, 34);
-    ship.lineStyle(3, 0xaad5ff, 0.24);
-    ship.strokeRoundedRect(890, 282, 240, 118, 26);
   }
 
   private createCreditsPanel(): Phaser.GameObjects.Container {
