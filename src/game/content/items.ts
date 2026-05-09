@@ -31,7 +31,8 @@ export type ItemCategory =
   | "quest"
   | "junk";
 
-export type ItemRarity = "Common" | "Rare" | "Epic" | "Legendary" | "Mythic";
+export type ItemRarity = "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary" | "Mythic";
+export type DisplayItemRarity = "Common" | "Uncommon" | "Rare" | "Legendary" | "Mythic";
 
 export type ItemStatKey =
   | "vitality"
@@ -80,6 +81,10 @@ export type QuestItemInstance = {
 
 export type JunkTypeId =
   | "alloy-scrap"
+  | "iron-ore"
+  | "aetherium-ore"
+  | "starforged-alloy"
+  | "scrap-ship-parts"
   | "filament-spool"
   | "fractured-lens"
   | "relay-core"
@@ -200,9 +205,10 @@ const RACE_LABELS: Record<RaceId, string> = {
 };
 
 export const RARITY_COLORS: Record<ItemRarity, number> = {
-  Common: 0x63d77b,
+  Common: 0x98a3af,
+  Uncommon: 0x63d77b,
   Rare: 0x70c4ff,
-  Epic: 0xbe8dff,
+  Epic: 0x63d77b,
   Legendary: 0xffcc74,
   Mythic: 0x9f6fff,
 };
@@ -331,6 +337,46 @@ const JUNK_TEMPLATES: Record<JunkTypeId, Omit<JunkItemInstance, "instanceId" | "
     color: RARITY_COLORS.Common,
     maxStack: 25,
   },
+  "iron-ore": {
+    kind: "junk",
+    templateId: "iron-ore",
+    name: "Iron Ore",
+    shortLabel: "Iron Ore",
+    description: "Dense metallic ore stripped from shattered asteroid seams.",
+    rarity: "Common",
+    color: RARITY_COLORS.Common,
+    maxStack: 30,
+  },
+  "aetherium-ore": {
+    kind: "junk",
+    templateId: "aetherium-ore",
+    name: "Aetherium Ore",
+    shortLabel: "Aetherium",
+    description: "A bright conductive ore prized for advanced ship systems and future fabrication.",
+    rarity: "Rare",
+    color: RARITY_COLORS.Rare,
+    maxStack: 18,
+  },
+  "starforged-alloy": {
+    kind: "junk",
+    templateId: "starforged-alloy",
+    name: "Starforged Alloy",
+    shortLabel: "Starforged",
+    description: "Extremely rare alloy fragments left behind by violent deep-space mineral reactions.",
+    rarity: "Legendary",
+    color: RARITY_COLORS.Legendary,
+    maxStack: 8,
+  },
+  "scrap-ship-parts": {
+    kind: "junk",
+    templateId: "scrap-ship-parts",
+    name: "Scrap Ship Parts",
+    shortLabel: "Ship Scrap",
+    description: "Recovered couplings, scorched plating, and broken assemblies worth selling or refining later.",
+    rarity: "Uncommon",
+    color: RARITY_COLORS.Uncommon,
+    maxStack: 24,
+  },
   "filament-spool": {
     kind: "junk",
     templateId: "filament-spool",
@@ -432,7 +478,35 @@ export function cloneInventoryItem(item: InventoryItem | null | undefined): Inve
     return null;
   }
 
-  return JSON.parse(JSON.stringify(item)) as InventoryItem;
+  const cloned = JSON.parse(JSON.stringify(item)) as InventoryItem;
+  const rarity = normalizeItemRarity(cloned.rarity);
+  cloned.rarity = rarity;
+  if (cloned.kind === "quest" || cloned.kind === "junk") {
+    cloned.color = getItemRarityColor(rarity);
+  }
+  return cloned;
+}
+
+export function createQuestItem(options: {
+  itemId: string;
+  name: string;
+  shortLabel: string;
+  description: string;
+  rarity?: ItemRarity;
+  tag?: string;
+  color?: number;
+}): QuestItemInstance {
+  const rarity = normalizeItemRarity(options.rarity ?? "Rare");
+  return {
+    instanceId: options.itemId,
+    kind: "quest",
+    name: options.name,
+    shortLabel: options.shortLabel,
+    description: options.description,
+    rarity,
+    color: options.color ?? getItemRarityColor(rarity),
+    tag: options.tag ?? "quest",
+  };
 }
 
 export function createMissionQuestItem(options: {
@@ -443,16 +517,15 @@ export function createMissionQuestItem(options: {
   description: string;
   color?: number;
 }): QuestItemInstance {
-  return {
-    instanceId: options.itemId,
-    kind: "quest",
+  return createQuestItem({
+    itemId: options.itemId,
     name: options.name,
     shortLabel: options.shortLabel,
     description: options.description,
     rarity: "Rare",
-    color: options.color ?? 0xf0d49c,
+    color: options.color,
     tag: `mission-cargo:${options.missionId}`,
-  };
+  });
 }
 
 export function cloneCraftingMaterials(materials: CraftingMaterials): CraftingMaterials {
@@ -597,7 +670,18 @@ export function getItemColor(item: InventoryItem | null | undefined): number {
 }
 
 export function getItemRarityColor(rarity: ItemRarity): number {
-  return RARITY_COLORS[rarity];
+  return RARITY_COLORS[normalizeItemRarity(rarity)];
+}
+
+export function normalizeItemRarity(rarity: ItemRarity): Exclude<DisplayItemRarity, never> {
+  if (rarity === "Epic") {
+    return "Uncommon";
+  }
+  return rarity;
+}
+
+export function getItemRarityLabel(rarity: ItemRarity): DisplayItemRarity {
+  return normalizeItemRarity(rarity);
 }
 
 export function getItemShortLabel(item: InventoryItem | null | undefined): string {
@@ -673,14 +757,14 @@ export function describeInventoryItem(item: InventoryItem | null | undefined): s
 
   if (item.kind === "junk") {
     return [
-      `${item.rarity} Junk`,
+      `${getItemRarityLabel(item.rarity)} Junk`,
       `Stack ${item.stackCount}/${item.maxStack}`,
       item.description,
     ];
   }
 
   return [
-    `${item.rarity} ${getSlotLabel(item.slot)}`,
+    `${getItemRarityLabel(item.rarity)} ${getSlotLabel(item.slot)}`,
     ...summarizeItemStats(item.stats),
     ...summarizeRealItemStatEffects(item.stats),
     ...item.perks.map((perk) => `${perk.label}: ${perk.description}`),

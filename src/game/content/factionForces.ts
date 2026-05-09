@@ -14,6 +14,7 @@ import { type RaceId } from "./items";
 export type FactionForcePoolKind = "zone" | "prime-world";
 export type FactionForceAllianceStatus = "empire" | "neutral" | "republic";
 export type FactionForceShipRole = "base-fighter" | "support-fighter" | "attack-warship" | "defense-warship";
+export type FactionShipRankLevel = 1 | 2 | 3 | 4 | 5;
 export type FactionForceAssignmentKind = "defend" | "invade" | "reclaim";
 export type FactionForceFleetMode =
   | "solo-ship"
@@ -31,6 +32,9 @@ export type FactionForceActiveShipState = {
   id: string;
   assetId: string;
   role: FactionForceShipRole;
+  rankLevel: FactionShipRankLevel;
+  rankXp: number;
+  kills: number;
   assignmentKind: FactionForceAssignmentKind;
   assignmentZoneId: string | null;
   slotKind: FactionForceShipSlotKind;
@@ -73,12 +77,16 @@ export type FactionForcePoolRecord = {
 export type FactionForceState = {
   pools: FactionForcePoolRecord[];
   fleets: FactionForceFleetRecord[];
+  rankBoostChargesByRace: Partial<Record<RaceId, number>>;
 };
 
 export type FactionForceActiveShipRecord = {
   shipId: string;
   assetId: string;
   role: FactionForceShipRole;
+  rankLevel: FactionShipRankLevel;
+  rankXp: number;
+  kills: number;
   assignmentKind: FactionForceAssignmentKind;
   assignmentZoneId: string | null;
   slotKind: FactionForceShipSlotKind;
@@ -149,8 +157,24 @@ export type FactionForceDebugSnapshot = {
   totalPools: number;
   totalActiveShips: number;
   totalFleets: number;
+  rankBoostChargesByRace: Partial<Record<RaceId, number>>;
   pools: FactionForcePoolDebugRecord[];
   fleets: FactionForceFleetDebugRecord[];
+};
+
+export const FACTION_SHIP_RANK_LABELS: Record<FactionShipRankLevel, string> = {
+  1: "Recruit",
+  2: "Veteran",
+  3: "Elite",
+  4: "Officer",
+  5: "Commander",
+};
+
+const FACTION_SHIP_RANK_XP_TO_NEXT: Partial<Record<FactionShipRankLevel, number>> = {
+  1: 2,
+  2: 3,
+  3: 4,
+  4: 5,
 };
 
 export const ZONE_SHIP_POOL_CAP = 5;
@@ -233,6 +257,89 @@ function isFactionForceShipRole(value: unknown): value is FactionForceShipRole {
     || value === "support-fighter"
     || value === "attack-warship"
     || value === "defense-warship";
+}
+
+function clampFactionShipRankLevel(value: unknown): FactionShipRankLevel {
+  const rounded = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : 1;
+  if (rounded <= 1) {
+    return 1;
+  }
+  if (rounded >= 5) {
+    return 5;
+  }
+  return rounded as FactionShipRankLevel;
+}
+
+export function getFactionShipRankLabel(rankLevel: FactionShipRankLevel): string {
+  return FACTION_SHIP_RANK_LABELS[clampFactionShipRankLevel(rankLevel)];
+}
+
+export function getFactionShipRankHullMultiplier(rankLevel: FactionShipRankLevel): number {
+  switch (clampFactionShipRankLevel(rankLevel)) {
+    case 2:
+      return 1.08;
+    case 3:
+      return 1.16;
+    case 4:
+      return 1.24;
+    case 5:
+      return 1.34;
+    default:
+      return 1;
+  }
+}
+
+export function getFactionShipRankDamageMultiplier(rankLevel: FactionShipRankLevel): number {
+  switch (clampFactionShipRankLevel(rankLevel)) {
+    case 2:
+      return 1.06;
+    case 3:
+      return 1.12;
+    case 4:
+      return 1.2;
+    case 5:
+      return 1.3;
+    default:
+      return 1;
+  }
+}
+
+export function getFactionShipRankDefenseMultiplier(rankLevel: FactionShipRankLevel): number {
+  switch (clampFactionShipRankLevel(rankLevel)) {
+    case 2:
+      return 1.04;
+    case 3:
+      return 1.08;
+    case 4:
+      return 1.14;
+    case 5:
+      return 1.22;
+    default:
+      return 1;
+  }
+}
+
+export function getFactionShipRankSpeedMultiplier(rankLevel: FactionShipRankLevel): number {
+  switch (clampFactionShipRankLevel(rankLevel)) {
+    case 2:
+      return 1.01;
+    case 3:
+      return 1.03;
+    case 4:
+      return 1.05;
+    case 5:
+      return 1.07;
+    default:
+      return 1;
+  }
+}
+
+export function getFactionShipRankPlayerXpReward(rankLevel: FactionShipRankLevel): number {
+  return clampFactionShipRankLevel(rankLevel) * 6;
+}
+
+export function getFactionShipRankKillXpReward(rankLevel: FactionShipRankLevel): number {
+  return clampFactionShipRankLevel(rankLevel);
 }
 
 function isFactionForceAssignmentKind(value: unknown): value is FactionForceAssignmentKind {
@@ -359,11 +466,15 @@ function createActiveShipState(
   assetId: string,
   assignmentKind: FactionForceAssignmentKind,
   assignmentZoneId: string | null,
+  rankLevel: FactionShipRankLevel = 1,
 ): FactionForceActiveShipState {
   return {
     id: shipId,
     assetId,
     role: getFactionAssetShipRole(assetId),
+    rankLevel,
+    rankXp: 0,
+    kills: 0,
     assignmentKind,
     assignmentZoneId,
     slotKind: isFactionAssetCommandEligible(assetId) ? "command" : "escort",
@@ -401,6 +512,7 @@ function createZonePool(zone: GalaxyZoneRecord, warState?: FactionForceWarStateL
     assetId,
     "defend",
     zone.id,
+    1,
   ));
   pool.nextShipSerial = pool.activeShips.length + 1;
   return pool;
@@ -439,6 +551,7 @@ function createPrimeWorldPool(galaxy: GalaxyDefinition, raceId: RaceId): Faction
     assetId,
     "defend",
     zone.id,
+    index === startingAssets.length - 1 ? 3 : 1,
   ));
   pool.nextShipSerial = pool.activeShips.length + 1;
   return pool;
@@ -471,6 +584,13 @@ function sanitizeActiveShipRecord(
     id: candidate.id,
     assetId,
     role,
+    rankLevel: clampFactionShipRankLevel(candidate.rankLevel),
+    rankXp: typeof candidate.rankXp === "number" && Number.isFinite(candidate.rankXp)
+      ? Math.max(0, Math.round(candidate.rankXp))
+      : 0,
+    kills: typeof candidate.kills === "number" && Number.isFinite(candidate.kills)
+      ? Math.max(0, Math.round(candidate.kills))
+      : 0,
     assignmentKind,
     assignmentZoneId,
     slotKind: isFactionForceShipSlotKind(candidate.slotKind)
@@ -649,6 +769,10 @@ function buildFleetMode(
 
 function sortShipsForFleetLayout(ships: readonly FactionForceActiveShipState[]): FactionForceActiveShipState[] {
   return [...ships].sort((left, right) => {
+    const rankDelta = right.rankLevel - left.rankLevel;
+    if (rankDelta !== 0) {
+      return rankDelta;
+    }
     const commandDelta = Number(isFactionAssetCommandEligible(right.assetId)) - Number(isFactionAssetCommandEligible(left.assetId));
     if (commandDelta !== 0) {
       return commandDelta;
@@ -801,6 +925,7 @@ export function createFactionForceState(
   const state: FactionForceState = {
     pools: [...zonePools, ...primePools].sort(comparePoolPriority),
     fleets: [],
+    rankBoostChargesByRace: {},
   };
   rebuildFactionCommanderFleets(state);
   return state;
@@ -870,6 +995,12 @@ export function normalizeFactionForceState(
       };
     }),
     fleets: [],
+    rankBoostChargesByRace: GALAXY_SECTORS.reduce<Partial<Record<RaceId, number>>>((charges, sector) => {
+      const raceId = sector.raceId;
+      const value = forceState.rankBoostChargesByRace?.[raceId];
+      charges[raceId] = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+      return charges;
+    }, {}),
   };
 
   rebuildFactionCommanderFleets(normalized);
@@ -927,6 +1058,7 @@ export function advanceFactionForceProduction(
       definition.id,
       "defend",
       pool.originZoneId,
+      1,
     ));
     pool.nextShipSerial += 1;
     pool.productionAssetId = null;
@@ -980,11 +1112,135 @@ export function markFactionForceShipDestroyed(
   return false;
 }
 
+function getFactionForceShipById(
+  forceState: FactionForceState,
+  shipId: string,
+): FactionForceActiveShipState | null {
+  for (const pool of forceState.pools) {
+    const ship = pool.activeShips.find((candidate) => candidate.id === shipId);
+    if (ship) {
+      return ship;
+    }
+  }
+  return null;
+}
+
+function getRankXpToNext(rankLevel: FactionShipRankLevel): number {
+  return FACTION_SHIP_RANK_XP_TO_NEXT[clampFactionShipRankLevel(rankLevel)] ?? Number.POSITIVE_INFINITY;
+}
+
+export function awardFactionForceShipKill(
+  forceState: FactionForceState,
+  shipId: string,
+  defeatedRankLevel: FactionShipRankLevel,
+): { changed: boolean; rankLevel: FactionShipRankLevel | null } {
+  const ship = getFactionForceShipById(forceState, shipId);
+  if (!ship) {
+    return { changed: false, rankLevel: null };
+  }
+
+  ship.kills += 1;
+  ship.rankXp += getFactionShipRankKillXpReward(defeatedRankLevel);
+  let changed = true;
+  let currentRank = ship.rankLevel;
+  while (currentRank < 5) {
+    const requiredXp = getRankXpToNext(currentRank);
+    if (ship.rankXp < requiredXp) {
+      break;
+    }
+
+    ship.rankXp -= requiredXp;
+    currentRank = clampFactionShipRankLevel(currentRank + 1);
+    ship.rankLevel = currentRank;
+  }
+
+  return {
+    changed,
+    rankLevel: ship.rankLevel,
+  };
+}
+
+export function grantFactionRankBoostCharges(
+  forceState: FactionForceState,
+  raceId: RaceId,
+  amount: number,
+): number {
+  const safeAmount = Math.max(0, Math.round(amount));
+  if (safeAmount <= 0) {
+    return forceState.rankBoostChargesByRace[raceId] ?? 0;
+  }
+
+  forceState.rankBoostChargesByRace[raceId] = (forceState.rankBoostChargesByRace[raceId] ?? 0) + safeAmount;
+  return forceState.rankBoostChargesByRace[raceId] ?? 0;
+}
+
+export function applyAvailableFactionRankBoosts(
+  forceState: FactionForceState,
+  galaxy: GalaxyDefinition,
+  raceId: RaceId,
+  maxBoosts = Number.POSITIVE_INFINITY,
+): string[] {
+  const available = Math.min(
+    Math.max(0, Math.round(forceState.rankBoostChargesByRace[raceId] ?? 0)),
+    Math.max(0, Math.round(maxBoosts)),
+  );
+  if (available <= 0) {
+    return [];
+  }
+
+  const zoneById = new Map(galaxy.zones.map((zone) => [zone.id, zone] as const));
+  const candidates = forceState.pools
+    .filter((pool) => pool.raceId === raceId)
+    .flatMap((pool) => pool.activeShips.map((ship) => ({ pool, ship })))
+    .filter(({ ship }) => ship.rankLevel < 5)
+    .sort((left, right) => {
+      const leftZone = zoneById.get(left.ship.assignmentZoneId ?? left.pool.originZoneId);
+      const rightZone = zoneById.get(right.ship.assignmentZoneId ?? right.pool.originZoneId);
+      const leftScore = Number(left.pool.kind === "prime-world") * 20
+        + Number(leftZone?.isPrimeWorldZone) * 18
+        + Number(left.ship.assignmentKind === "defend") * 10
+        + Number(left.ship.assignmentKind === "reclaim" || left.ship.assignmentKind === "invade") * 6
+        + Number(isFactionAssetCommandEligible(left.ship.assetId)) * 6
+        + left.ship.rankLevel * 2;
+      const rightScore = Number(right.pool.kind === "prime-world") * 20
+        + Number(rightZone?.isPrimeWorldZone) * 18
+        + Number(right.ship.assignmentKind === "defend") * 10
+        + Number(right.ship.assignmentKind === "reclaim" || right.ship.assignmentKind === "invade") * 6
+        + Number(isFactionAssetCommandEligible(right.ship.assetId)) * 6
+        + right.ship.rankLevel * 2;
+      if (rightScore !== leftScore) {
+        return rightScore - leftScore;
+      }
+      return left.ship.id.localeCompare(right.ship.id);
+    });
+
+  const boostedShipIds: string[] = [];
+  for (const { ship } of candidates) {
+    if (boostedShipIds.length >= available) {
+      break;
+    }
+
+    ship.rankLevel = clampFactionShipRankLevel(ship.rankLevel + 1);
+    ship.rankXp = 0;
+    boostedShipIds.push(ship.id);
+  }
+
+  if (boostedShipIds.length > 0) {
+    forceState.rankBoostChargesByRace[raceId] = Math.max(0, (forceState.rankBoostChargesByRace[raceId] ?? 0) - boostedShipIds.length);
+    rebuildFactionCommanderFleets(forceState);
+  }
+
+  return boostedShipIds;
+}
+
 export function getActiveFactionForceShips(forceState: FactionForceState): FactionForceActiveShipRecord[] {
   return forceState.pools.flatMap((pool) => pool.activeShips.map((ship) => ({
     shipId: ship.id,
     assetId: ship.assetId,
     role: ship.role,
+    rankLevel: ship.rankLevel,
+    rankXp: ship.rankXp,
+    kills: ship.kills,
     assignmentKind: ship.assignmentKind,
     assignmentZoneId: ship.assignmentZoneId,
     slotKind: ship.slotKind,
@@ -1068,6 +1324,7 @@ export function getFactionForceDebugSnapshot(
     totalPools: pools.length,
     totalActiveShips: pools.reduce((count, pool) => count + pool.activeShipCount, 0),
     totalFleets: forceState.fleets.length,
+    rankBoostChargesByRace: { ...forceState.rankBoostChargesByRace },
     pools,
     fleets: forceState.fleets.map((fleet) => ({ ...fleet, escortShipIds: [...fleet.escortShipIds] })),
   };

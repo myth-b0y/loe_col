@@ -28,8 +28,17 @@ import {
   type GalaxyZoneRecord,
 } from "../content/galaxy";
 import {
+  applyAvailableFactionRankBoosts,
   advanceFactionForceProduction,
+  awardFactionForceShipKill,
   getFactionForceDebugSnapshot,
+  getFactionShipRankDamageMultiplier,
+  getFactionShipRankDefenseMultiplier,
+  getFactionShipRankHullMultiplier,
+  getFactionShipRankLabel,
+  getFactionShipRankPlayerXpReward,
+  getFactionShipRankSpeedMultiplier,
+  grantFactionRankBoostCharges,
   markFactionForceShipDestroyed,
   rebuildFactionCommanderFleets,
   type FactionForceFleetMode,
@@ -37,6 +46,7 @@ import {
   type FactionForceShipRole,
   type FactionForceShipSlotKind,
   type FactionForceState,
+  type FactionShipRankLevel,
 } from "../content/factionForces";
 import {
   advanceFactionWarState,
@@ -79,7 +89,18 @@ import {
   type SpaceWorldCellKey,
   type SpaceWorldDefinition,
 } from "../content/space";
-import { DEFAULT_CRAFTING_MATERIALS, createMissionQuestItem, type RaceId } from "../content/items";
+import {
+  DEFAULT_CRAFTING_MATERIALS,
+  createJunkLoot,
+  createMissionQuestItem,
+  createQuestItem,
+  getItemRarityColor,
+  getItemShortLabel,
+  normalizeItemRarity,
+  type DisplayItemRarity,
+  type InventoryItem,
+  type RaceId,
+} from "../content/items";
 import { gameSession } from "../core/session";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -139,6 +160,9 @@ type SpaceFactionShip = {
   assetId: string;
   originRaceId: RaceId | null;
   shipRole: FactionForceShipRole | null;
+  rankLevel: FactionShipRankLevel;
+  rankXp: number;
+  kills: number;
   assignmentKind: FactionForceAssignmentKind | null;
   assignmentZoneId: string | null;
   slotKind: FactionForceShipSlotKind | null;
@@ -154,6 +178,9 @@ type SpaceFactionShip = {
   root: Phaser.GameObjects.Container;
   thruster: Phaser.GameObjects.Ellipse;
   damageRing: Phaser.GameObjects.Arc;
+  rankBadge: Phaser.GameObjects.Container;
+  rankBadgeText: Phaser.GameObjects.Text | null;
+  rankBadgePips: Phaser.GameObjects.Rectangle[];
   velocity: Phaser.Math.Vector2;
   aimDirection: Phaser.Math.Vector2;
   patrolTarget: Phaser.Math.Vector2;
@@ -188,6 +215,9 @@ type SpaceFactionShipState = {
   assetId: string;
   originRaceId: RaceId | null;
   shipRole: FactionForceShipRole | null;
+  rankLevel: FactionShipRankLevel;
+  rankXp: number;
+  kills: number;
   assignmentKind: FactionForceAssignmentKind | null;
   assignmentZoneId: string | null;
   slotKind: FactionForceShipSlotKind | null;
@@ -394,6 +424,27 @@ type SpaceStationView = {
   label: Phaser.GameObjects.Text;
 };
 
+type SpacePickupVisualRarity = DisplayItemRarity;
+
+type SpaceWorldPickup = {
+  id: string;
+  kind: "credits" | "item";
+  rarity: SpacePickupVisualRarity;
+  color: number;
+  autoPickup: boolean;
+  amount?: number;
+  item?: InventoryItem;
+  baseX: number;
+  baseY: number;
+  sprite: Phaser.GameObjects.Shape;
+  halo: Phaser.GameObjects.Arc;
+  shadow: Phaser.GameObjects.Ellipse;
+  promptText: Phaser.GameObjects.Text | null;
+  bobOffset: number;
+  bobSpeed: number;
+  collected: boolean;
+};
+
 const PLAYER_RADIUS = 22;
 const PLAYER_MAX_HULL = 8;
 const PLAYER_ACCELERATION = 720;
@@ -445,6 +496,16 @@ const STATUS_MESSAGE_DURATION_MS = 5600;
 const STATUS_MESSAGE_LIMIT = 3;
 const FLEET_TRAVEL_ARRIVAL_RADIUS = 340;
 const FLEET_GROUP_SPACING_BUFFER = 28;
+const SPACE_PICKUP_ATTRACT_RANGE = 110;
+const SPACE_PICKUP_COLLECT_RANGE = 48;
+const ASTEROID_IRON_ORE_DROP_CHANCE = 0.62;
+const ASTEROID_AETHERIUM_DROP_CHANCE = 0.15;
+const ASTEROID_STARFORGED_DROP_CHANCE = 0.03;
+const SHIP_SCRAP_DROP_CHANCE = 0.34;
+const HIGH_RANK_SHIP_SCRAP_DROP_BONUS = 0.08;
+const SECRET_INTEL_DROP_CHANCE = 0.08;
+const SECRET_INTEL_HUNTER_INTERVAL_MS = 20000;
+const SECRET_INTEL_HUNTER_RADIUS = 760;
 
 function randomBetween(min: number, max: number): number {
   return min + (max - min) * Math.random();
@@ -653,6 +714,8 @@ export class SpaceScene extends Phaser.Scene {
   private activeMoonViews = new Map<string, SpaceCelestialMoonView>();
   private activeStationViews = new Map<string, SpaceStationView>();
   private shots: SpaceProjectile[] = [];
+  private spacePickups: SpaceWorldPickup[] = [];
+  private pickupCounter = 0;
   private missionObjects: SpaceMissionObject[] = [];
   private activeMissionWaypoint: SpaceMissionWaypoint | null = null;
   private activeMissionStepKey: string | null = null;
@@ -661,6 +724,7 @@ export class SpaceScene extends Phaser.Scene {
   private neutralWarningHits = new Map<string, number>();
   private fireInputSuppressUntilMs = 0;
   private ambientSpaceCueTimerMs = 2400;
+  private secretIntelHunterCooldownMs = SECRET_INTEL_HUNTER_INTERVAL_MS * 0.5;
   private announcedReadyReclaimZoneIds = new Set<string>();
   private activeFieldCellKeys: SpaceWorldCellKey[] = [];
   private activeShipCellKeys: SpaceWorldCellKey[] = [];
@@ -707,7 +771,6 @@ export class SpaceScene extends Phaser.Scene {
   private targetButton?: MenuButton;
   private abilityOneButton?: MenuButton;
   private abilityTwoButton?: MenuButton;
-  private desktopControlsText?: Phaser.GameObjects.Text;
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
   private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
   private routeText?: Phaser.GameObjects.Text;
@@ -807,6 +870,8 @@ export class SpaceScene extends Phaser.Scene {
     this.activeMoonViews.clear();
     this.activeStationViews.clear();
     this.shots = [];
+    this.spacePickups = [];
+    this.pickupCounter = 0;
     this.clearMissionObjects();
     this.activeMissionWaypoint = null;
     this.activeMissionStepKey = null;
@@ -855,6 +920,7 @@ export class SpaceScene extends Phaser.Scene {
     this.neutralWarningHits.clear();
     this.fireInputSuppressUntilMs = 0;
     this.ambientSpaceCueTimerMs = 2400;
+    this.secretIntelHunterCooldownMs = SECRET_INTEL_HUNTER_INTERVAL_MS * 0.5;
     this.announcedReadyReclaimZoneIds.clear();
 
     this.cameras.main.setBackgroundColor("#040810");
@@ -947,7 +1013,9 @@ export class SpaceScene extends Phaser.Scene {
     this.updateAutoReclaimReadiness();
     this.resolveFactionShipCollisions();
     this.updateProjectiles(dt);
+    this.updateSpacePickups(dt);
     this.updatePlayerShieldState(dt);
+    this.updateSecretIntelRun(delta);
     this.updateBurstParticles(dt);
     this.updateRadar(dt);
     this.syncDirtyForceState(delta);
@@ -1885,6 +1953,7 @@ export class SpaceScene extends Phaser.Scene {
     const role: FactionForceShipRole = step.type === "boss" || step.type === "kill-target" ? "attack-warship" : "base-fighter";
     const roleProfile = getSpaceShipRoleCombatProfile(role);
     const faction = getSpaceFactionConfig(factionId, factionId === "empire" ? this.warState.empireRaceId : null);
+    const rankLevel: FactionShipRankLevel = step.type === "boss" || step.type === "kill-target" ? 4 : 2;
     const id = `world-distress:${missionId}:${step.id}:${index}:${Math.round(this.time.now)}`;
     const state: SpaceFactionShipState = {
       id,
@@ -1893,6 +1962,9 @@ export class SpaceScene extends Phaser.Scene {
       assetId: `world/${role}`,
       originRaceId: factionId === "empire" ? this.warState.empireRaceId : null,
       shipRole: role,
+      rankLevel,
+      rankXp: 0,
+      kills: 0,
       assignmentKind: null,
       assignmentZoneId: null,
       slotKind: role === "attack-warship" ? "command" : "escort",
@@ -1925,8 +1997,8 @@ export class SpaceScene extends Phaser.Scene {
       aimX: Math.cos(angle),
       aimY: Math.sin(angle),
       radius: faction.radius * roleProfile.radiusMultiplier,
-      hp: faction.maxHull * roleProfile.hullMultiplier,
-      maxHp: faction.maxHull * roleProfile.hullMultiplier,
+      hp: faction.maxHull * roleProfile.hullMultiplier * getFactionShipRankHullMultiplier(rankLevel),
+      maxHp: faction.maxHull * roleProfile.hullMultiplier * getFactionShipRankHullMultiplier(rankLevel),
       flash: 0,
       fireCooldown: randomBetween(MISSION_HOSTILE_FIRE_COOLDOWN_MIN, MISSION_HOSTILE_FIRE_COOLDOWN_MAX),
       provokedByPlayer: true,
@@ -2191,6 +2263,13 @@ export class SpaceScene extends Phaser.Scene {
     const shipRole = this.getMissionObjectShipRole(options.kind, options.role);
     const originRaceId = options.originRaceId ?? this.getMissionObjectOriginRaceId(options.factionId, options.x, options.y);
     const faction = getSpaceFactionConfig(options.factionId, originRaceId);
+    const rankLevel: FactionShipRankLevel = options.kind === "boss"
+      ? 5
+      : options.role === "elite-target" || shipRole === "attack-warship" || shipRole === "defense-warship"
+        ? 4
+        : options.kind === "escort"
+          ? 1
+          : 2;
     const dx = options.targetX - options.x;
     const dy = options.targetY - options.y;
     const heading = Math.abs(dx) + Math.abs(dy) <= 0.001 ? 0 : Math.atan2(dy, dx) + Math.PI * 0.5;
@@ -2202,6 +2281,9 @@ export class SpaceScene extends Phaser.Scene {
       assetId: `mission/${shipRole ?? options.role}`,
       originRaceId,
       shipRole,
+      rankLevel,
+      rankXp: 0,
+      kills: 0,
       assignmentKind: null,
       assignmentZoneId: null,
       slotKind: shipRole === "attack-warship" || shipRole === "defense-warship" ? "command" : "escort",
@@ -2589,22 +2671,16 @@ export class SpaceScene extends Phaser.Scene {
     if (!system) {
       return 0;
     }
+    const systemPlanets = this.galaxyPlanetsBySystemId.get(system.id) ?? [];
+    const occupancyRadius = systemPlanets.reduce((largest, planet) => (
+      Math.max(largest, planet.orbitRadius + planet.radius + 280)
+    ), radius);
 
     return this.factionShips.filter((ship) => {
       if (ship.factionId !== factionId || !this.isFactionShipAlive(ship)) {
         return false;
       }
-
-      if (ship.assignmentZoneId === zone.id || ship.originZoneId === zone.id || ship.originSystemId === system.id) {
-        return true;
-      }
-
-      const assignedZone = this.getAssignedZoneForShip(ship);
-      if (assignedZone?.id === zone.id || assignedZone?.systemId === system.id) {
-        return true;
-      }
-
-      return Phaser.Math.Distance.Between(ship.root.x, ship.root.y, system.x, system.y) <= radius;
+      return Phaser.Math.Distance.Between(ship.root.x, ship.root.y, system.x, system.y) <= occupancyRadius;
     }).length;
   }
 
@@ -3658,6 +3734,7 @@ export class SpaceScene extends Phaser.Scene {
   private createShipStateFromSeed(seed: SpaceWorldDefinition["factionSeeds"][number]): SpaceFactionShipState {
     const faction = getSpaceFactionConfig(seed.factionId, seed.originRaceId ?? null);
     const roleProfile = getSpaceShipRoleCombatProfile(seed.shipRole ?? null);
+    const rankLevel = Phaser.Math.Clamp(Math.round(seed.rankLevel ?? 1), 1, 5) as FactionShipRankLevel;
     const aimDirection = angleToDirection(seed.rotation);
     return {
       id: seed.id,
@@ -3666,6 +3743,9 @@ export class SpaceScene extends Phaser.Scene {
       assetId: seed.assetId,
       originRaceId: seed.originRaceId ?? null,
       shipRole: seed.shipRole ?? null,
+      rankLevel,
+      rankXp: 0,
+      kills: 0,
       assignmentKind: seed.assignmentKind ?? null,
       assignmentZoneId: seed.assignmentZoneId ?? null,
       slotKind: seed.slotKind ?? null,
@@ -3698,8 +3778,8 @@ export class SpaceScene extends Phaser.Scene {
       aimX: aimDirection.x,
       aimY: aimDirection.y,
       radius: faction.radius * roleProfile.radiusMultiplier,
-      hp: faction.maxHull * roleProfile.hullMultiplier,
-      maxHp: faction.maxHull * roleProfile.hullMultiplier,
+      hp: faction.maxHull * roleProfile.hullMultiplier * getFactionShipRankHullMultiplier(rankLevel),
+      maxHp: faction.maxHull * roleProfile.hullMultiplier * getFactionShipRankHullMultiplier(rankLevel),
       flash: 0,
       fireCooldown: createInitialFactionFireCooldown(seed.id, faction.fireCooldown * roleProfile.fireCooldownMultiplier),
       provokedByPlayer: false,
@@ -3941,6 +4021,9 @@ export class SpaceScene extends Phaser.Scene {
       hp: Math.min(desiredState.maxHp, desiredState.maxHp * hpRatio),
       flash: existingState.flash,
       fireCooldown: existingState.fireCooldown,
+      rankLevel: existingState.rankLevel,
+      rankXp: existingState.rankXp,
+      kills: existingState.kills,
       provokedByPlayer: existingState.provokedByPlayer,
       provokedByShips: [...existingState.provokedByShips],
       aggressionTimer: existingState.aggressionTimer,
@@ -3975,6 +4058,9 @@ export class SpaceScene extends Phaser.Scene {
     ship.assetId = nextState.assetId;
     ship.originRaceId = nextState.originRaceId;
     ship.shipRole = nextState.shipRole;
+    ship.rankLevel = nextState.rankLevel;
+    ship.rankXp = nextState.rankXp;
+    ship.kills = nextState.kills;
     ship.assignmentKind = nextState.assignmentKind;
     ship.assignmentZoneId = nextState.assignmentZoneId;
     ship.slotKind = nextState.slotKind;
@@ -3990,6 +4076,7 @@ export class SpaceScene extends Phaser.Scene {
     ship.root.setPosition(nextState.x, nextState.y);
     ship.velocity.set(nextState.velocityX, nextState.velocityY);
     ship.root.rotation = nextState.rotation;
+    ship.rankBadge.rotation = -ship.root.rotation;
     ship.aimDirection.set(nextState.aimX, nextState.aimY);
     ship.patrolTarget.set(nextState.patrolX, nextState.patrolY);
     ship.customColor = nextState.customColor;
@@ -4022,6 +4109,8 @@ export class SpaceScene extends Phaser.Scene {
     ship.routeTargetId = nextState.routeTargetId;
     ship.routeWaitRemainingMs = nextState.routeWaitRemainingMs;
     ship.supportRepairCooldown = nextState.supportRepairCooldown;
+    ship.rankBadgeText?.setText(this.getShipRankGlyph(nextState.rankLevel));
+    this.applyShipRankBadgePips(ship.rankBadgePips, nextState.rankLevel, this.getShipPalette(nextState).trimColor);
   }
 
   private replaceActiveForceShip(ship: SpaceFactionShip, nextState: SpaceFactionShipState): void {
@@ -4286,6 +4375,9 @@ export class SpaceScene extends Phaser.Scene {
       assetId: ship.assetId,
       originRaceId: ship.originRaceId,
       shipRole: ship.shipRole,
+      rankLevel: ship.rankLevel,
+      rankXp: ship.rankXp,
+      kills: ship.kills,
       assignmentKind: ship.assignmentKind,
       assignmentZoneId: ship.assignmentZoneId,
       slotKind: ship.slotKind,
@@ -4377,6 +4469,29 @@ export class SpaceScene extends Phaser.Scene {
       trimColor: state.customTrimColor ?? faction.trimColor,
       glowColor: state.customGlowColor ?? faction.glowColor,
     };
+  }
+
+  private getShipRankGlyph(rankLevel: FactionShipRankLevel): string {
+    switch (rankLevel) {
+      case 5:
+        return "V";
+      case 4:
+        return "IV";
+      case 3:
+        return "III";
+      case 2:
+        return "II";
+      default:
+        return "I";
+    }
+  }
+
+  private applyShipRankBadgePips(pips: Phaser.GameObjects.Rectangle[], rankLevel: FactionShipRankLevel, color: number): void {
+    pips.forEach((pip, index) => {
+      const active = index < rankLevel;
+      pip.setFillStyle(active ? color : 0x314154, active ? 0.94 : 0.38);
+      pip.setScale(active ? 1 : 0.92, active ? 1 : 0.92);
+    });
   }
 
   private createFieldObject(state: SpaceFieldObjectState): SpaceFieldObject {
@@ -4539,8 +4654,28 @@ export class SpaceScene extends Phaser.Scene {
       );
     }
 
+    const rankBadgeGlow = this.add.circle(0, -bodyRadius - 15, Math.max(8, bodyRadius * 0.42), palette.glowColor, 0.18)
+      .setStrokeStyle(1, palette.trimColor, 0.42);
+    const rankBadgeCore = this.add.circle(0, -bodyRadius - 15, Math.max(7, bodyRadius * 0.34), 0x08111c, 0.92)
+      .setStrokeStyle(1, 0xf7fbff, 0.52);
+    const pipSpacing = Math.max(3.2, bodyRadius * 0.14);
+    const rankBadgePips = Array.from({ length: 5 }, (_, index) => (
+      this.add.rectangle(
+        (index - 2) * pipSpacing,
+        -bodyRadius - 15,
+        Math.max(2.4, bodyRadius * 0.12),
+        Math.max(3.2, bodyRadius * 0.2),
+        palette.trimColor,
+        0.92,
+      ).setStrokeStyle(1, 0xf7fbff, 0.18)
+    ));
+    this.applyShipRankBadgePips(rankBadgePips, state.rankLevel, palette.trimColor);
+    const rankBadge = this.add.container(0, 0, [rankBadgeGlow, rankBadgeCore, ...rankBadgePips]);
+    children.push(rankBadge);
+
     const root = this.add.container(state.x, state.y, children).setDepth(13);
     root.rotation = state.rotation;
+    rankBadge.rotation = -root.rotation;
     root.setSize(bodyRadius * 2.6, bodyRadius * 2.6);
     const aimDirection = new Phaser.Math.Vector2(state.aimX, state.aimY);
     if (aimDirection.lengthSq() <= 0.0001) {
@@ -4555,6 +4690,9 @@ export class SpaceScene extends Phaser.Scene {
       assetId: state.assetId,
       originRaceId: state.originRaceId,
       shipRole: state.shipRole,
+      rankLevel: state.rankLevel,
+      rankXp: state.rankXp,
+      kills: state.kills,
       assignmentKind: state.assignmentKind,
       assignmentZoneId: state.assignmentZoneId,
       slotKind: state.slotKind,
@@ -4570,6 +4708,9 @@ export class SpaceScene extends Phaser.Scene {
       root,
       thruster,
       damageRing,
+      rankBadge,
+      rankBadgeText: null,
+      rankBadgePips,
       velocity: new Phaser.Math.Vector2(state.velocityX, state.velocityY),
       aimDirection,
       patrolTarget: new Phaser.Math.Vector2(state.patrolX, state.patrolY),
@@ -4640,7 +4781,7 @@ export class SpaceScene extends Phaser.Scene {
       lineSpacing: 4,
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.coordinateText = this.add.text(GAME_WIDTH - 34, 178, "", {
+    this.coordinateText = this.add.text(GAME_WIDTH - 34, 236, "", {
       fontFamily: "Arial",
       fontSize: "13px",
       color: "#eef7ff",
@@ -4664,18 +4805,9 @@ export class SpaceScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.desktopControlsText = this.add.text(GAME_WIDTH * 0.5, GAME_HEIGHT - 28, "WASD move  |  Mouse aim  |  LMB fire  |  F interact / land  |  L missions  |  I inventory  |  K skills  |  O ship  |  M map  |  ESC pause", {
-      fontFamily: "Arial",
-      fontSize: "15px",
-      color: "#dcecff",
-      backgroundColor: "#09131fcc",
-      padding: { x: 12, y: 6 },
-    }).setOrigin(0.5, 0.5).setScrollFactor(0).setDepth(51);
-    this.desktopUiObjects.push(this.desktopControlsText);
-
     this.logbookButton = createMenuButton({
       scene: this,
-      x: 928,
+      x: 876,
       y: 44,
       width: 126,
       height: 40,
@@ -4688,7 +4820,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.pauseButton = createMenuButton({
       scene: this,
-      x: 1052,
+      x: 1011,
       y: 44,
       width: 110,
       height: 40,
@@ -4701,7 +4833,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.returnButton = createMenuButton({
       scene: this,
-      x: 1176,
+      x: 1172,
       y: 44,
       width: 184,
       height: 40,
@@ -5650,18 +5782,20 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private getShipCombatConfig(
-    ship: Pick<SpaceFactionShip | SpaceFactionShipState, "factionId" | "originRaceId" | "shipRole">,
+    ship: Pick<SpaceFactionShip | SpaceFactionShipState, "factionId" | "originRaceId" | "shipRole" | "rankLevel">,
   ): (typeof SPACE_FACTIONS)[SpaceFactionId] {
     const baseFaction = getSpaceFactionConfig(ship.factionId, ship.originRaceId);
     const roleProfile = getSpaceShipRoleCombatProfile(ship.shipRole);
+    const speedMultiplier = getFactionShipRankSpeedMultiplier(ship.rankLevel ?? 1);
+    const hullMultiplier = getFactionShipRankHullMultiplier(ship.rankLevel ?? 1);
     return {
       ...baseFaction,
-      maxHull: baseFaction.maxHull * roleProfile.hullMultiplier,
+      maxHull: baseFaction.maxHull * roleProfile.hullMultiplier * hullMultiplier,
       radius: baseFaction.radius * roleProfile.radiusMultiplier,
-      acceleration: baseFaction.acceleration * roleProfile.accelerationMultiplier,
-      maxSpeed: baseFaction.maxSpeed * roleProfile.maxSpeedMultiplier,
+      acceleration: baseFaction.acceleration * roleProfile.accelerationMultiplier * speedMultiplier,
+      maxSpeed: baseFaction.maxSpeed * roleProfile.maxSpeedMultiplier * speedMultiplier,
       detectRange: baseFaction.detectRange * roleProfile.detectRangeMultiplier,
-      fireRange: baseFaction.fireRange * roleProfile.fireRangeMultiplier,
+      fireRange: baseFaction.fireRange * roleProfile.fireRangeMultiplier * (1 + (((ship.rankLevel ?? 1) - 1) * 0.04)),
       preferredRange: baseFaction.preferredRange * roleProfile.preferredRangeMultiplier,
       fireCooldown: baseFaction.fireCooldown * roleProfile.fireCooldownMultiplier,
       bulletSpeed: baseFaction.bulletSpeed * roleProfile.bulletSpeedMultiplier,
@@ -5746,7 +5880,9 @@ export class SpaceScene extends Phaser.Scene {
       default:
         break;
     }
-    return baseDamage * getSpaceShipRoleCombatProfile(ship.shipRole).damageMultiplier;
+    return baseDamage
+      * getSpaceShipRoleCombatProfile(ship.shipRole).damageMultiplier
+      * getFactionShipRankDamageMultiplier(ship.rankLevel);
   }
 
   private trySupportRepair(ship: SpaceFactionShip): void {
@@ -6125,6 +6261,7 @@ export class SpaceScene extends Phaser.Scene {
       if (aimDirection.lengthSq() > 0.01) {
         ship.aimDirection.copy(aimDirection.normalize());
         ship.root.rotation = Math.atan2(ship.aimDirection.y, ship.aimDirection.x) + Math.PI * 0.5;
+        ship.rankBadge.rotation = -ship.root.rotation;
       }
 
       this.constrainMovingBody(ship.root, ship.radius, ship.velocity, 0.22);
@@ -7001,6 +7138,7 @@ export class SpaceScene extends Phaser.Scene {
           : 210
         : 160,
     );
+    this.spawnAsteroidLootDrops(fieldObject, x, y);
 
     this.playWorldCue("asteroid-break", x, y, fieldObject.kind === "asteroid" ? (fieldObject.isLarge ? 0.92 : 0.78) : 0.58, fieldObject.isLarge ? 0.86 : 1);
   }
@@ -7018,7 +7156,8 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
-    ship.hp -= damage;
+    const adjustedDamage = damage / getFactionShipRankDefenseMultiplier(ship.rankLevel);
+    ship.hp -= adjustedDamage;
     ship.flash = 1;
     const aggroed = this.provokeShip(ship, source);
     if (aggroed) {
@@ -7028,7 +7167,7 @@ export class SpaceScene extends Phaser.Scene {
     this.playWorldCue(ship.hp <= 0 ? "shield-break" : "shield-hit", ship.root.x, ship.root.y, ship.hp <= 0 ? 0.7 : 0.64);
 
     if (ship.hp <= 0) {
-      this.destroyFactionShip(ship);
+      this.destroyFactionShip(ship, source);
     }
   }
 
@@ -7101,7 +7240,7 @@ export class SpaceScene extends Phaser.Scene {
     });
   }
 
-  private destroyFactionShip(ship: SpaceFactionShip): void {
+  private destroyFactionShip(ship: SpaceFactionShip, source: SpaceDamageSource = { kind: "ship", shipId: null, factionId: null }): void {
     const shipIndex = this.factionShips.indexOf(ship);
     if (shipIndex < 0) {
       return;
@@ -7129,6 +7268,17 @@ export class SpaceScene extends Phaser.Scene {
         state.provokedByShips = state.provokedByShips.filter((provokedShipId) => provokedShipId !== ship.id);
       }
     });
+
+    if (source.kind === "ship" && source.shipId) {
+      const rankUpdate = awardFactionForceShipKill(this.forceState, source.shipId, ship.rankLevel);
+      if (rankUpdate.changed) {
+        this.forceStateDirty = true;
+        this.reconcileForceShips();
+      }
+    }
+    if (source.kind === "player") {
+      this.awardPlayerSpaceKillRewards(ship, x, y);
+    }
 
     this.spawnExplosionRing(x, y, ship.radius * 0.7, palette.trimColor, palette.glowColor);
     this.spawnBurst(x, y, palette.color, ship.factionId === "pirate" ? 7 : 6, 100, 220);
@@ -7244,6 +7394,461 @@ export class SpaceScene extends Phaser.Scene {
     this.shots.splice(index, 1);
   }
 
+  private getSpaceLootDropCue(rarity: SpacePickupVisualRarity): "loot-drop-common" | "loot-drop-rare" | "loot-drop-legendary" | "loot-drop-mythic" {
+    switch (rarity) {
+      case "Rare":
+        return "loot-drop-rare";
+      case "Legendary":
+        return "loot-drop-legendary";
+      case "Mythic":
+        return "loot-drop-mythic";
+      default:
+        return "loot-drop-common";
+    }
+  }
+
+  private getSpaceLootPickupCue(rarity: SpacePickupVisualRarity): "loot-pickup-common" | "loot-pickup-rare" | "loot-pickup-legendary" | "loot-pickup-mythic" {
+    switch (rarity) {
+      case "Rare":
+        return "loot-pickup-rare";
+      case "Legendary":
+        return "loot-pickup-legendary";
+      case "Mythic":
+        return "loot-pickup-mythic";
+      default:
+        return "loot-pickup-common";
+    }
+  }
+
+  private spawnSpaceCreditsPickup(x: number, y: number, amount: number): void {
+    if (amount <= 0) {
+      return;
+    }
+    this.createSpacePickup({
+      x,
+      y,
+      kind: "credits",
+      rarity: "Common",
+      color: 0xffd67a,
+      autoPickup: true,
+      label: `Credits x${amount}`,
+      amount,
+      shape: "credits",
+    });
+  }
+
+  private spawnSpaceItemPickup(x: number, y: number, item: InventoryItem): void {
+    const rarity = normalizeItemRarity(item.rarity);
+    this.createSpacePickup({
+      x,
+      y,
+      kind: "item",
+      rarity,
+      color: item.kind === "junk" || item.kind === "quest" ? getItemRarityColor(rarity) : item.color,
+      autoPickup: false,
+      label: getItemShortLabel(item),
+      item,
+      shape: item.kind === "quest" ? "quest" : item.kind === "junk" ? "junk" : "item",
+    });
+  }
+
+  private createSpacePickup(options: {
+    x: number;
+    y: number;
+    kind: SpaceWorldPickup["kind"];
+    rarity: SpacePickupVisualRarity;
+    color: number;
+    autoPickup: boolean;
+    label: string;
+    shape: "credits" | "junk" | "item" | "quest";
+    amount?: number;
+    item?: InventoryItem;
+  }): void {
+    const shadow = this.add.ellipse(options.x, options.y + 16, 30, 14, 0x000000, 0.24).setDepth(12);
+    const haloRadius = options.shape === "credits" ? 14 : options.shape === "quest" ? 18 : 16;
+    const halo = this.add.circle(options.x, options.y, haloRadius, options.color, 0.12)
+      .setStrokeStyle(options.rarity === "Legendary" || options.rarity === "Mythic" ? 2 : 1, options.color, 0.38)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(15);
+    const sprite = options.shape === "credits"
+      ? this.add.rectangle(options.x, options.y, 12, 12, options.color, 0.96).setRotation(Math.PI * 0.25).setDepth(16)
+      : options.shape === "quest"
+        ? this.add.triangle(options.x, options.y, 0, -12, 12, 10, -12, 10, options.color, 0.96).setStrokeStyle(2, 0xf7fbff, 0.5).setDepth(16)
+        : options.shape === "junk"
+          ? this.add.rectangle(options.x, options.y, 15, 11, options.color, 0.94).setStrokeStyle(1, 0xe7edf5, 0.34).setDepth(16)
+          : this.add.circle(options.x, options.y, 9, options.color, 0.96).setStrokeStyle(1, 0xf7fbff, 0.42).setDepth(16);
+    let promptText: Phaser.GameObjects.Text | null = null;
+    if (!options.autoPickup) {
+      try {
+        promptText = this.add.text(options.x, options.y - 30, options.label, {
+          fontFamily: "Arial",
+          fontSize: "12px",
+          color: "#f5fbff",
+          fontStyle: "bold",
+          align: "center",
+          backgroundColor: "#09131fcc",
+          padding: { x: 7, y: 3 },
+        }).setOrigin(0.5).setDepth(17).setVisible(false);
+      } catch {
+        promptText = null;
+      }
+    }
+
+    this.spacePickups.push({
+      id: `space-pickup-${this.pickupCounter += 1}`,
+      kind: options.kind,
+      rarity: options.rarity,
+      color: options.color,
+      autoPickup: options.autoPickup,
+      amount: options.amount,
+      item: options.item,
+      baseX: options.x,
+      baseY: options.y,
+      sprite,
+      halo,
+      shadow,
+      promptText,
+      bobOffset: Phaser.Math.FloatBetween(0, Math.PI * 2),
+      bobSpeed: Phaser.Math.FloatBetween(1.4, 2.4),
+      collected: false,
+    });
+
+    retroSfx.play(this.getSpaceLootDropCue(options.rarity), {
+      volume: options.rarity === "Legendary" || options.rarity === "Mythic" ? 0.72 : 0.54,
+      pan: Phaser.Math.Clamp((options.x - this.shipRoot.x) / 520, -0.45, 0.45),
+    });
+  }
+
+  private destroySpacePickup(pickup: SpaceWorldPickup): void {
+    pickup.shadow.destroy();
+    pickup.halo.destroy();
+    pickup.sprite.destroy();
+    pickup.promptText?.destroy();
+    Phaser.Utils.Array.Remove(this.spacePickups, pickup);
+  }
+
+  private collectSpacePickup(pickup: SpaceWorldPickup): void {
+    if (pickup.collected) {
+      return;
+    }
+
+    if (pickup.kind === "credits") {
+      const amount = Math.max(0, Math.round(pickup.amount ?? 0));
+      if (amount > 0) {
+        gameSession.addCredits(amount);
+        this.pushStatusMessage(`Recovered ${amount} credits.`, 3200);
+      }
+      retroSfx.play("credit-pickup", { volume: 0.62 });
+    } else if (pickup.item) {
+      if (!gameSession.addItemToCargo(pickup.item)) {
+        const blockedText = `Cargo Full\n${getItemShortLabel(pickup.item)}`;
+        if (pickup.promptText && pickup.promptText.text !== blockedText) {
+          pickup.promptText.setText(blockedText).setVisible(true);
+          this.pushStatusMessage("Cargo inventory full. Free a slot before collecting more salvage.", 4200);
+        } else if (!pickup.promptText) {
+          this.pushStatusMessage(`Cargo inventory full. Cannot collect ${getItemShortLabel(pickup.item)}.`, 4200);
+        }
+        return;
+      }
+      retroSfx.play(this.getSpaceLootPickupCue(pickup.rarity), {
+        volume: pickup.rarity === "Legendary" || pickup.rarity === "Mythic" ? 0.84 : 0.68,
+      });
+      this.pushStatusMessage(`Picked up ${getItemShortLabel(pickup.item)}.`, 3600);
+      if (pickup.item.kind === "quest" && pickup.item.tag === "secret-intel") {
+        this.startSecretIntelRun(pickup.item);
+      }
+    }
+
+    pickup.collected = true;
+    const fadeTargets: Phaser.GameObjects.GameObject[] = [pickup.sprite, pickup.halo, pickup.shadow];
+    if (pickup.promptText) {
+      fadeTargets.push(pickup.promptText);
+    }
+    this.tweens.add({
+      targets: fadeTargets,
+      alpha: 0,
+      y: "-=14",
+      duration: 180,
+      onComplete: () => this.destroySpacePickup(pickup),
+    });
+  }
+
+  private updateSpacePickups(dt: number): void {
+    for (let index = this.spacePickups.length - 1; index >= 0; index -= 1) {
+      const pickup = this.spacePickups[index];
+      if (pickup.collected) {
+        continue;
+      }
+
+      pickup.bobOffset += dt * pickup.bobSpeed;
+      const bobY = Math.sin(pickup.bobOffset) * 6;
+      const dx = this.shipRoot.x - pickup.baseX;
+      const dy = this.shipRoot.y - pickup.baseY;
+      const distance = Math.max(0.001, Math.hypot(dx, dy));
+      if (distance <= SPACE_PICKUP_ATTRACT_RANGE) {
+        const pull = Phaser.Math.Clamp((SPACE_PICKUP_ATTRACT_RANGE - distance) / SPACE_PICKUP_ATTRACT_RANGE, 0.08, 0.22) * 260 * dt;
+        pickup.baseX += (dx / distance) * pull;
+        pickup.baseY += (dy / distance) * pull;
+      }
+
+      pickup.sprite.setPosition(pickup.baseX, pickup.baseY + bobY);
+      pickup.halo.setPosition(pickup.baseX, pickup.baseY + bobY);
+      pickup.shadow.setPosition(pickup.baseX, pickup.baseY + 16);
+      pickup.promptText?.setPosition(pickup.baseX, pickup.baseY + bobY - 30);
+      pickup.promptText?.setVisible(distance <= 160);
+
+      if (distance <= SPACE_PICKUP_COLLECT_RANGE) {
+        this.collectSpacePickup(pickup);
+      }
+    }
+  }
+
+  private getShipCreditReward(ship: SpaceFactionShip): number {
+    let amount = 12 + (ship.rankLevel * 6);
+    if (ship.shipRole === "attack-warship" || ship.shipRole === "defense-warship") {
+      amount += 18;
+    } else if (ship.shipRole === "support-fighter") {
+      amount += 8;
+    }
+    if (ship.factionId === "empire") {
+      amount += 6;
+    }
+    return amount;
+  }
+
+  private getShipPlayerXpReward(ship: SpaceFactionShip): number {
+    let amount = getFactionShipRankPlayerXpReward(ship.rankLevel);
+    if (ship.shipRole === "attack-warship" || ship.shipRole === "defense-warship") {
+      amount += 8;
+    } else if (ship.shipRole === "support-fighter") {
+      amount += 3;
+    }
+    return amount;
+  }
+
+  private awardPlayerSpaceKillRewards(ship: SpaceFactionShip, x: number, y: number): void {
+    const creditAmount = this.getShipCreditReward(ship);
+    const xpAmount = this.getShipPlayerXpReward(ship);
+    const { level } = gameSession.addPlayerXp(xpAmount);
+    this.spawnSpaceCreditsPickup(x + Phaser.Math.Between(-14, 14), y + Phaser.Math.Between(-14, 14), creditAmount);
+
+    const scrapChance = SHIP_SCRAP_DROP_CHANCE + (ship.rankLevel >= 4 ? HIGH_RANK_SHIP_SCRAP_DROP_BONUS : 0);
+    if (Math.random() <= scrapChance) {
+      this.spawnSpaceItemPickup(
+        x + Phaser.Math.Between(-26, 26),
+        y + Phaser.Math.Between(-26, 26),
+        createJunkLoot("scrap-ship-parts"),
+      );
+    }
+
+    if (ship.factionId === "empire" && ship.rankLevel >= 4 && !gameSession.getSecretIntelRunState().active && Math.random() <= SECRET_INTEL_DROP_CHANCE) {
+      const intel = createQuestItem({
+        itemId: `secret-intel:${ship.id}:${Math.round(this.time.now)}`,
+        name: "Secret Intel",
+        shortLabel: "Intel",
+        description: "Intercepted Empire command intelligence. Republic agents want this delivered intact.",
+        rarity: "Legendary",
+        tag: "secret-intel",
+      });
+      this.spawnSpaceItemPickup(
+        x + Phaser.Math.Between(-18, 18),
+        y + Phaser.Math.Between(-18, 18),
+        intel,
+      );
+      this.pushStatusMessage("Empire officer down. Secret Intel recovered from the wreckage.", 5600);
+    }
+
+    this.pushStatusMessage(`${getFactionShipRankLabel(ship.rankLevel)} hostile destroyed. +${xpAmount} XP. Level ${level}.`, 3200);
+  }
+
+  private spawnAsteroidLootDrops(fieldObject: SpaceFieldObject, x: number, y: number): void {
+    if (fieldObject.kind !== "asteroid") {
+      return;
+    }
+
+    if (Math.random() <= ASTEROID_IRON_ORE_DROP_CHANCE + (fieldObject.isLarge ? 0.18 : 0)) {
+      this.spawnSpaceItemPickup(x + Phaser.Math.Between(-16, 16), y + Phaser.Math.Between(-16, 16), createJunkLoot("iron-ore"));
+    }
+    if (Math.random() <= ASTEROID_AETHERIUM_DROP_CHANCE + (fieldObject.isLarge ? 0.05 : 0)) {
+      this.spawnSpaceItemPickup(x + Phaser.Math.Between(-22, 22), y + Phaser.Math.Between(-22, 22), createJunkLoot("aetherium-ore"));
+    }
+    if (fieldObject.isLarge && Math.random() <= ASTEROID_STARFORGED_DROP_CHANCE) {
+      this.spawnSpaceItemPickup(x + Phaser.Math.Between(-28, 28), y + Phaser.Math.Between(-28, 28), createJunkLoot("starforged-alloy"));
+    }
+  }
+
+  private getSecretIntelTargetPlanet(): GalaxyPlanetRecord | null {
+    const intelState = gameSession.getSecretIntelRunState();
+    if (!intelState.active || !intelState.targetPlanetId) {
+      return null;
+    }
+    return this.galaxyPlanetsById.get(intelState.targetPlanetId) ?? null;
+  }
+
+  private getSecretIntelWaypoint(): SpaceMissionWaypoint | null {
+    const intelState = gameSession.getSecretIntelRunState();
+    const targetPlanet = this.getSecretIntelTargetPlanet();
+    if (!intelState.active || !targetPlanet) {
+      return null;
+    }
+    const position = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, targetPlanet, this.getOrbitTimeMs());
+    return {
+      id: targetPlanet.id,
+      missionId: "secret-intel",
+      stepId: "deliver",
+      label: `${targetPlanet.name} Intel Dropoff`,
+      kind: "planet",
+      color: getItemRarityColor("Legendary"),
+      actionLabel: "DELIVER",
+      x: position.x,
+      y: position.y,
+      radius: targetPlanet.radius,
+    };
+  }
+
+  private startSecretIntelRun(item: InventoryItem): void {
+    const candidates = this.galaxyDefinition.homeworlds
+      .filter((homeworld) => this.warState.republicRaceIds.includes(homeworld.raceId))
+      .map((homeworld) => ({
+        homeworld,
+        planet: this.galaxyPlanetsById.get(homeworld.planetId) ?? null,
+      }))
+      .filter((entry): entry is { homeworld: GalaxyDefinition["homeworlds"][number]; planet: GalaxyPlanetRecord } => entry.planet !== null)
+      .sort((left, right) => {
+        const leftPos = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, left.planet, this.getOrbitTimeMs());
+        const rightPos = getGalaxyPlanetPositionAtTime(this.galaxyDefinition, right.planet, this.getOrbitTimeMs());
+        return Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, leftPos.x, leftPos.y)
+          - Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, rightPos.x, rightPos.y);
+      });
+    const target = candidates[0];
+    if (!target) {
+      return;
+    }
+
+    gameSession.startSecretIntelRun({
+      itemInstanceId: item.instanceId,
+      targetRaceId: target.homeworld.raceId,
+      targetPlanetId: target.planet.id,
+    });
+    this.secretIntelHunterCooldownMs = SECRET_INTEL_HUNTER_INTERVAL_MS * 0.4;
+    this.pushStatusMessage(`Secret Intel secured. Deliver it to ${target.planet.name}. Empire hunters are inbound.`, 8200);
+  }
+
+  private spawnSecretIntelHunters(): void {
+    const empireRaceId = this.warState.empireRaceId;
+    if (!empireRaceId) {
+      return;
+    }
+
+    const nearbyEmpireShips = this.factionShips.filter((ship) => (
+      ship.factionId === "empire"
+      && Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y) <= SECRET_INTEL_HUNTER_RADIUS
+    )).length;
+    if (nearbyEmpireShips >= 3) {
+      return;
+    }
+
+    const spawnAngle = Phaser.Math.FloatBetween(-Math.PI, Math.PI);
+    const spawnDistance = SECRET_INTEL_HUNTER_RADIUS + Phaser.Math.Between(120, 220);
+    const anchorX = Phaser.Math.Clamp(this.shipRoot.x + Math.cos(spawnAngle) * spawnDistance, 320, SPACE_WORLD_CONFIG.width - 320);
+    const anchorY = Phaser.Math.Clamp(this.shipRoot.y + Math.sin(spawnAngle) * spawnDistance, 320, SPACE_WORLD_CONFIG.height - 320);
+    const faction = getSpaceFactionConfig("empire", empireRaceId);
+    const roles: Array<{ role: FactionForceShipRole; rankLevel: FactionShipRankLevel }> = [
+      { role: "attack-warship", rankLevel: 4 },
+      { role: "base-fighter", rankLevel: 2 },
+      { role: "support-fighter", rankLevel: 2 },
+    ];
+
+    roles.forEach((entry, index) => {
+      const angle = spawnAngle + ((index - 1) * 0.34);
+      const roleProfile = getSpaceShipRoleCombatProfile(entry.role);
+      const x = anchorX + Math.cos(angle) * (index * 56);
+      const y = anchorY + Math.sin(angle) * (index * 56);
+      const id = `secret-intel-hunter:${Math.round(this.time.now)}:${index}`;
+      const state: SpaceFactionShipState = {
+        id,
+        cellKey: getSpaceCellKeyAtPosition(x, y),
+        factionId: "empire",
+        assetId: `hunter/${entry.role}`,
+        originRaceId: empireRaceId,
+        shipRole: entry.role,
+        rankLevel: entry.rankLevel,
+        rankXp: 0,
+        kills: 0,
+        assignmentKind: "invade",
+        assignmentZoneId: null,
+        slotKind: index === 0 ? "command" : "escort",
+        fleetId: id,
+        fleetGroupId: id,
+        fleetMode: "single-fleet",
+        captureIntent: false,
+        sectorId: getGalaxySectorAtPosition(x, y).id,
+        groupId: id,
+        leaderId: index === 0 ? null : `secret-intel-hunter:${Math.round(this.time.now)}:0`,
+        formationOffsetX: 0,
+        formationOffsetY: 0,
+        x,
+        y,
+        velocityX: 0,
+        velocityY: 0,
+        rotation: Math.atan2(this.shipRoot.y - y, this.shipRoot.x - x) + Math.PI * 0.5,
+        patrolX: this.shipRoot.x,
+        patrolY: this.shipRoot.y,
+        customColor: faction.color,
+        customTrimColor: faction.trimColor,
+        customGlowColor: faction.glowColor,
+        guardAnchorX: this.shipRoot.x,
+        guardAnchorY: this.shipRoot.y,
+        guardRadius: 960,
+        originPoolId: null,
+        originPoolKind: null,
+        originZoneId: null,
+        originSystemId: null,
+        aimX: Math.cos(angle),
+        aimY: Math.sin(angle),
+        radius: faction.radius * roleProfile.radiusMultiplier,
+        hp: faction.maxHull * roleProfile.hullMultiplier * getFactionShipRankHullMultiplier(entry.rankLevel),
+        maxHp: faction.maxHull * roleProfile.hullMultiplier * getFactionShipRankHullMultiplier(entry.rankLevel),
+        flash: 0,
+        fireCooldown: randomBetween(MISSION_HOSTILE_FIRE_COOLDOWN_MIN, MISSION_HOSTILE_FIRE_COOLDOWN_MAX),
+        provokedByPlayer: true,
+        provokedByShips: [],
+        aggressionTimer: AGGRESSION_DURATION,
+        strafeSign: index % 2 === 0 ? 1 : -1,
+        routeTargetKind: null,
+        routeTargetId: null,
+        routeWaitRemainingMs: 0,
+        supportRepairCooldown: 0,
+        destroyed: false,
+      };
+      this.shipStates.set(id, state);
+      if (this.activeShipCellKeys.includes(state.cellKey)) {
+        this.factionShips.push(this.createFactionShip(state));
+      }
+      this.spawnMissionHyperjumpArrival(x, y, faction.glowColor);
+    });
+
+    this.pushStatusMessage("Empire hunter wing has arrived on your signal trace.", 5200);
+  }
+
+  private updateSecretIntelRun(deltaMs: number): void {
+    const intelState = gameSession.getSecretIntelRunState();
+    if (!intelState.active) {
+      return;
+    }
+
+    if (!intelState.itemInstanceId || !gameSession.hasCargoItemByInstanceId(intelState.itemInstanceId)) {
+      gameSession.clearSecretIntelRun();
+      return;
+    }
+
+    this.secretIntelHunterCooldownMs = Math.max(0, this.secretIntelHunterCooldownMs - deltaMs);
+    if (this.secretIntelHunterCooldownMs <= 0) {
+      this.secretIntelHunterCooldownMs = SECRET_INTEL_HUNTER_INTERVAL_MS;
+      this.spawnSecretIntelHunters();
+    }
+  }
+
   private spawnExplosionRing(x: number, y: number, radius: number, strokeColor: number, fillColor: number): void {
     const ring = this.add.circle(x, y, Math.max(14, radius), fillColor, 0)
       .setStrokeStyle(2, strokeColor, 0.82)
@@ -7313,6 +7918,8 @@ export class SpaceScene extends Phaser.Scene {
     const regionLabel = this.getCurrentRegionLabel();
     const missionPlanet = this.getTrackedMissionPlanet();
     const missionWaypoint = this.activeMissionWaypoint;
+    const secretIntelWaypoint = this.getSecretIntelWaypoint();
+    const trackedTarget = secretIntelWaypoint ?? missionWaypoint ?? missionPlanet;
     const trackedMissionId = missionWaypoint?.missionId ?? missionPlanet?.missionId ?? this.getActiveCourseMissionId();
     const trackedMission = trackedMissionId ? getMissionContract(trackedMissionId) : null;
     const sectorLabel = getGalaxySectorDisplayLabel(this.getCurrentGalaxySector(), this.warState);
@@ -7321,11 +7928,9 @@ export class SpaceScene extends Phaser.Scene {
     const zoneControllerLabel = currentZone
       ? getGalaxyControllerDisplayLabel(currentZone.currentControllerId, this.warState, currentZone.coreSectorId)
       : null;
-    const localCounts = this.getFactionCounts(1400);
     const localBreakables = this.countNearbyBreakables(1200);
     const speed = Math.round(this.shipVelocity.length());
     const hyperdriveStatus = this.getHyperdriveStatusLabel();
-    const hyperdriveHint = this.getHyperdriveHintLabel();
     const shipStats = gameSession.getShipStats().total;
     const shipSystems = gameSession.getShipSystemsState();
     const planetDistance = missionPlanet
@@ -7334,7 +7939,10 @@ export class SpaceScene extends Phaser.Scene {
     const waypointDistance = missionWaypoint
       ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, missionWaypoint.x, missionWaypoint.y)
       : null;
-    const missionDistance = waypointDistance ?? planetDistance;
+    const secretIntelDistance = secretIntelWaypoint
+      ? Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, secretIntelWaypoint.x, secretIntelWaypoint.y)
+      : null;
+    const missionDistance = waypointDistance ?? planetDistance ?? secretIntelDistance;
     const landingReady = this.canLandOnTrackedMissionPlanet(missionPlanet, planetDistance);
     const directReclaimTarget = landingReady ? null : this.getDirectReclaimLandingTarget();
     const directReclaimReady = Boolean(directReclaimTarget);
@@ -7357,6 +7965,7 @@ export class SpaceScene extends Phaser.Scene {
     const stationInteraction = this.getNearestStationInteraction();
     const stationRestricted = Boolean(stationInteraction && this.isStationEmpireRestricted(stationInteraction.station));
     const primeWorldInteraction = this.getNearestPrimeWorldInteraction();
+    const intelDeliveryReady = Boolean(primeWorldInteraction?.inRange && this.canDeliverSecretIntelToPrimeWorld(primeWorldInteraction.planet));
     const touchLocked = this.returningToShip || this.playerDestroyed || this.isMenuOverlayVisible();
     const hyperdriveCombatLocked = isShipHyperdriveCombatLocked(this.hyperdrive.state);
     const playerHostiles = this.factionShips.filter((ship) => {
@@ -7365,23 +7974,18 @@ export class SpaceScene extends Phaser.Scene {
       }
       return Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, ship.root.x, ship.root.y) <= 1300;
     }).length;
-    const targetLabel = this.autoAimTarget
-      ? this.autoAimTarget.kind === "ship"
-        ? `${SPACE_FACTIONS[this.autoAimTarget.ship.factionId].label} ship`
-        : this.autoAimTarget.kind === "mission"
-          ? this.autoAimTarget.missionObject.kind === "boss" ? "Mission heavy contact" : "Mission target"
-        : this.autoAimTarget.fieldObject.kind === "asteroid"
-          ? this.autoAimTarget.fieldObject.isLarge ? "Large asteroid" : "Asteroid"
-          : "Debris"
-      : "None";
-    const autoAim = gameSession.settings.controls.autoAim;
-    const autoFire = gameSession.settings.controls.autoFire;
+    const nearbyStations = this.galaxyDefinition.stations.filter((station) => (
+      Phaser.Math.Distance.Between(this.shipRoot.x, this.shipRoot.y, station.x, station.y) <= 1800
+    )).length;
+    const intelActive = Boolean(secretIntelWaypoint);
     const stationStatus = landingReady
       ? `Mission world ${missionPlanet?.name ?? "target"} | Press F to land`
       : directReclaimTarget
         ? `${directReclaimTarget.zone.name} clear | Press F to land on ${directReclaimTarget.planet.name}`
       : reclaimReadyZone
         ? `${reclaimReadyZone.name} clear | Move to a local world and press F to reclaim`
+      : intelActive
+        ? `Secret Intel aboard | Deliver to ${secretIntelWaypoint?.label ?? "Republic dropoff"}`
       : missionActionReady
         ? `${missionWaypoint?.label ?? "Mission target"} | Press F to ${missionWaypoint?.actionLabel?.toLowerCase() ?? "interact"}`
       : stationInteraction
@@ -7409,14 +8013,19 @@ export class SpaceScene extends Phaser.Scene {
         : primeWorldInteraction?.inRange
           ? "Comms"
         : "Interact";
-    const waypointStatus = missionWaypoint || missionPlanet
-      ? `Waypoint ${missionWaypoint?.label ?? missionPlanet?.name ?? "target"}  |  Dist ${Math.round(missionDistance ?? 0)}${landingReady ? "  |  Landing ready" : missionActionReady ? "  |  Interaction ready" : ""}`
+    const trackedTargetLabel = trackedTarget
+      ? ("label" in trackedTarget ? trackedTarget.label : trackedTarget.name)
+      : "target";
+    const waypointStatus = trackedTarget
+      ? `Objective ${trackedTargetLabel}  |  Dist ${Math.round(missionDistance ?? 0)}${landingReady ? "  |  Landing ready" : missionActionReady ? "  |  Interaction ready" : ""}`
       : "Waypoint none set";
-    const localContactSummary = `Contacts  Empire ${localCounts.empire}  |  Republic ${localCounts.republic}  |  Guards ${localCounts.homeguard}  |  Pirates ${localCounts.pirate}  |  Smugglers ${localCounts.smuggler}`;
+    const localAwareness = `Nearby enemies ${playerHostiles}  |  Debris ${localBreakables}  |  Stations ${nearbyStations}`;
 
-    this.routeText?.setText(trackedMission
-      ? `Active Course: ${trackedMission.title}`
-      : `Sector: ${sectorLabel}`);
+    this.routeText?.setText(intelActive
+        ? "Active Course: Secret Intel Delivery"
+      : trackedMission
+        ? `Active Course: ${trackedMission.title}`
+        : `Sector: ${sectorLabel}`);
     this.statusText?.setText(
       `Sector ${sectorLabel}  |  Zone ${zoneLabel}${zoneControllerLabel ? `  |  Control ${zoneControllerLabel}` : ""}\n`
       + `POS X ${Math.round(this.shipRoot.x)}  Y ${Math.round(this.shipRoot.y)}  |  Region ${regionLabel}`,
@@ -7424,8 +8033,7 @@ export class SpaceScene extends Phaser.Scene {
     this.contactText?.setText(
       `${waypointStatus}\n`
       + `${stationStatus}\n`
-      + `${localContactSummary}  |  Nearby hostiles ${playerHostiles}  |  Debris ${localBreakables}\n`
-      + `Target ${targetLabel}  |  Auto Aim ${autoAim ? "On" : "Off"}  |  Auto Fire ${autoFire ? "On" : "Off"}  |  ${hyperdriveHint}`,
+      + `${localAwareness}`,
     );
     this.coordinateText?.setText(
       `HULL ${Math.max(0, this.playerHull)}/${this.playerMaxHull}  |  FRAME ${shipSystems.hull.integrity}%\n`
@@ -7468,7 +8076,7 @@ export class SpaceScene extends Phaser.Scene {
       stationView.label.setAlpha(isNearestStation ? 0.98 : 0.8);
     });
     this.updateMissionPlanetVisuals(missionPlanet, landingReady);
-    this.updateWaypointIndicator(missionWaypoint ?? missionPlanet, missionDistance, landingReady || missionActionReady);
+    this.updateWaypointIndicator(trackedTarget, missionDistance, landingReady || missionActionReady || intelDeliveryReady);
     this.refreshStatusMessageText();
     if (this.stationOverlay?.isVisible() && this.stationOverlayStationId) {
       const station = this.galaxyStationsById.get(this.stationOverlayStationId);
@@ -7783,7 +8391,7 @@ export class SpaceScene extends Phaser.Scene {
     };
   }
 
-  private buildPrimeWorldOverlayState(label: string): SpaceStationOverlayState {
+  private buildPrimeWorldOverlayState(label: string, planet?: GalaxyPlanetRecord | null): SpaceStationOverlayState {
     const credits = gameSession.getCredits();
     const repairCost = gameSession.getShipRepairCost();
     const damagedSystems = gameSession.getDamagedShipSystemIds();
@@ -7800,11 +8408,19 @@ export class SpaceScene extends Phaser.Scene {
       canAffordRepair: repairCost <= credits,
       repairSummary,
       statusText: this.stationOverlayStatusText || "Prime World channel open.",
-      ...this.getPrimeWorldMissionMenuState(),
+      ...this.getPrimeWorldMissionMenuState(planet ?? null),
     };
   }
 
-  private getPrimeWorldMissionMenuState(): Partial<SpaceStationOverlayState> {
+  private getPrimeWorldMissionMenuState(interactionPlanet: GalaxyPlanetRecord | null = null): Partial<SpaceStationOverlayState> {
+    if (interactionPlanet && this.canDeliverSecretIntelToPrimeWorld(interactionPlanet)) {
+      return {
+        missionActionLabel: "Deliver\nIntel",
+        missionActionEnabled: true,
+        missionActionSummary: `Secret Intel aboard.\nTransfer the recovered Empire data to ${interactionPlanet.name}.`,
+      };
+    }
+
     const pendingMission = this.getPendingMissionMenuState("Offer Assistance");
     if (pendingMission.missionActionLabel) {
       return pendingMission;
@@ -7826,6 +8442,40 @@ export class SpaceScene extends Phaser.Scene {
     };
   }
 
+  private canDeliverSecretIntelToPrimeWorld(planet: GalaxyPlanetRecord): boolean {
+    const intelState = gameSession.getSecretIntelRunState();
+    return Boolean(
+      intelState.active
+      && intelState.targetPlanetId
+      && intelState.itemInstanceId
+      && intelState.targetPlanetId === planet.id
+      && gameSession.hasCargoItemByInstanceId(intelState.itemInstanceId),
+    );
+  }
+
+  private tryCompleteSecretIntelDelivery(): boolean {
+    const interaction = this.getNearestPrimeWorldInteraction();
+    if (!interaction?.inRange || !this.canDeliverSecretIntelToPrimeWorld(interaction.planet)) {
+      return false;
+    }
+
+    const intelState = gameSession.getSecretIntelRunState();
+    if (!intelState.itemInstanceId || !intelState.targetRaceId) {
+      return false;
+    }
+
+    gameSession.removeCargoItemByInstanceId(intelState.itemInstanceId);
+    gameSession.clearSecretIntelRun();
+    grantFactionRankBoostCharges(this.forceState, intelState.targetRaceId, 3);
+    applyAvailableFactionRankBoosts(this.forceState, this.galaxyDefinition, intelState.targetRaceId, 3);
+    this.forceStateDirty = true;
+    this.reconcileForceShips();
+    this.stationOverlayStatusText = "Secret Intel delivered. Republic command has upgraded key fleet officers.";
+    this.stationOverlay?.update(this.buildPrimeWorldOverlayState(interaction.planet.name, interaction.planet));
+    this.pushStatusMessage("Secret Intel delivered. Republic command has upgraded key fleet officers.", 8200);
+    return true;
+  }
+
   private getPendingMissionMenuState(defaultLabel = "Mission"): Partial<SpaceStationOverlayState> {
     if (!this.pendingCommsMission) {
       return {};
@@ -7844,6 +8494,10 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private handleStationMissionAction(): void {
+    if (this.tryCompleteSecretIntelDelivery()) {
+      return;
+    }
+
     if (this.pendingCommsMission) {
       this.handleMissionCommsContinue();
       return;
@@ -7932,7 +8586,7 @@ export class SpaceScene extends Phaser.Scene {
       ? "Prime World command has an assistance request ready."
       : "Prime World command has no urgent assistance request right now.";
     retroSfx.play("station-channel-open", { volume: 0.62, pitch: 1.04 });
-    this.stationOverlay?.show(this.buildPrimeWorldOverlayState(interaction.planet.name));
+    this.stationOverlay?.show(this.buildPrimeWorldOverlayState(interaction.planet.name, interaction.planet));
     this.syncSceneOverlayChrome();
     return true;
   }
@@ -8039,20 +8693,6 @@ export class SpaceScene extends Phaser.Scene {
       case "normal":
       default:
         return "Ready";
-    }
-  }
-
-  private getHyperdriveHintLabel(): string {
-    switch (this.hyperdrive.state) {
-      case "charging":
-        return "Hold Space to commit";
-      case "active":
-        return "Space drops out";
-      case "cooldown":
-        return `Cooldown ${Math.ceil(this.hyperdrive.cooldownRemainingMs / 1000)}s`;
-      case "normal":
-      default:
-        return "Hold Space 3s";
     }
   }
 

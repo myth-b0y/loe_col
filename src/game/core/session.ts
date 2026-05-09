@@ -114,6 +114,12 @@ export type DifficultyProfile = {
 };
 
 export type RewardData = MissionRewardBundle;
+export type SecretIntelRunState = {
+  active: boolean;
+  itemInstanceId: string | null;
+  targetRaceId: RaceId | null;
+  targetPlanetId: string | null;
+};
 export type ShipTravelStatus = "docked" | "in-transit" | "arrived";
 export type ShipSystemId = "hull" | "reactor" | "engines" | "lifeSupport" | "navigation";
 export type ShipSystemState = {
@@ -355,7 +361,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 13;
+  version: 14;
   meta: {
     lastSavedAt: string | null;
   };
@@ -381,6 +387,7 @@ export type SaveData = {
     selectedMissionId: string | null;
     activityStates: Record<string, MissionActivityState>;
     liveGrantedMissionIds: string[];
+    secretIntel: SecretIntelRunState;
   };
   progression: {
     completedMissionIds: string[];
@@ -515,12 +522,21 @@ function normalizeMissionActivityStates(value: unknown): Record<string, MissionA
     }, {});
 }
 
+function normalizeSecretIntelRunState(value: Partial<SecretIntelRunState> | undefined): SecretIntelRunState {
+  return {
+    active: value?.active === true,
+    itemInstanceId: typeof value?.itemInstanceId === "string" && value.itemInstanceId.length > 0 ? value.itemInstanceId : null,
+    targetRaceId: typeof value?.targetRaceId === "string" && value.targetRaceId.length > 0 ? value.targetRaceId as RaceId : null,
+    targetPlanetId: typeof value?.targetPlanetId === "string" && value.targetPlanetId.length > 0 ? value.targetPlanetId : null,
+  };
+}
+
 function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
   const profileRaceId: RaceId = "olydran";
   const galaxy = createGalaxyDefinition(galaxySeed);
   const war = createFactionWarState(galaxy);
   return {
-    version: 13,
+    version: 14,
     meta: {
       lastSavedAt: null,
     },
@@ -546,6 +562,12 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
       selectedMissionId: null,
       activityStates: {},
       liveGrantedMissionIds: [],
+      secretIntel: {
+        active: false,
+        itemInstanceId: null,
+        targetRaceId: null,
+        targetPlanetId: null,
+      },
     },
     progression: {
       completedMissionIds: [],
@@ -649,7 +671,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 13 as const,
+    version: 14 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -664,6 +686,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
       ...parsed.missions,
       activityStates: normalizeMissionActivityStates(parsed.missions?.activityStates),
       liveGrantedMissionIds: Array.from(new Set((parsed.missions?.liveGrantedMissionIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0))),
+      secretIntel: normalizeSecretIntelRunState(parsed.missions?.secretIntel),
     },
     progression: {
       ...clone(DEFAULT_SAVE.progression),
@@ -1187,6 +1210,35 @@ export class GameSession extends Phaser.Events.EventEmitter {
     return this.saveData.profile.credits;
   }
 
+  addCredits(amount: number): number {
+    const safeAmount = Math.max(0, Math.round(amount));
+    if (safeAmount <= 0) {
+      return this.saveData.profile.credits;
+    }
+
+    this.saveData.profile.credits += safeAmount;
+    this.emit("save-changed", this.saveData);
+    return this.saveData.profile.credits;
+  }
+
+  addPlayerXp(amount: number): { xp: number; level: number } {
+    const safeAmount = Math.max(0, Math.round(amount));
+    if (safeAmount <= 0) {
+      return {
+        xp: this.saveData.profile.xp,
+        level: this.saveData.profile.level,
+      };
+    }
+
+    this.saveData.profile.xp += safeAmount;
+    this.saveData.profile.level = 1 + Math.floor(this.saveData.profile.xp / 160);
+    this.emit("save-changed", this.saveData);
+    return {
+      xp: this.saveData.profile.xp,
+      level: this.saveData.profile.level,
+    };
+  }
+
   canAffordCredits(amount: number): boolean {
     return this.saveData.profile.credits >= Math.max(0, Math.round(amount));
   }
@@ -1452,6 +1504,30 @@ export class GameSession extends Phaser.Events.EventEmitter {
     cargo[index] = null;
     this.emit("save-changed", this.saveData);
     return true;
+  }
+
+  getSecretIntelRunState(): SecretIntelRunState {
+    return clone(this.saveData.missions.secretIntel);
+  }
+
+  startSecretIntelRun(state: Omit<SecretIntelRunState, "active">): void {
+    this.saveData.missions.secretIntel = {
+      active: true,
+      itemInstanceId: state.itemInstanceId,
+      targetRaceId: state.targetRaceId,
+      targetPlanetId: state.targetPlanetId,
+    };
+    this.emit("save-changed", this.saveData);
+  }
+
+  clearSecretIntelRun(): void {
+    this.saveData.missions.secretIntel = {
+      active: false,
+      itemInstanceId: null,
+      targetRaceId: null,
+      targetPlanetId: null,
+    };
+    this.emit("save-changed", this.saveData);
   }
 
   equipCargoItemToSlot(cargoIndex: number, slotId: EquipmentSlotId): boolean {

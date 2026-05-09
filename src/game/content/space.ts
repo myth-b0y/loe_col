@@ -14,6 +14,7 @@ import {
 import {
   FLEET_ESCORT_SLOT_COUNT,
   getActiveFactionForceShips,
+  type FactionShipRankLevel,
   type FactionForceActiveShipRecord,
   type FactionForceAssignmentKind,
   type FactionForceFleetMode,
@@ -149,6 +150,7 @@ export type SpaceFactionShipSeed = {
   cellKey: SpaceWorldCellKey;
   factionId: SpaceFactionId;
   assetId: string;
+  rankLevel?: FactionShipRankLevel;
   shipRole?: FactionForceShipRole | null;
   assignmentKind?: FactionForceAssignmentKind | null;
   assignmentZoneId?: string | null;
@@ -1594,6 +1596,7 @@ function createSeededGuardFormation(
         cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
         factionId,
         assetId: ship.assetId,
+        rankLevel: ship.rankLevel,
         shipRole: ship.role,
         assignmentKind: ship.assignmentKind,
         assignmentZoneId: ship.assignmentZoneId,
@@ -1641,12 +1644,13 @@ function createSeededGuardFormation(
       x: fallbackPoint.x + (memberIndex * 60),
       y: fallbackPoint.y + (memberIndex * 44),
     };
-    return {
-      id: ship.shipId,
-      cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
-      factionId,
-      assetId: ship.assetId,
-      shipRole: ship.role,
+      return {
+        id: ship.shipId,
+        cellKey: getSpaceCellKeyAtPosition(point.x, point.y, config),
+        factionId,
+        assetId: ship.assetId,
+        rankLevel: ship.rankLevel,
+        shipRole: ship.role,
       assignmentKind: ship.assignmentKind,
       assignmentZoneId: ship.assignmentZoneId,
       slotKind: ship.slotKind,
@@ -1721,6 +1725,10 @@ export function createSpaceForceShipSeeds(
   const seeds: SpaceFactionShipSeed[] = [];
   groupedShips.forEach((poolShips, poolId) => {
     const sortedShips = [...poolShips].sort((left, right) => {
+      const rankDelta = right.rankLevel - left.rankLevel;
+      if (rankDelta !== 0) {
+        return rankDelta;
+      }
       const commandDelta = Number(right.slotKind === "command") - Number(left.slotKind === "command");
       if (commandDelta !== 0) {
         return commandDelta;
