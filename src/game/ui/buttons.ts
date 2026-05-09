@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { retroSfx, type SfxCue } from "../audio/retroSfx";
 
 export type MenuButton = {
   container: Phaser.GameObjects.Container;
@@ -23,6 +24,7 @@ type ButtonOptions = {
   depth?: number;
   accentColor?: number;
   disabled?: boolean;
+  clickCue?: SfxCue | false;
 };
 
 export function createMenuButton({
@@ -38,6 +40,7 @@ export function createMenuButton({
   depth = 10,
   accentColor = 0x194777,
   disabled = false,
+  clickCue = "ui-click",
 }: ButtonOptions): MenuButton {
   const background = scene.add
     .rectangle(0, 0, width, height, accentColor, disabled ? 0.32 : 0.88)
@@ -103,6 +106,9 @@ export function createMenuButton({
       return;
     }
 
+    if (clickCue) {
+      retroSfx.play(clickCue, { volume: 0.4 });
+    }
     pressHandler?.(pointer);
     clickHandler();
   });

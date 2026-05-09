@@ -1,6 +1,9 @@
 import { gameSession } from "../core/session";
 
 export type SfxCue =
+  | "ui-click"
+  | "ui-window-open"
+  | "ui-window-close"
   | "player-fire"
   | "enemy-shot"
   | "enemy-pounce"
@@ -147,6 +150,9 @@ const DEFAULT_THROTTLES: Partial<Record<SfxCue, number>> = {
   "ground-ambient-rumble": 5200,
   "ship-thruster": 180,
   "npc-thruster": 760,
+  "ui-click": 70,
+  "ui-window-open": 110,
+  "ui-window-close": 110,
   "ui-datapad-open": 90,
   "ui-datapad-close": 90,
   "terminal-use": 130,
@@ -378,37 +384,39 @@ class RetroSfxManager {
         this.noise(context, { duration: 0.05, volume: volume * 0.025, filterFreq: 1300, filterType: "bandpass", pan });
         return;
       case "space-ambient":
-        this.tone(context, { attack: 0.12, type: "sine", startFreq: 78 * pitch, endFreq: 54 * pitch, duration: 2.8, volume: volume * 0.05, filterFreq: 520, pan });
-        this.tone(context, { attack: 0.1, type: "triangle", startFreq: 132 * pitch, endFreq: 108 * pitch, duration: 2.1, volume: volume * 0.026, filterFreq: 760, pan, startOffset: 0.2 });
-        this.noise(context, { attack: 0.08, duration: 1.5, volume: volume * 0.014, filterFreq: 420, filterType: "lowpass", pan, playbackRate: 0.58, startOffset: 0.06 });
+        this.tone(context, { attack: 0.2, type: "sine", startFreq: 78 * pitch, endFreq: 54 * pitch, duration: 4.2, volume: volume * 0.062, filterFreq: 520, pan });
+        this.tone(context, { attack: 0.14, type: "triangle", startFreq: 132 * pitch, endFreq: 108 * pitch, duration: 3.1, volume: volume * 0.032, filterFreq: 760, pan, startOffset: 0.2 });
+        this.noise(context, { attack: 0.12, duration: 2.4, volume: volume * 0.018, filterFreq: 420, filterType: "lowpass", pan, playbackRate: 0.58, startOffset: 0.06 });
         return;
       case "space-ambient-hum":
-        this.tone(context, { attack: 0.14, type: "sine", startFreq: 62 * pitch, endFreq: 68 * pitch, duration: 3.4, volume: volume * 0.048, filterFreq: 440, pan });
-        this.tone(context, { attack: 0.12, type: "triangle", startFreq: 116 * pitch, endFreq: 98 * pitch, duration: 2.5, volume: volume * 0.024, filterFreq: 660, pan: pan * -0.55, startOffset: 0.3 });
-        this.noise(context, { attack: 0.09, duration: 1.9, volume: volume * 0.012, filterFreq: 340, filterType: "lowpass", pan, playbackRate: 0.44, startOffset: 0.14 });
+        this.tone(context, { attack: 0.18, type: "sine", startFreq: 62 * pitch, endFreq: 68 * pitch, duration: 4.6, volume: volume * 0.062, filterFreq: 440, pan });
+        this.tone(context, { attack: 0.14, type: "triangle", startFreq: 116 * pitch, endFreq: 98 * pitch, duration: 3.2, volume: volume * 0.03, filterFreq: 660, pan: pan * -0.55, startOffset: 0.3 });
+        this.noise(context, { attack: 0.1, duration: 2.4, volume: volume * 0.014, filterFreq: 340, filterType: "lowpass", pan, playbackRate: 0.44, startOffset: 0.14 });
         return;
       case "space-ambient-drift":
-        this.tone(context, { attack: 0.16, type: "sine", startFreq: 46 * pitch, endFreq: 64 * pitch, duration: 3.3, volume: volume * 0.04, filterFreq: 420, pan });
-        this.tone(context, { attack: 0.12, type: "triangle", startFreq: 88 * pitch, endFreq: 80 * pitch, duration: 2.8, volume: volume * 0.02, filterFreq: 620, pan: pan * -0.7, startOffset: 0.36 });
-        this.noise(context, { attack: 0.08, duration: 2, volume: volume * 0.012, filterFreq: 360, filterType: "lowpass", pan, playbackRate: 0.46, startOffset: 0.12 });
+        this.tone(context, { attack: 0.18, type: "sine", startFreq: 46 * pitch, endFreq: 64 * pitch, duration: 4.1, volume: volume * 0.052, filterFreq: 420, pan });
+        this.tone(context, { attack: 0.14, type: "triangle", startFreq: 88 * pitch, endFreq: 80 * pitch, duration: 3.2, volume: volume * 0.024, filterFreq: 620, pan: pan * -0.7, startOffset: 0.36 });
+        this.noise(context, { attack: 0.1, duration: 2.5, volume: volume * 0.014, filterFreq: 360, filterType: "lowpass", pan, playbackRate: 0.46, startOffset: 0.12 });
         return;
       case "space-ambient-signal":
-        this.playArpeggio(context, [196, 247, 330], "triangle", volume * 0.032, pan, pitch, 0.18, 1800);
-        this.tone(context, { type: "sine", startFreq: 72 * pitch, endFreq: 64 * pitch, duration: 1.6, volume: volume * 0.026, filterFreq: 520, pan: pan * 0.8 });
-        this.noise(context, { duration: 0.34, volume: volume * 0.006, filterFreq: 880, filterType: "bandpass", pan, playbackRate: 0.74, startOffset: 0.12 });
+        this.playArpeggio(context, [196, 247, 330], "triangle", volume * 0.04, pan, pitch, 0.18, 1800);
+        this.tone(context, { type: "sine", startFreq: 72 * pitch, endFreq: 64 * pitch, duration: 2.1, volume: volume * 0.032, filterFreq: 520, pan: pan * 0.8 });
+        this.noise(context, { duration: 0.42, volume: volume * 0.008, filterFreq: 880, filterType: "bandpass", pan, playbackRate: 0.74, startOffset: 0.12 });
         return;
       case "ship-interior-ambient":
-        this.tone(context, { attack: 0.18, type: "sine", startFreq: 72 * pitch, endFreq: 60 * pitch, duration: 3, volume: volume * 0.04, filterFreq: 420, pan });
-        this.tone(context, { attack: 0.14, type: "triangle", startFreq: 126 * pitch, endFreq: 108 * pitch, duration: 2.2, volume: volume * 0.018, filterFreq: 700, pan: pan * 0.4, startOffset: 0.22 });
-        this.noise(context, { attack: 0.12, duration: 1.3, volume: volume * 0.008, filterFreq: 300, filterType: "lowpass", pan, playbackRate: 0.38, startOffset: 0.16 });
+        this.tone(context, { attack: 0.18, type: "sine", startFreq: 72 * pitch, endFreq: 60 * pitch, duration: 4, volume: volume * 0.052, filterFreq: 420, pan });
+        this.tone(context, { attack: 0.16, type: "triangle", startFreq: 126 * pitch, endFreq: 108 * pitch, duration: 3.2, volume: volume * 0.024, filterFreq: 700, pan: pan * 0.4, startOffset: 0.22 });
+        this.noise(context, { attack: 0.14, duration: 2.1, volume: volume * 0.012, filterFreq: 300, filterType: "lowpass", pan, playbackRate: 0.38, startOffset: 0.16 });
+        this.playArpeggio(context, [330, 392], "triangle", volume * 0.02, pan * -0.4, pitch, 0.16, 1900);
         return;
       case "ground-ambient":
-        this.noise(context, { attack: 0.08, duration: 1.6, volume: volume * 0.014, filterFreq: 520, filterType: "lowpass", pan, playbackRate: 0.56 });
-        this.tone(context, { attack: 0.12, type: "triangle", startFreq: 108 * pitch, endFreq: 84 * pitch, duration: 2.1, volume: volume * 0.02, filterFreq: 760, pan: pan * -0.36, startOffset: 0.1 });
+        this.noise(context, { attack: 0.12, duration: 2.3, volume: volume * 0.02, filterFreq: 520, filterType: "lowpass", pan, playbackRate: 0.56 });
+        this.tone(context, { attack: 0.16, type: "triangle", startFreq: 108 * pitch, endFreq: 84 * pitch, duration: 3, volume: volume * 0.03, filterFreq: 760, pan: pan * -0.36, startOffset: 0.1 });
+        this.tone(context, { attack: 0.18, type: "sine", startFreq: 64 * pitch, endFreq: 58 * pitch, duration: 2.8, volume: volume * 0.018, filterFreq: 340, pan: pan * 0.2, startOffset: 0.18 });
         return;
       case "ground-ambient-rumble":
-        this.noise(context, { attack: 0.12, duration: 1.9, volume: volume * 0.016, filterFreq: 260, filterType: "lowpass", pan, playbackRate: 0.32 });
-        this.tone(context, { attack: 0.16, type: "sine", startFreq: 54 * pitch, endFreq: 46 * pitch, duration: 1.8, volume: volume * 0.02, filterFreq: 240, pan, startOffset: 0.08 });
+        this.noise(context, { attack: 0.14, duration: 2.4, volume: volume * 0.02, filterFreq: 260, filterType: "lowpass", pan, playbackRate: 0.32 });
+        this.tone(context, { attack: 0.18, type: "sine", startFreq: 54 * pitch, endFreq: 46 * pitch, duration: 2.6, volume: volume * 0.026, filterFreq: 240, pan, startOffset: 0.08 });
         return;
       case "ship-thruster":
         this.noise(context, { attack: 0.045, duration: 0.62, volume: volume * 0.1, filterFreq: 430, filterType: "lowpass", pan, playbackRate: 0.42 });
@@ -420,18 +428,33 @@ class RetroSfxManager {
         this.noise(context, { attack: 0.03, duration: 0.34, volume: volume * 0.024, filterFreq: 820, filterType: "bandpass", pan, playbackRate: 0.64, startOffset: 0.02 });
         this.tone(context, { attack: 0.045, type: "sine", startFreq: 46 * pitch, endFreq: 42 * pitch, duration: 0.48, volume: volume * 0.032, filterFreq: 220, pan });
         return;
+      case "ui-click":
+        this.noise(context, { duration: 0.03, volume: volume * 0.016, filterFreq: 2200, filterType: "bandpass", pan, playbackRate: 1.14 });
+        this.tone(context, { type: "triangle", startFreq: 460 * pitch, endFreq: 320 * pitch, duration: 0.045, volume: volume * 0.04, filterFreq: 2200, pan });
+        this.tone(context, { type: "sine", startFreq: 780 * pitch, endFreq: 640 * pitch, duration: 0.025, volume: volume * 0.02, filterFreq: 2800, pan, startOffset: 0.008 });
+        return;
+      case "ui-window-open":
+        this.noise(context, { duration: 0.08, volume: volume * 0.02, filterFreq: 1600, filterType: "bandpass", pan, playbackRate: 0.98 });
+        this.playArpeggio(context, [220, 294, 392], "triangle", volume * 0.05, pan, pitch, 0.045, 1900);
+        this.tone(context, { type: "sine", startFreq: 128 * pitch, endFreq: 176 * pitch, duration: 0.12, volume: volume * 0.035, filterFreq: 960, pan, startOffset: 0.02 });
+        return;
+      case "ui-window-close":
+        this.noise(context, { duration: 0.06, volume: volume * 0.016, filterFreq: 1500, filterType: "bandpass", pan, playbackRate: 0.86 });
+        this.tone(context, { type: "triangle", startFreq: 260 * pitch, endFreq: 156 * pitch, duration: 0.08, volume: volume * 0.042, filterFreq: 1400, pan });
+        return;
       case "ui-datapad-open":
-        this.noise(context, { duration: 0.08, volume: volume * 0.022, filterFreq: 1800, filterType: "bandpass", pan, playbackRate: 1.18 });
-        this.playArpeggio(context, [196, 247], "triangle", volume * 0.055, pan, pitch, 0.05, 1600);
+        this.noise(context, { duration: 0.1, volume: volume * 0.026, filterFreq: 1900, filterType: "bandpass", pan, playbackRate: 1.14 });
+        this.playArpeggio(context, [196, 247, 330], "triangle", volume * 0.06, pan, pitch, 0.05, 1750);
+        this.tone(context, { type: "sine", startFreq: 136 * pitch, endFreq: 182 * pitch, duration: 0.11, volume: volume * 0.026, filterFreq: 900, pan, startOffset: 0.01 });
         return;
       case "ui-datapad-close":
-        this.noise(context, { duration: 0.07, volume: volume * 0.018, filterFreq: 1400, filterType: "bandpass", pan, playbackRate: 0.92 });
-        this.tone(context, { type: "triangle", startFreq: 220 * pitch, endFreq: 140 * pitch, duration: 0.1, volume: volume * 0.05, filterFreq: 1100, pan });
+        this.noise(context, { duration: 0.08, volume: volume * 0.02, filterFreq: 1500, filterType: "bandpass", pan, playbackRate: 0.88 });
+        this.tone(context, { type: "triangle", startFreq: 244 * pitch, endFreq: 132 * pitch, duration: 0.11, volume: volume * 0.054, filterFreq: 1180, pan });
         return;
       case "terminal-use":
-        this.noise(context, { duration: 0.09, volume: volume * 0.028, filterFreq: 1150, filterType: "bandpass", pan, playbackRate: 0.78 });
-        this.tone(context, { type: "sawtooth", startFreq: 116 * pitch, endFreq: 92 * pitch, duration: 0.14, volume: volume * 0.062, filterFreq: 720, pan });
-        this.tone(context, { type: "triangle", startFreq: 330 * pitch, endFreq: 294 * pitch, duration: 0.07, volume: volume * 0.035, filterFreq: 1600, pan, startOffset: 0.055 });
+        this.noise(context, { duration: 0.1, volume: volume * 0.03, filterFreq: 1280, filterType: "bandpass", pan, playbackRate: 0.84 });
+        this.tone(context, { type: "sawtooth", startFreq: 122 * pitch, endFreq: 98 * pitch, duration: 0.16, volume: volume * 0.066, filterFreq: 760, pan });
+        this.tone(context, { type: "triangle", startFreq: 372 * pitch, endFreq: 320 * pitch, duration: 0.08, volume: volume * 0.04, filterFreq: 1700, pan, startOffset: 0.05 });
         return;
       case "comms-open":
         this.noise(context, { duration: 0.16, volume: volume * 0.03, filterFreq: 920, filterType: "bandpass", pan, playbackRate: 0.58 });

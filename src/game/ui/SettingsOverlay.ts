@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { retroSfx } from "../audio/retroSfx";
 
 import {
   DIFFICULTY_OPTIONS,
@@ -199,12 +200,19 @@ export class SettingsOverlay {
   }
 
   show(initialTab: SettingsTab = this.currentTab): void {
+    if (!this.root.visible) {
+      retroSfx.play("ui-window-open", { volume: 0.48 });
+    }
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.setTab(initialTab);
   }
 
   hide(): void {
+    if (!this.root.visible) {
+      return;
+    }
+    retroSfx.play("ui-window-close", { volume: 0.42 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
     this.onClose();

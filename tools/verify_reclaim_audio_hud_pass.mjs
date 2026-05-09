@@ -179,7 +179,7 @@ try {
   assert(String(blockedResult.statusText).includes("Sector") && String(blockedResult.statusText).includes("Zone"),
     `Left HUD should describe world/navigation context: ${JSON.stringify(blockedResult)}`);
   assert(String(blockedResult.coordinateText).includes("HULL")
-    && String(blockedResult.coordinateText).includes("SHIELDS")
+    && String(blockedResult.coordinateText).includes("SHIELD")
     && String(blockedResult.coordinateText).includes("THRUSTERS")
     && String(blockedResult.coordinateText).includes("REACTOR")
     && String(blockedResult.coordinateText).includes("HYPERDRIVE"),

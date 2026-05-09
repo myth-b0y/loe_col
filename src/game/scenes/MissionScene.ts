@@ -278,8 +278,8 @@ const COMPANION_BAR_SPACING = 108;
 const PLAYER_BUFF_ROW_Y = 160;
 const COMPANION_HUD_START_Y = 196;
 const HEX_DEBUFF_DURATION = 2.2;
-const GROUND_AMBIENT_INTERVAL_MIN_MS = 4200;
-const GROUND_AMBIENT_INTERVAL_MAX_MS = 7600;
+const GROUND_AMBIENT_INTERVAL_MIN_MS = 2200;
+const GROUND_AMBIENT_INTERVAL_MAX_MS = 3600;
 const COVER_INSET = 4;
 const PICKUP_RARITY_COLORS: Record<PickupVisualRarity, number> = {
   Common: 0x63d77b,
@@ -617,7 +617,7 @@ export class MissionScene extends Phaser.Scene {
     retroSfx.play(cue, {
       pan: Phaser.Math.FloatBetween(-0.16, 0.16),
       pitch: Phaser.Math.FloatBetween(0.95, 1.06),
-      volume: cue === "ground-ambient-rumble" ? 0.16 : 0.18,
+      volume: cue === "ground-ambient-rumble" ? 0.28 : 0.3,
     });
   }
 
@@ -1081,6 +1081,7 @@ export class MissionScene extends Phaser.Scene {
       onRelease: (pointer) => this.handleAttackButtonRelease(pointer),
       depth: 15,
       accentColor: 0x1f5a87,
+      clickCue: false,
     });
     this.attackButton.container.setScrollFactor(0);
 
@@ -1094,6 +1095,7 @@ export class MissionScene extends Phaser.Scene {
       onClick: () => this.cycleTargetLock(),
       depth: 15,
       accentColor: 0x2b4966,
+      clickCue: false,
     });
     this.targetButton.container.setScrollFactor(0);
 
@@ -1107,6 +1109,7 @@ export class MissionScene extends Phaser.Scene {
       onClick: () => this.tryMissionInteract(),
       depth: 15,
       accentColor: 0x35511d,
+      clickCue: false,
     });
     this.interactButton.container.setScrollFactor(0);
     this.interactButton.container.setVisible(false);
@@ -1121,6 +1124,7 @@ export class MissionScene extends Phaser.Scene {
       onClick: () => this.castPulse(),
       depth: 15,
       accentColor: 0x166b8c,
+      clickCue: false,
     });
     this.pulseButton.container.setScrollFactor(0);
 
@@ -1134,6 +1138,7 @@ export class MissionScene extends Phaser.Scene {
       onClick: () => this.castArcLance(),
       depth: 15,
       accentColor: 0x7a5f1d,
+      clickCue: false,
     });
     this.arcButton.container.setScrollFactor(0);
 
@@ -1147,6 +1152,7 @@ export class MissionScene extends Phaser.Scene {
       onClick: () => this.tryDash(),
       depth: 15,
       accentColor: 0x63408f,
+      clickCue: false,
     });
     this.dashButton.container.setScrollFactor(0);
 
@@ -5251,6 +5257,7 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
+    retroSfx.play("ui-window-open", { volume: 0.46 });
     this.fireHeld = false;
     this.releaseMissionControls();
     const datapadWasVisible = Boolean(

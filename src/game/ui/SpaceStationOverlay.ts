@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { retroSfx } from "../audio/retroSfx";
 import { createMenuButton, type MenuButton } from "./buttons";
 
 export type SpaceStationOverlayState = {
@@ -225,6 +226,7 @@ export class SpaceStationOverlay {
       return;
     }
 
+    retroSfx.play("ui-window-close", { volume: 0.4 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
     this.onClose();

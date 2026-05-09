@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { retroSfx } from "../audio/retroSfx";
 import { createMenuButton, type MenuButton } from "./buttons";
 
 export type SpaceCommsOverlayState = {
@@ -148,6 +149,7 @@ export class SpaceCommsOverlay {
       return;
     }
 
+    retroSfx.play("ui-window-close", { volume: 0.38 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
     this.onClose();

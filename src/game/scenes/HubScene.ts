@@ -126,8 +126,8 @@ const HUB_CREW_ANCHORS = [
 const HUB_SPEED = 250;
 const STICK_RADIUS = 72;
 const STICK_DEADZONE = 18;
-const SHIP_INTERIOR_AMBIENT_INTERVAL_MIN_MS = 5400;
-const SHIP_INTERIOR_AMBIENT_INTERVAL_MAX_MS = 9200;
+const SHIP_INTERIOR_AMBIENT_INTERVAL_MIN_MS = 2200;
+const SHIP_INTERIOR_AMBIENT_INTERVAL_MAX_MS = 3600;
 
 function getShortFormationLabel(slotId: FormationSlotId | null): string {
   switch (slotId) {
@@ -400,7 +400,7 @@ export class HubScene extends Phaser.Scene {
     retroSfx.play("ship-interior-ambient", {
       pan: Phaser.Math.FloatBetween(-0.12, 0.12),
       pitch: Phaser.Math.FloatBetween(0.94, 1.06),
-      volume: 0.2,
+      volume: 0.34,
     });
   }
 
@@ -2246,6 +2246,7 @@ ${getCompanionRoleDisplay(companion)}`, {
       return;
     }
 
+    retroSfx.play("ui-window-open", { volume: 0.46 });
     this.movePointerId = null;
     this.moveVector.set(0, 0);
     this.resetStick();

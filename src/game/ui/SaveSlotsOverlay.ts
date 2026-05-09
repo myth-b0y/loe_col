@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { retroSfx } from "../audio/retroSfx";
 
 import { gameSession, type SaveKind } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
@@ -230,6 +231,9 @@ export class SaveSlotsOverlay {
 
   show(mode: SaveSlotsMode): void {
     this.mode = mode;
+    if (!this.root.visible) {
+      retroSfx.play("ui-window-open", { volume: 0.5 });
+    }
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.hideDeletePrompt();
@@ -237,7 +241,11 @@ export class SaveSlotsOverlay {
   }
 
   hide(): void {
+    if (!this.root.visible) {
+      return;
+    }
     this.hideDeletePrompt();
+    retroSfx.play("ui-window-close", { volume: 0.42 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
     this.onClose();

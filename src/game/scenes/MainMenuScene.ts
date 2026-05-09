@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { retroSfx } from "../audio/retroSfx";
 import { GAME_BUILD, GAME_MILESTONE } from "../core/buildInfo";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -246,6 +247,7 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   private showCredits(visible: boolean): void {
+    retroSfx.play(visible ? "ui-window-open" : "ui-window-close", { volume: visible ? 0.48 : 0.4 });
     this.creditsPanel?.setVisible(visible);
     this.creditsCloseButton?.setInputEnabled(visible);
   }

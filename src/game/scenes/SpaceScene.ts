@@ -424,8 +424,8 @@ const PLAYER_TARGET_LOCK_RANGE = 980;
 const MENU_FIRE_SUPPRESS_MS = 180;
 const NEUTRAL_WARNING_HIT_LIMIT = 5;
 const SALVAGE_WRECKAGE_LINGER_DISTANCE = 1700;
-const SPACE_AMBIENT_CUE_INTERVAL_MIN_MS = 3400;
-const SPACE_AMBIENT_CUE_INTERVAL_MAX_MS = 6800;
+const SPACE_AMBIENT_CUE_INTERVAL_MIN_MS = 1800;
+const SPACE_AMBIENT_CUE_INTERVAL_MAX_MS = 3200;
 const TOUCH_STICK_RADIUS = 72;
 const TOUCH_STICK_DEADZONE = 18;
 const HUD_REFRESH_INTERVAL_MS = 120;
@@ -605,6 +605,7 @@ function angleToDirection(rotation: number): Phaser.Math.Vector2 {
 
 export class SpaceScene extends Phaser.Scene {
   private shipRoot!: Phaser.GameObjects.Container;
+  private shipShieldRing!: Phaser.GameObjects.Arc;
   private shipThruster!: Phaser.GameObjects.Ellipse;
   private shipDamageRing!: Phaser.GameObjects.Arc;
   private shipVelocity = new Phaser.Math.Vector2();
@@ -670,6 +671,13 @@ export class SpaceScene extends Phaser.Scene {
   private destroyedFactionShips = 0;
   private playerHull = PLAYER_MAX_HULL;
   private playerMaxHull = PLAYER_MAX_HULL;
+  private playerShield = 0;
+  private playerMaxShield = 0;
+  private playerShieldRechargeDelay = 0;
+  private playerShieldRechargeDelayMax = 2.6;
+  private playerShieldRegenRate = 1;
+  private playerShieldRechargeStarted = false;
+  private playerShieldHitFlash = 0;
   private playerAcceleration = PLAYER_ACCELERATION;
   private playerMaxSpeed = PLAYER_MAX_SPEED;
   private playerHyperdriveMaxSpeed = PLAYER_HYPERDRIVE_MAX_SPEED;
@@ -813,7 +821,9 @@ export class SpaceScene extends Phaser.Scene {
     this.destroyedFactionShips = 0;
     this.syncPlayerShipStatsFromSession();
     this.restorePlayerHullFromSession();
+    this.restorePlayerShieldsToFull();
     this.playerFlash = 0;
+    this.playerShieldHitFlash = 0;
     this.hyperdrive = createShipHyperdriveSystemState();
     this.hyperdriveCountdownValue = 0;
     this.fireCooldown = 0;
@@ -919,6 +929,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     this.playerFlash = Math.max(0, this.playerFlash - (dt * 4));
+    this.playerShieldHitFlash = Math.max(0, this.playerShieldHitFlash - (dt * 3.2));
     this.updateAimDirection();
     this.updateHyperdriveState(dt, delta);
     this.updatePlayerShip(dt);
@@ -936,6 +947,7 @@ export class SpaceScene extends Phaser.Scene {
     this.updateAutoReclaimReadiness();
     this.resolveFactionShipCollisions();
     this.updateProjectiles(dt);
+    this.updatePlayerShieldState(dt);
     this.updateBurstParticles(dt);
     this.updateRadar(dt);
     this.syncDirtyForceState(delta);
@@ -1204,6 +1216,7 @@ export class SpaceScene extends Phaser.Scene {
 
   private createPlayerShip(): void {
     const shadow = this.add.ellipse(4, 8, 42, 24, 0x000000, 0.22);
+    this.shipShieldRing = this.add.circle(0, 0, 30, 0x65d8ff, 0.07).setStrokeStyle(2, 0xaeeeff, 0.18);
     const leftPod = this.add.rectangle(-18, 4, 12, 22, 0x3e5676, 0.96).setStrokeStyle(1, 0x7cb5ff, 0.26);
     const rightPod = this.add.rectangle(18, 4, 12, 22, 0x3e5676, 0.96).setStrokeStyle(1, 0x7cb5ff, 0.26);
     const body = this.add.rectangle(0, 2, 28, 34, 0x4e6c90, 0.98).setStrokeStyle(2, 0xcfe5ff, 0.7);
@@ -1216,6 +1229,7 @@ export class SpaceScene extends Phaser.Scene {
 
     this.shipRoot = this.add.container(spawn.x, spawn.y, [
       shadow,
+      this.shipShieldRing,
       this.shipDamageRing,
       this.shipThruster,
       leftPod,
@@ -1298,6 +1312,8 @@ export class SpaceScene extends Phaser.Scene {
     const speedFactor = Phaser.Math.Clamp(stats.speed / 100, 0.65, 1.5);
     const boostFactor = Phaser.Math.Clamp(stats.boostEfficiency / 100, 0.7, 1.4);
     this.playerMaxHull = Math.max(4, Math.round(stats.hull / 16));
+    this.playerMaxShield = Math.max(3, Math.round(stats.shields / 11));
+    this.playerShieldRegenRate = Math.max(0.75, stats.reactorRegen / 5.2);
     this.playerAcceleration = PLAYER_ACCELERATION * speedFactor;
     this.playerMaxSpeed = PLAYER_MAX_SPEED * speedFactor;
     this.playerHyperdriveMaxSpeed = getShipHyperdriveTopSpeed(this.playerMaxSpeed * boostFactor, SHIP_HYPERDRIVE_CONFIG);
@@ -1320,6 +1336,13 @@ export class SpaceScene extends Phaser.Scene {
 
   private restorePlayerHullFromSession(): void {
     this.playerHull = this.getPlayerHullFromSession();
+  }
+
+  private restorePlayerShieldsToFull(): void {
+    this.playerShield = this.playerMaxShield;
+    this.playerShieldRechargeDelay = 0;
+    this.playerShieldRechargeStarted = false;
+    this.playerShieldHitFlash = 0;
   }
 
   private syncTrackedMissionPlanet(orbitTimeMs = this.getOrbitTimeMs()): void {
@@ -1492,7 +1515,7 @@ export class SpaceScene extends Phaser.Scene {
       const selectedMissionActive = this.getActiveCourseMissionId() === missionId;
       const missionTargetPressure = step ? this.hasActiveMissionCombatTargets(missionId, step.id) : false;
       const empirePressure = missionTargetPressure
-        || this.hasActiveFactionShipsNearZone(zone, "empire")
+        || this.hasFactionOccupationInZoneSystem(zone, "empire")
         || zone.currentControllerId === empireRaceId
         || zone.captureAttackerRaceId === empireRaceId;
       if (missionId.includes("reclaim")) {
@@ -2552,25 +2575,6 @@ export class SpaceScene extends Phaser.Scene {
       ));
   }
 
-  private hasActiveFactionShipsNearZone(
-    zone: GalaxyZoneRecord,
-    factionId: SpaceFactionId,
-    radius = 2100,
-  ): boolean {
-    const system = this.galaxySystemsById.get(zone.systemId);
-    if (!system) {
-      return false;
-    }
-
-    return this.factionShips.some((ship) => {
-      const state = this.shipStates.get(ship.id);
-      return ship.factionId === factionId
-        && ship.hp > 0
-        && (!state || (!state.destroyed && state.hp > 0))
-        && Phaser.Math.Distance.Between(ship.root.x, ship.root.y, system.x, system.y) <= radius;
-    });
-  }
-
   private isFactionShipAlive(ship: Pick<SpaceFactionShip, "id" | "hp">): boolean {
     const state = this.shipStates.get(ship.id);
     return ship.hp > 0 && (!state || (!state.destroyed && state.hp > 0));
@@ -2604,6 +2608,14 @@ export class SpaceScene extends Phaser.Scene {
     }).length;
   }
 
+  private hasFactionOccupationInZoneSystem(
+    zone: GalaxyZoneRecord,
+    factionId: SpaceFactionId,
+    radius = 1320,
+  ): boolean {
+    return this.getActiveFactionShipCountInZoneSystem(zone, factionId, radius) > 0;
+  }
+
   private isZoneReadyForDirectReclaim(zone: GalaxyZoneRecord): boolean {
     const coreRaceId = getGalaxySectorById(zone.coreSectorId)?.raceId ?? null;
     if (!coreRaceId || coreRaceId === this.warState.empireRaceId || zone.currentControllerId !== this.warState.empireRaceId) {
@@ -2626,7 +2638,7 @@ export class SpaceScene extends Phaser.Scene {
 
     const zone = this.getMissionTargetZone(missionId, step);
     const hostileFaction = this.getMissionHostileFactionId(contract, step);
-    return Boolean(zone && this.hasActiveFactionShipsNearZone(zone, hostileFaction));
+    return Boolean(zone && this.hasFactionOccupationInZoneSystem(zone, hostileFaction));
   }
 
   private spawnMissionEscortRaiders(
@@ -4594,11 +4606,6 @@ export class SpaceScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(50);
 
-    this.add.rectangle(GAME_WIDTH - 164, 104, 260, 168, 0x07111d, 0.84)
-      .setStrokeStyle(2, 0x365983, 0.72)
-      .setScrollFactor(0)
-      .setDepth(50);
-
     this.routeText = this.add.text(38, 32, "", {
       fontFamily: "Arial",
       fontSize: "18px",
@@ -4633,14 +4640,14 @@ export class SpaceScene extends Phaser.Scene {
       lineSpacing: 4,
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(51).setVisible(false);
 
-    this.coordinateText = this.add.text(GAME_WIDTH - 280, 34, "", {
+    this.coordinateText = this.add.text(GAME_WIDTH - 34, 178, "", {
       fontFamily: "Arial",
       fontSize: "13px",
       color: "#eef7ff",
-      align: "left",
+      align: "right",
       lineSpacing: 3,
       wordWrap: { width: 236 },
-    }).setOrigin(0, 0).setScrollFactor(0).setDepth(51);
+    }).setOrigin(1, 0).setScrollFactor(0).setDepth(51);
 
     this.waypointArrow = this.add.triangle(GAME_WIDTH * 0.5, 124, 0, 18, 13, -12, -13, -12, 0xffc56e, 0.96)
       .setStrokeStyle(2, 0xfff1cf, 0.86)
@@ -4755,6 +4762,7 @@ export class SpaceScene extends Phaser.Scene {
       onRelease: (pointer) => this.endTouchAttack(pointer),
       depth: 55,
       accentColor: 0x1f5a87,
+      clickCue: false,
     });
     this.attackButton.container.setScrollFactor(0);
 
@@ -4768,6 +4776,7 @@ export class SpaceScene extends Phaser.Scene {
       onClick: () => this.cycleTargetLock(),
       depth: 55,
       accentColor: 0x2b4966,
+      clickCue: false,
     });
     this.targetButton.container.setScrollFactor(0);
 
@@ -4783,6 +4792,7 @@ export class SpaceScene extends Phaser.Scene {
       onRelease: (pointer) => this.endTouchHyperdrive(pointer),
       depth: 55,
       accentColor: 0x32536f,
+      clickCue: false,
     });
     this.abilityOneButton.container.setScrollFactor(0);
 
@@ -4797,6 +4807,7 @@ export class SpaceScene extends Phaser.Scene {
       depth: 55,
       accentColor: 0x2a394c,
       disabled: true,
+      clickCue: false,
     });
     this.abilityTwoButton.container.setScrollFactor(0);
 
@@ -5348,6 +5359,7 @@ export class SpaceScene extends Phaser.Scene {
   private updatePlayerVisuals(): void {
     const activeTopSpeed = this.hyperdrive.state === "active" ? this.playerHyperdriveMaxSpeed : this.playerMaxSpeed;
     const speedPulse = Phaser.Math.Clamp(this.shipVelocity.length() / activeTopSpeed, 0, 1);
+    const shieldRatio = this.playerMaxShield > 0 ? Phaser.Math.Clamp(this.playerShield / this.playerMaxShield, 0, 1) : 0;
     if (this.hyperdrive.state === "active") {
       this.shipThruster.setFillStyle(0xfff0b0, 0.92);
       this.shipThruster.setScale(1.18, 2.6);
@@ -5367,6 +5379,24 @@ export class SpaceScene extends Phaser.Scene {
       this.shipThruster.setScale(1, 0.82 + (speedPulse * 0.18));
     }
 
+    const shieldAlpha = shieldRatio > 0.01
+      ? 0.16 + (shieldRatio * 0.2) + (this.playerShieldHitFlash * 0.2)
+      : this.playerShieldHitFlash * 0.22;
+    this.shipShieldRing.setVisible(shieldRatio > 0.01 || this.playerShieldHitFlash > 0.02);
+    this.shipShieldRing.setStrokeStyle(
+      2,
+      0xaeeeff,
+      Phaser.Math.Clamp(shieldAlpha + (this.playerShieldRechargeStarted ? 0.14 : 0), 0, 0.76),
+    );
+    this.shipShieldRing.setFillStyle(
+      0x65d8ff,
+      Phaser.Math.Clamp((shieldRatio * 0.08) + (this.playerShieldRechargeStarted ? 0.04 : 0) + (this.playerShieldHitFlash * 0.05), 0, 0.18),
+    );
+    this.shipShieldRing.setScale(
+      1
+      + (this.playerShieldRechargeStarted ? Math.sin(this.time.now / 120) * 0.03 : 0)
+      + (this.playerShieldHitFlash * 0.03),
+    );
     this.shipDamageRing.setStrokeStyle(2, 0xffdbbc, this.playerFlash * 0.84);
     this.shipDamageRing.setFillStyle(0xff9f74, this.playerFlash * 0.16);
   }
@@ -5727,7 +5757,7 @@ export class SpaceScene extends Phaser.Scene {
 
     const playerInSupportRange = ship.factionId === "republic"
       && !this.playerDestroyed
-      && this.playerHull < this.playerMaxHull
+      && (this.playerHull < this.playerMaxHull || this.playerShield < this.playerMaxShield)
       && Phaser.Math.Distance.Between(ship.root.x, ship.root.y, this.shipRoot.x, this.shipRoot.y) <= roleProfile.supportRepairRange;
 
     const repairTarget = this.factionShips
@@ -5747,9 +5777,17 @@ export class SpaceScene extends Phaser.Scene {
       || (this.playerHull / this.playerMaxHull) <= (repairTarget.hp / Math.max(1, repairTarget.maxHp))
     );
     if (playerNeedsHelpMore) {
-      this.playerHull = Math.min(this.playerMaxHull, this.playerHull + roleProfile.supportRepairAmount);
-      this.syncPlayerHullToSession();
-      this.playerFlash = Math.max(this.playerFlash, 0.26);
+      if (this.playerShield < this.playerMaxShield) {
+        this.playerShield = Math.min(this.playerMaxShield, this.playerShield + roleProfile.supportRepairAmount);
+        this.playerShieldRechargeDelay = 0;
+        this.playerShieldRechargeStarted = false;
+        this.playerShieldHitFlash = Math.max(this.playerShieldHitFlash, 0.24);
+        retroSfx.play("shield-recharge", { volume: 0.28 });
+      } else {
+        this.playerHull = Math.min(this.playerMaxHull, this.playerHull + roleProfile.supportRepairAmount);
+        this.syncPlayerHullToSession();
+        this.playerFlash = Math.max(this.playerFlash, 0.26);
+      }
       ship.supportRepairCooldown = roleProfile.supportRepairCooldownMs / 1000;
       return;
     }
@@ -5833,8 +5871,27 @@ export class SpaceScene extends Phaser.Scene {
     retroSfx.play(cue, {
       pan: randomBetween(-0.28, 0.28),
       pitch: randomBetween(0.9, 1.1),
-      volume: cue === "space-ambient-signal" ? 0.16 : cue === "space-ambient-hum" ? 0.28 : 0.24,
+      volume: cue === "space-ambient-signal" ? 0.24 : cue === "space-ambient-hum" ? 0.4 : 0.34,
     });
+  }
+
+  private updatePlayerShieldState(dt: number): void {
+    if (this.playerShieldRechargeDelay > 0) {
+      this.playerShieldRechargeDelay = Math.max(0, this.playerShieldRechargeDelay - dt);
+    }
+
+    const shouldRecharge = this.playerShield < this.playerMaxShield && this.playerShieldRechargeDelay <= 0;
+    if (shouldRecharge && !this.playerShieldRechargeStarted) {
+      retroSfx.play("shield-recharge", { volume: 0.46 });
+      this.playerShieldRechargeStarted = true;
+      this.playerShieldHitFlash = Math.max(this.playerShieldHitFlash, 0.22);
+    } else if (!shouldRecharge) {
+      this.playerShieldRechargeStarted = false;
+    }
+
+    if (shouldRecharge) {
+      this.playerShield = Math.min(this.playerMaxShield, this.playerShield + this.playerShieldRegenRate * dt);
+    }
   }
 
   private pointerOverUi(pointer: Phaser.Input.Pointer): boolean {
@@ -7092,13 +7149,42 @@ export class SpaceScene extends Phaser.Scene {
       }
     }
 
-    this.playerHull -= amount;
-    this.syncPlayerHullToSession();
+    const incomingDamage = Math.max(0.25, amount * (1 - Phaser.Math.Clamp(gameSession.getShipStats().total.defense / 40, 0, 0.35)));
+    let remainingDamage = incomingDamage;
+    let shieldConsumed = false;
+    let shieldBroken = false;
+    if (this.playerShield > 0) {
+      shieldConsumed = true;
+      if (this.playerShield >= remainingDamage) {
+        this.playerShield -= remainingDamage;
+        remainingDamage = 0;
+      } else {
+        remainingDamage -= this.playerShield;
+        this.playerShield = 0;
+        shieldBroken = true;
+      }
+      this.playerShieldRechargeDelay = this.playerShieldRechargeDelayMax;
+      this.playerShieldRechargeStarted = false;
+      this.playerShieldHitFlash = 1;
+    }
+
+    if (remainingDamage > 0) {
+      this.playerHull -= remainingDamage;
+      this.syncPlayerHullToSession();
+    }
     this.playerFlash = 1;
-    retroSfx.play(this.playerHull <= 0 ? "shield-break" : "shield-hit", {
-      volume: this.playerHull <= 0 ? 0.82 : 0.72,
-      pan: sourceFactionId === "empire" ? -0.18 : sourceFactionId === "pirate" ? 0.22 : 0,
-    });
+    const shieldCue = this.playerHull <= 0
+      ? "shield-break"
+      : shieldBroken
+        ? "shield-break"
+        : "shield-hit";
+    retroSfx.play(
+      shieldCue,
+      {
+        volume: this.playerHull <= 0 ? 0.82 : shieldBroken ? 0.72 : shieldConsumed ? 0.62 : 0.56,
+        pan: sourceFactionId === "empire" ? -0.18 : sourceFactionId === "pirate" ? 0.22 : 0,
+      },
+    );
 
     if (this.playerHull <= 0) {
       this.destroyPlayerShip();
@@ -7343,7 +7429,7 @@ export class SpaceScene extends Phaser.Scene {
     );
     this.coordinateText?.setText(
       `HULL ${Math.max(0, this.playerHull)}/${this.playerMaxHull}  |  FRAME ${shipSystems.hull.integrity}%\n`
-      + `SHIELDS ${Math.round(shipStats.shields)}  |  DEF ${Math.round(shipStats.defense)}\n`
+      + `SHIELD ${Math.ceil(this.playerShield)}/${this.playerMaxShield}  |  DEF ${Math.round(shipStats.defense)}\n`
       + `THRUSTERS ${shipSystems.engines.integrity}% ${shipSystems.engines.online ? "ONLINE" : "OFFLINE"}\n`
       + `REACTOR ${Math.round(shipStats.reactorEnergy)}  |  REGEN ${Math.round(shipStats.reactorRegen)}/s\n`
       + `HYPERDRIVE ${hyperdriveStatus}\n`
@@ -7883,6 +7969,7 @@ export class SpaceScene extends Phaser.Scene {
     } else {
       this.stationOverlayStatusText = `Repair complete. ${result.cost} credits transferred.`;
       this.restorePlayerHullFromSession();
+      this.restorePlayerShieldsToFull();
       this.playerFlash = 0;
       retroSfx.play("shield-recharge", { volume: 0.42, pan: 0 });
     }
@@ -8077,7 +8164,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private hasHostileShipsInZone(zone: GalaxyZoneRecord): boolean {
-    return this.getActiveFactionShipCountInZoneSystem(zone, "empire") > 0;
+    return this.hasFactionOccupationInZoneSystem(zone, "empire");
   }
 
   private updateAutoReclaimReadiness(): void {
@@ -8382,6 +8469,7 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
 
+    retroSfx.play("ui-window-open", { volume: 0.46 });
     if (this.hyperdrive.state === "charging") {
       this.cancelHyperdriveCharge("Charge aborted.");
     }
@@ -8597,6 +8685,12 @@ export class SpaceScene extends Phaser.Scene {
       playerHull: {
         current: Math.max(0, this.playerHull),
         max: this.playerMaxHull,
+      },
+      playerShield: {
+        current: Number(this.playerShield.toFixed(2)),
+        max: this.playerMaxShield,
+        rechargeDelay: Number(this.playerShieldRechargeDelay.toFixed(2)),
+        rechargeRate: Number(this.playerShieldRegenRate.toFixed(2)),
       },
       ship: {
         x: Math.round(this.shipRoot.x),
