@@ -252,10 +252,10 @@ const SHIP_WORLD_SEED = 0x8f14_b39b;
 let cachedSpaceWorldDefinition: SpaceWorldDefinition | null = null;
 
 const ASTEROID_RESOURCE_RESPAWN_MS: Record<FactionResourceNodeVisualKind, number> = {
-  iron: 150000,
-  aetherium: 240000,
-  starforged: 420000,
-  scrap: 180000,
+  iron: 180000,
+  aetherium: 360000,
+  starforged: 600000,
+  scrap: 210000,
 };
 
 export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
@@ -272,15 +272,15 @@ export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
   nearbyFieldRadius: 2400,
   nearbySafeRadius: 360,
   nearbyObjectCount: 3,
-  galaxyObjectCount: 58,
+  galaxyObjectCount: 72,
   deepSpaceObjectCount: 12,
   clusterMinSize: 4,
   clusterMaxSize: 8,
-  beltCount: 16,
+  beltCount: 20,
   deepSpaceBeltCount: 3,
   beltMinSize: 10,
   beltMaxSize: 20,
-  galaxyFloaterCount: 148,
+  galaxyFloaterCount: 186,
   deepSpaceFloaterCount: 34,
   shipSpawnSafeRadius: 1200,
   sectorInnerPadding: 720,
@@ -713,7 +713,7 @@ export function getSpaceShipRoleCombatProfile(
 export const SHIP_HYPERDRIVE_CONFIG: ShipHyperdriveConfig = {
   chargeDurationMs: 3000,
   countdownIntervalMs: 1000,
-  cooldownDurationMs: 30000,
+  cooldownDurationMs: 10000,
   speedMultiplier: 7,
   exitBlendDurationMs: 650,
   exitDrag: 6.4,
@@ -872,16 +872,20 @@ function createAsteroidResourceMeta(
   yieldAmount: number;
   respawnDurationMs: number;
 } {
-  const legendaryChance = isLarge ? 0.045 : 0.012;
-  const rareChance = isLarge ? 0.18 : 0.085;
-  const scrapChance = placementType === "belt" ? 0.16 : placementType === "cluster" ? 0.08 : 0.05;
+  const legendaryChance = isLarge
+    ? placementType === "belt" ? 0.1 : 0.05
+    : placementType === "belt" ? 0.045 : 0.016;
+  const rareChance = isLarge
+    ? placementType === "belt" ? 0.24 : 0.14
+    : placementType === "belt" ? 0.13 : 0.07;
+  const scrapChance = placementType === "belt" ? 0.18 : placementType === "cluster" ? 0.11 : 0.06;
   const roll = random();
 
   if (roll <= legendaryChance) {
     return {
       resourceType: "starforged-alloy",
       visualKind: "starforged",
-      yieldAmount: isLarge ? 4 : 2,
+      yieldAmount: isLarge ? 10 : 4,
       respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.starforged,
     };
   }
@@ -889,7 +893,7 @@ function createAsteroidResourceMeta(
     return {
       resourceType: "aetherium-ore",
       visualKind: "aetherium",
-      yieldAmount: isLarge ? 8 : 4,
+      yieldAmount: isLarge ? 24 : 9,
       respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.aetherium,
     };
   }
@@ -897,14 +901,14 @@ function createAsteroidResourceMeta(
     return {
       resourceType: "scrap-ship-parts",
       visualKind: "scrap",
-      yieldAmount: isLarge ? 10 : 5,
+      yieldAmount: isLarge ? 30 : 12,
       respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.scrap,
     };
   }
   return {
     resourceType: "iron-ore",
     visualKind: "iron",
-    yieldAmount: isLarge ? 12 : placementType === "belt" ? 8 : 6,
+    yieldAmount: isLarge ? 42 : placementType === "belt" ? 18 : 12,
     respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.iron,
   };
 }
@@ -1266,6 +1270,21 @@ function pickPointInGalaxyBody(
   return pickPointInGalaxySector(sector, config, random);
 }
 
+function pickPointInOuterRimFrontier(
+  config: SpaceWorldConfig,
+  random: () => number,
+): GalaxyPoint {
+  const sector = GALAXY_SECTORS[Math.floor(random() * GALAXY_SECTORS.length)] ?? GALAXY_SECTORS[0];
+  const { start, end } = expandWrappedArc(sector.startAngleDeg, sector.endAngleDeg);
+  const angleDeg = randomBetween(random, start, end);
+  const radius = randomBetween(
+    random,
+    GALAXY_WORLD_CONFIG.radius - 520,
+    GALAXY_WORLD_CONFIG.radius + Math.min(config.deepSpaceMargin * 0.6, 1100),
+  );
+  return pointFromDegrees(angleDeg, radius);
+}
+
 function pickPointInDeepSpace(
   config: SpaceWorldConfig,
   random: () => number,
@@ -1572,12 +1591,51 @@ function createSpaceFieldSeedsInternal(
     }
   }
 
+  for (let index = 0; index < 12; index += 1) {
+    const center = pickPointInOuterRimFrontier(config, () => rng.next());
+    const beltSeeds = createFieldBeltSeeds(center, config, seeds, () => rng.next(), createId, galaxyDefinition, {
+      deepSpaceOnly: true,
+    });
+    if (beltSeeds.length > 0) {
+      seeds.push(...beltSeeds);
+    }
+  }
+
+  for (let index = 0; index < 18; index += 1) {
+    const center = pickPointInOuterRimFrontier(config, () => rng.next());
+    const clusterSeeds = createFieldClusterSeeds(center, config, seeds, () => rng.next(), createId, galaxyDefinition, {
+      deepSpaceOnly: true,
+      minCount: config.clusterMinSize + 2,
+      maxCount: config.clusterMaxSize + 3,
+      radius: randomBetween(() => rng.next(), 320, 760),
+      placementType: "cluster",
+      allowLargeAsteroids: true,
+    });
+    if (clusterSeeds.length > 0) {
+      seeds.push(...clusterSeeds);
+    }
+  }
+
   for (let index = 0; index < config.galaxyFloaterCount; index += 1) {
     seeds.push(createDistantSeed(createId(), config, seeds, () => rng.next(), galaxyDefinition, false));
   }
 
   for (let index = 0; index < config.deepSpaceFloaterCount; index += 1) {
     seeds.push(createDistantSeed(createId(), config, seeds, () => rng.next(), galaxyDefinition, true));
+  }
+
+  for (let index = 0; index < 84; index += 1) {
+    const point = pickPointInOuterRimFrontier(config, () => rng.next());
+    const candidate = createFieldSeed(createId(), rng.next() > 0.16 ? "asteroid" : "debris", point.x, point.y, () => rng.next(), config, galaxyDefinition ?? null, {
+      placementType: "single",
+      isLarge: rng.next() > 0.88,
+    });
+    if (
+      !isPointBlockedForFieldSeed(point, candidate.radius, config, galaxyDefinition)
+      && canPlaceFieldSeed(seeds, point.x, point.y, candidate.radius, candidate.isLarge ? 10 : 6)
+    ) {
+      seeds.push(candidate);
+    }
   }
 
   return seeds;

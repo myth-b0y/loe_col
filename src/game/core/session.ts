@@ -60,12 +60,14 @@ import {
   createEmptyCargoSlots,
   createEmptyEquipment,
   getCompatibleEquipmentSlots,
+  isJunkItem,
   isGearItem,
   summarizeEquippedWeapon,
   type CraftingMaterials,
   type EquipmentLoadout,
   type EquipmentSlotId,
   type InventoryItem,
+  type JunkTypeId,
   type PlayerCombatProfile,
   type RaceId,
 } from "../content/items";
@@ -1526,6 +1528,44 @@ export class GameSession extends Phaser.Events.EventEmitter {
     cargo[index] = null;
     this.emit("save-changed", this.saveData);
     return true;
+  }
+
+  getCargoResourceCount(templateId: JunkTypeId): number {
+    return this.saveData.loadout.cargo.reduce((total, item) => {
+      if (!isJunkItem(item) || item.templateId !== templateId) {
+        return total;
+      }
+      return total + item.stackCount;
+    }, 0);
+  }
+
+  removeCargoResource(templateId: JunkTypeId, amount: number): number {
+    let remaining = Math.max(0, Math.round(amount));
+    if (remaining <= 0) {
+      return 0;
+    }
+
+    let removed = 0;
+    for (const item of this.saveData.loadout.cargo) {
+      if (!isJunkItem(item) || item.templateId !== templateId || remaining <= 0) {
+        continue;
+      }
+      const taken = Math.min(item.stackCount, remaining);
+      item.stackCount -= taken;
+      remaining -= taken;
+      removed += taken;
+      if (item.stackCount <= 0) {
+        const index = this.saveData.loadout.cargo.findIndex((candidate) => candidate?.instanceId === item.instanceId);
+        if (index >= 0) {
+          this.saveData.loadout.cargo[index] = null;
+        }
+      }
+    }
+
+    if (removed > 0) {
+      this.emit("save-changed", this.saveData);
+    }
+    return removed;
   }
 
   getSecretIntelRunState(): SecretIntelRunState {

@@ -1667,6 +1667,50 @@ export function getFactionShipCargoAmount(ship: FactionForceActiveShipState): nu
   return getCargoTotal(ship.cargo);
 }
 
+export function getFactionResourceNodeMiningSlotCount(node: Pick<FactionResourceNodeRecord, "isLarge" | "placementType" | "totalYield" | "visualKind">): number {
+  if (node.isLarge) {
+    if (node.visualKind === "starforged") {
+      return 5;
+    }
+    if (node.visualKind === "aetherium") {
+      return 4;
+    }
+    return node.totalYield >= 48 ? 5 : node.totalYield >= 32 ? 4 : 3;
+  }
+  if (node.placementType === "belt") {
+    return node.totalYield >= 18 ? 2 : 1;
+  }
+  return 1;
+}
+
+export function extractFactionResourceNodeYield(
+  forceState: FactionForceState,
+  nodeId: string,
+  requestedAmount: number,
+): { node: FactionResourceNodeRecord | null; extractedAmount: number; depleted: boolean } {
+  const node = getFactionResourceNodeById(forceState, nodeId);
+  if (!node || node.remainingYield <= 0) {
+    return { node, extractedAmount: 0, depleted: false };
+  }
+
+  const extractedAmount = Math.min(
+    Math.max(0, Math.round(requestedAmount)),
+    Math.max(0, Math.round(node.remainingYield)),
+  );
+  if (extractedAmount <= 0) {
+    return { node, extractedAmount: 0, depleted: false };
+  }
+
+  node.remainingYield = Math.max(0, node.remainingYield - extractedAmount);
+  const depleted = node.remainingYield <= 0;
+  if (depleted) {
+    node.remainingYield = 0;
+    node.depletedUntilSimTimeMs = forceState.simulationTimeMs + Math.max(0, Math.round(node.respawnDurationMs));
+  }
+
+  return { node, extractedAmount, depleted };
+}
+
 export function markFactionResourceNodeDepleted(
   forceState: FactionForceState,
   nodeId: string,
@@ -1693,6 +1737,9 @@ export function awardFactionForceShipKill(
   const ship = getFactionForceShipById(forceState, shipId);
   if (!ship) {
     return { changed: false, rankLevel: null };
+  }
+  if (ship.role === "miner-ship") {
+    return { changed: false, rankLevel: ship.rankLevel };
   }
 
   ship.kills += 1;
@@ -1748,7 +1795,7 @@ export function applyAvailableFactionRankBoosts(
   const candidates = forceState.pools
     .filter((pool) => pool.raceId === raceId)
     .flatMap((pool) => pool.activeShips.map((ship) => ({ pool, ship })))
-    .filter(({ ship }) => ship.rankLevel < 5)
+    .filter(({ ship }) => ship.role !== "miner-ship" && ship.rankLevel < 5)
     .sort((left, right) => {
       const leftZone = zoneById.get(left.ship.assignmentZoneId ?? left.pool.originZoneId);
       const rightZone = zoneById.get(right.ship.assignmentZoneId ?? right.pool.originZoneId);

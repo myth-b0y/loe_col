@@ -82,10 +82,12 @@ try {
       space.resolveFactionShipCollisions?.();
     }
 
+    const debugSnapshot = space.getDebugSnapshot();
     const productionAfter = space.getDebugSnapshot().production;
     const activeMinerShips = space.factionShips.filter((ship) => ship.shipRole === "miner-ship");
     const nodeTypes = Array.from(new Set(productionAfter.resourceNodes.map((node) => node.resourceType)));
     const depletedNodeCount = productionAfter.resourceNodes.filter((node) => node.remainingYield <= 0).length;
+    const partiallyMinedNodeCount = productionAfter.resourceNodes.filter((node) => node.remainingYield > 0 && node.remainingYield < node.totalYield).length;
     const minerPoolCount = productionAfter.pools.filter((pool) => pool.activeMinerCount > 0).length;
     const homeStockpileAfter = homeSystemId
       ? productionAfter.systemStockpiles.find((stockpile) => stockpile.systemId === homeSystemId) ?? null
@@ -110,6 +112,11 @@ try {
       stockpileChanged: JSON.stringify(homeStockpileBefore?.resources ?? {}) !== JSON.stringify(homeStockpileAfter?.resources ?? {}),
       anyWarshipProductionQueued: productionAfter.pools.some((pool) => Boolean(pool.productionAssetId)),
       anyMinerProductionQueued: productionAfter.pools.some((pool) => Boolean(pool.minerProductionAssetId)),
+      partiallyMinedNodeCount,
+      nearbyAsteroidCount: debugSnapshot.nearbyAsteroidCount ?? 0,
+      nearbyResourceNodes: debugSnapshot.nearbyResourceNodes ?? [],
+      nearbyMiningExpeditions: debugSnapshot.nearbyMiningExpeditions ?? [],
+      currentSystemStockpile: debugSnapshot.currentSystemStockpile ?? null,
       sampleMinerShips: activeMinerShips.slice(0, 4).map((ship) => ({
         id: ship.id,
         miningState: ship.miningState,
@@ -133,10 +140,20 @@ try {
   assert(result.minerPoolCount > 0, `At least one pool should own active miners: ${JSON.stringify(result)}`);
   assert(result.activeMinerShipsNearPlayer > 0,
     `Nearby space should visibly contain miner ships after the sim window: ${JSON.stringify(result.sampleMinerShips)}`);
-  assert(result.depletedNodeCount > 0 || result.stockpileChanged,
-    `Economy sim should either deplete nodes or change the home stockpile: ${JSON.stringify(result)}`);
+  assert(result.depletedNodeCount > 0 || result.partiallyMinedNodeCount > 0 || result.stockpileChanged,
+    `Economy sim should either deplete nodes, partially mine nodes, or change a stockpile: ${JSON.stringify(result)}`);
   assert(result.anyWarshipProductionQueued || result.anyMinerProductionQueued,
     `Commander economy should use production queues during the sim window: ${JSON.stringify({ anyWarshipProductionQueued: result.anyWarshipProductionQueued, anyMinerProductionQueued: result.anyMinerProductionQueued })}`);
+  assert(result.nearbyAsteroidCount >= result.nearbyResourceNodes.length,
+    `Nearby asteroid debug count should cover nearby resource readouts: ${JSON.stringify({ nearbyAsteroidCount: result.nearbyAsteroidCount, nearbyResourceNodes: result.nearbyResourceNodes })}`);
+  assert(result.nearbyResourceNodes.length > 0
+    && result.nearbyResourceNodes.every((node) => typeof node.remainingYield === "number" && typeof node.miningSlots === "number"),
+    `Nearby resource node debug output should expose remaining yield and mining slots: ${JSON.stringify(result.nearbyResourceNodes)}`);
+  assert(Array.isArray(result.nearbyMiningExpeditions)
+    && result.nearbyMiningExpeditions.every((ship) => typeof ship.state === "string"),
+    `Nearby mining expedition debug output should expose miner state when miners are present: ${JSON.stringify(result.nearbyMiningExpeditions)}`);
+  assert(result.currentSystemStockpile === null || typeof result.currentSystemStockpile.resources === "object",
+    `Current system stockpile debug output should expose resource state: ${JSON.stringify(result.currentSystemStockpile)}`);
 
   await fs.writeFile(path.join(OUTPUT_DIR, "summary.json"), JSON.stringify(result, null, 2));
   await page.screenshot({ path: path.join(OUTPUT_DIR, "commander-economy.png"), fullPage: false });
