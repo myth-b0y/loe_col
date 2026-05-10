@@ -268,7 +268,7 @@ export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
   starCount: GALAXY_WORLD_CONFIG.starCount + GALAXY_WORLD_CONFIG.backgroundStarCount,
   cellSize: 3200,
   activeFieldCellRadius: 1,
-  activeShipCellRadius: 2,
+  activeShipCellRadius: 1,
   nearbyFieldRadius: 2400,
   nearbySafeRadius: 360,
   nearbyObjectCount: 3,
