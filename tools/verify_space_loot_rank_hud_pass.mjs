@@ -82,14 +82,16 @@ try {
       ],
     };
 
+    const randomBefore = Math.random;
+    Math.random = () => 0;
     const asteroid = space.asteroids.find((entry) => entry.kind === "asteroid") ?? null;
     if (!asteroid) {
       return { error: "No asteroid available for loot test" };
     }
     asteroid.isLarge = true;
-    const randomBefore = Math.random;
-    Math.random = () => 0;
-    space.breakFieldObject?.(asteroid);
+    space.spawnAsteroidLootDrops?.({ kind: "asteroid", resourceType: "iron-ore", isLarge: true }, asteroid.root.x, asteroid.root.y);
+    space.spawnAsteroidLootDrops?.({ kind: "asteroid", resourceType: "aetherium-ore", isLarge: true }, asteroid.root.x + 40, asteroid.root.y + 20);
+    space.spawnAsteroidLootDrops?.({ kind: "asteroid", resourceType: "starforged-alloy", isLarge: true }, asteroid.root.x - 40, asteroid.root.y - 20);
     const oreNames = space.spacePickups
       .map((pickup) => pickup.item?.name ?? (pickup.kind === "credits" ? "credits" : "unknown"))
       .filter(Boolean);
@@ -181,7 +183,7 @@ try {
   assert(result.hudBefore.ship.includes("HULL") && result.hudBefore.ship.includes("SHIELD") && result.hudBefore.ship.includes("REACTOR"),
     `Right HUD should remain ship-status focused: ${JSON.stringify(result.hudBefore)}`);
   assert(result.oreNames.includes("Iron Ore") && result.oreNames.includes("Aetherium Ore") && result.oreNames.includes("Starforged Alloy"),
-    `Asteroid loot should include the seeded ore tiers: ${JSON.stringify(result.oreNames)}`);
+    `Asteroid loot should follow typed ore-tier drops: ${JSON.stringify(result.oreNames)}`);
   assert(result.rankBadgeActivePips === 4, `Officer ship should expose a readable 4-pip rank badge: ${JSON.stringify(result.rankBadgeActivePips)}`);
   assert(result.dropNames.some((name) => name.startsWith("Credits x")),
     `Ship kills should drop credits: ${JSON.stringify(result.dropNames)}`);

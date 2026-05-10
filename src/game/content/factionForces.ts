@@ -1,9 +1,11 @@
 import { GALAXY_SECTORS, getGalaxySystemById, type GalaxyDefinition, type GalaxyZoneRecord } from "./galaxy";
 import {
   getFactionAssetBuildTimeMs,
+  getFactionAssetCargoCapacity,
   getFactionAssetDefinition,
   getFactionAssetDefinitionForShipRole,
   getFactionAssetMobilityValue,
+  getFactionAssetResourceCost,
   getFactionAssetShipRole,
   getFactionAssetStrategicPriority,
   isFactionAssetCaptureEligible,
@@ -13,7 +15,7 @@ import { type RaceId } from "./items";
 
 export type FactionForcePoolKind = "zone" | "prime-world";
 export type FactionForceAllianceStatus = "empire" | "neutral" | "republic";
-export type FactionForceShipRole = "base-fighter" | "support-fighter" | "attack-warship" | "defense-warship";
+export type FactionForceShipRole = "base-fighter" | "support-fighter" | "attack-warship" | "defense-warship" | "miner-ship";
 export type FactionShipRankLevel = 1 | 2 | 3 | 4 | 5;
 export type FactionForceAssignmentKind = "defend" | "invade" | "reclaim";
 export type FactionForceFleetMode =
@@ -27,6 +29,37 @@ export type FactionForceFleetMode =
   | "capture-force"
   | "defensive-response-force";
 export type FactionForceShipSlotKind = "command" | "escort";
+export type FactionResourceType = "iron-ore" | "aetherium-ore" | "starforged-alloy" | "scrap-ship-parts";
+export type FactionResourceNodeVisualKind = "iron" | "aetherium" | "starforged" | "scrap";
+export type FactionForceMinerState = "idle" | "travel-to-node" | "mining" | "returning" | "depositing" | "fleeing";
+export type FactionShipCargoState = Partial<Record<FactionResourceType, number>>;
+
+export type FactionForceSystemStockpileRecord = {
+  systemId: string;
+  zoneId: string;
+  raceId: RaceId;
+  kind: FactionForcePoolKind;
+  resources: FactionShipCargoState;
+};
+
+export type FactionResourceNodeRecord = {
+  id: string;
+  fieldId: string;
+  systemId: string;
+  zoneId: string;
+  sectorId: string;
+  cellKey: string;
+  x: number;
+  y: number;
+  placementType: "single" | "cluster" | "belt";
+  isLarge: boolean;
+  resourceType: FactionResourceType;
+  visualKind: FactionResourceNodeVisualKind;
+  totalYield: number;
+  remainingYield: number;
+  respawnDurationMs: number;
+  depletedUntilSimTimeMs: number | null;
+};
 
 export type FactionForceActiveShipState = {
   id: string;
@@ -45,6 +78,11 @@ export type FactionForceActiveShipState = {
   travelToSystemId: string;
   travelProgress: number;
   captureIntent: boolean;
+  cargo: FactionShipCargoState;
+  minerState: FactionForceMinerState | null;
+  targetResourceNodeId: string | null;
+  cargoCarrierShipId: string | null;
+  miningProgress: number;
 };
 
 export type FactionForceFleetRecord = {
@@ -70,6 +108,8 @@ export type FactionForcePoolRecord = {
   nextShipSerial: number;
   productionAssetId: string | null;
   spawnCooldownRemainingMs: number;
+  minerProductionAssetId: string | null;
+  minerSpawnCooldownRemainingMs: number;
   desiredDefenseShips: number;
   desiredReserveShips: number;
 };
@@ -78,6 +118,9 @@ export type FactionForceState = {
   pools: FactionForcePoolRecord[];
   fleets: FactionForceFleetRecord[];
   rankBoostChargesByRace: Partial<Record<RaceId, number>>;
+  systemStockpiles: FactionForceSystemStockpileRecord[];
+  resourceNodes: FactionResourceNodeRecord[];
+  simulationTimeMs: number;
 };
 
 export type FactionForceActiveShipRecord = {
@@ -97,6 +140,11 @@ export type FactionForceActiveShipRecord = {
   travelToSystemId: string;
   travelProgress: number;
   captureIntent: boolean;
+  cargo: FactionShipCargoState;
+  minerState: FactionForceMinerState | null;
+  targetResourceNodeId: string | null;
+  cargoCarrierShipId: string | null;
+  miningProgress: number;
   poolId: string;
   kind: FactionForcePoolKind;
   raceId: RaceId;
@@ -122,7 +170,15 @@ export type FactionForcePoolDebugRecord = {
   spawnCooldownRemainingMs: number;
   productionBuildTimeMs: number;
   productionProgress: number;
+  minerProductionAssetId: string | null;
+  minerSpawnCooldownRemainingMs: number;
+  minerProductionBuildTimeMs: number;
+  minerProductionProgress: number;
+  activeWarShipCount: number;
+  activeMinerCount: number;
+  minerCapacity: number;
   controlledZoneCount: number;
+  stockpile: FactionShipCargoState;
 };
 
 export type FactionForceFleetDebugRecord = {
@@ -141,6 +197,8 @@ export type FactionForceDebugSnapshot = {
   zoneShipPoolCap: number;
   primeWorldBaseShipPoolCap: number;
   primeWorldZoneBonusPerControlledZone: number;
+  zoneMinerPoolCap: number;
+  primeWorldMinerPoolCap: number;
   primeWorldDefenseTarget: number;
   zoneDefenseTarget: number;
   startingZoneShips: number;
@@ -156,8 +214,12 @@ export type FactionForceDebugSnapshot = {
   };
   totalPools: number;
   totalActiveShips: number;
+  totalActiveWarShips: number;
+  totalActiveMiners: number;
   totalFleets: number;
   rankBoostChargesByRace: Partial<Record<RaceId, number>>;
+  systemStockpiles: FactionForceSystemStockpileRecord[];
+  resourceNodes: FactionResourceNodeRecord[];
   pools: FactionForcePoolDebugRecord[];
   fleets: FactionForceFleetDebugRecord[];
 };
@@ -170,6 +232,13 @@ export const FACTION_SHIP_RANK_LABELS: Record<FactionShipRankLevel, string> = {
   5: "Commander",
 };
 
+export const FACTION_RESOURCE_TYPES: readonly FactionResourceType[] = [
+  "iron-ore",
+  "aetherium-ore",
+  "starforged-alloy",
+  "scrap-ship-parts",
+] as const;
+
 const FACTION_SHIP_RANK_XP_TO_NEXT: Partial<Record<FactionShipRankLevel, number>> = {
   1: 2,
   2: 3,
@@ -180,6 +249,8 @@ const FACTION_SHIP_RANK_XP_TO_NEXT: Partial<Record<FactionShipRankLevel, number>
 export const ZONE_SHIP_POOL_CAP = 5;
 export const PRIME_WORLD_BASE_SHIP_POOL_CAP = 10;
 export const PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE = 1;
+export const ZONE_MINER_POOL_CAP = 5;
+export const PRIME_WORLD_MINER_POOL_CAP = 8;
 export const PRIME_WORLD_DEFENSE_TARGET = 3;
 export const ZONE_DEFENSE_TARGET = 3;
 export const STARTING_ZONE_SHIP_COUNTS: Record<FactionForceAllianceStatus, number> = {
@@ -191,6 +262,20 @@ export const STARTING_ZONE_SHIP_COUNT = STARTING_ZONE_SHIP_COUNTS.neutral;
 export const STARTING_PRIME_WORLD_SHIP_COUNT = 5;
 export const FLEET_COMMAND_SLOT_COUNT = 1;
 export const FLEET_ESCORT_SLOT_COUNT = 4;
+
+const PRIME_WORLD_STARTING_STOCKPILE: Readonly<Record<FactionResourceType, number>> = {
+  "iron-ore": 96,
+  "aetherium-ore": 10,
+  "starforged-alloy": 2,
+  "scrap-ship-parts": 42,
+};
+
+const SYSTEM_STARTING_STOCKPILE: Readonly<Record<FactionResourceType, number>> = {
+  "iron-ore": 42,
+  "aetherium-ore": 3,
+  "starforged-alloy": 0,
+  "scrap-ship-parts": 16,
+};
 
 const BASE_FLEET_TRAVEL_DURATION_MS = 22000;
 const MIN_FLEET_TRAVEL_DURATION_MS = 5500;
@@ -256,7 +341,78 @@ function isFactionForceShipRole(value: unknown): value is FactionForceShipRole {
   return value === "base-fighter"
     || value === "support-fighter"
     || value === "attack-warship"
-    || value === "defense-warship";
+    || value === "defense-warship"
+    || value === "miner-ship";
+}
+
+function createEmptyShipCargo(): FactionShipCargoState {
+  return {};
+}
+
+function normalizeShipCargo(value: unknown): FactionShipCargoState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return createEmptyShipCargo();
+  }
+  return FACTION_RESOURCE_TYPES.reduce<FactionShipCargoState>((cargo, resourceType) => {
+    const amount = (value as Partial<Record<FactionResourceType, unknown>>)[resourceType];
+    if (typeof amount === "number" && Number.isFinite(amount) && amount > 0) {
+      cargo[resourceType] = Math.max(0, Math.round(amount));
+    }
+    return cargo;
+  }, {});
+}
+
+function createEmptyResourceStockpile(): FactionShipCargoState {
+  return {};
+}
+
+function normalizeResourceStockpile(value: unknown): FactionShipCargoState {
+  return normalizeShipCargo(value);
+}
+
+function getCargoAmount(cargo: FactionShipCargoState | null | undefined, resourceType: FactionResourceType): number {
+  return Math.max(0, Math.round(cargo?.[resourceType] ?? 0));
+}
+
+function getCargoTotal(cargo: FactionShipCargoState | null | undefined): number {
+  return FACTION_RESOURCE_TYPES.reduce((total, resourceType) => total + getCargoAmount(cargo, resourceType), 0);
+}
+
+function addCargoAmount(cargo: FactionShipCargoState, resourceType: FactionResourceType, amount: number): void {
+  const safeAmount = Math.max(0, Math.round(amount));
+  if (safeAmount <= 0) {
+    return;
+  }
+  cargo[resourceType] = getCargoAmount(cargo, resourceType) + safeAmount;
+}
+
+function consumeCargoAmount(cargo: FactionShipCargoState, resourceType: FactionResourceType, amount: number): number {
+  const safeAmount = Math.max(0, Math.round(amount));
+  if (safeAmount <= 0) {
+    return 0;
+  }
+  const available = getCargoAmount(cargo, resourceType);
+  const consumed = Math.min(available, safeAmount);
+  const remaining = available - consumed;
+  if (remaining > 0) {
+    cargo[resourceType] = remaining;
+  } else {
+    delete cargo[resourceType];
+  }
+  return consumed;
+}
+
+function cloneCargoState(cargo: FactionShipCargoState | null | undefined): FactionShipCargoState {
+  return normalizeShipCargo(cargo);
+}
+
+function isFactionForceMinerState(value: unknown): value is FactionForceMinerState {
+  return value === "idle"
+    || value === "travel-to-node"
+    || value === "mining"
+    || value === "returning"
+    || value === "depositing"
+    || value === "fleeing";
 }
 
 function clampFactionShipRankLevel(value: unknown): FactionShipRankLevel {
@@ -425,6 +581,39 @@ function getDesiredReserveAssets(kind: FactionForcePoolKind, desiredReserveShips
   return assets;
 }
 
+function isMinerShipRole(role: FactionForceShipRole): boolean {
+  return role === "miner-ship";
+}
+
+function countActiveWarShips(ships: readonly Pick<FactionForceActiveShipState, "role">[]): number {
+  return ships.reduce((count, ship) => count + (isMinerShipRole(ship.role) ? 0 : 1), 0);
+}
+
+function countActiveMinerShips(ships: readonly Pick<FactionForceActiveShipState, "role">[]): number {
+  return ships.reduce((count, ship) => count + (isMinerShipRole(ship.role) ? 1 : 0), 0);
+}
+
+function createStartingSystemStockpile(kind: FactionForcePoolKind): FactionShipCargoState {
+  const source = kind === "prime-world" ? PRIME_WORLD_STARTING_STOCKPILE : SYSTEM_STARTING_STOCKPILE;
+  return FACTION_RESOURCE_TYPES.reduce<FactionShipCargoState>((stockpile, resourceType) => {
+    const amount = source[resourceType] ?? 0;
+    if (amount > 0) {
+      stockpile[resourceType] = amount;
+    }
+    return stockpile;
+  }, {});
+}
+
+function createSystemStockpileRecord(pool: Pick<FactionForcePoolRecord, "originSystemId" | "originZoneId" | "raceId" | "kind">): FactionForceSystemStockpileRecord {
+  return {
+    systemId: pool.originSystemId,
+    zoneId: pool.originZoneId,
+    raceId: pool.raceId,
+    kind: pool.kind,
+    resources: createStartingSystemStockpile(pool.kind),
+  };
+}
+
 function getAssetCounts(ships: readonly Pick<FactionForceActiveShipState, "assetId">[]): Record<string, number> {
   return ships.reduce<Record<string, number>>((counts, ship) => {
     counts[ship.assetId] = (counts[ship.assetId] ?? 0) + 1;
@@ -485,6 +674,11 @@ function createActiveShipState(
     travelToSystemId: pool.originSystemId,
     travelProgress: 1,
     captureIntent: false,
+    cargo: createEmptyShipCargo(),
+    minerState: getFactionAssetShipRole(assetId) === "miner-ship" ? "idle" : null,
+    targetResourceNodeId: null,
+    cargoCarrierShipId: null,
+    miningProgress: 0,
   };
 }
 
@@ -501,6 +695,8 @@ function createZonePool(zone: GalaxyZoneRecord, warState?: FactionForceWarStateL
     nextShipSerial: 1,
     productionAssetId: null,
     spawnCooldownRemainingMs: 0,
+    minerProductionAssetId: null,
+    minerSpawnCooldownRemainingMs: 0,
     desiredDefenseShips: ZONE_DEFENSE_TARGET,
     desiredReserveShips: 0,
   };
@@ -540,6 +736,8 @@ function createPrimeWorldPool(galaxy: GalaxyDefinition, raceId: RaceId): Faction
     nextShipSerial: 1,
     productionAssetId: null,
     spawnCooldownRemainingMs: 0,
+    minerProductionAssetId: null,
+    minerSpawnCooldownRemainingMs: 0,
     desiredDefenseShips: PRIME_WORLD_DEFENSE_TARGET,
     desiredReserveShips: 0,
   };
@@ -609,6 +807,19 @@ function sanitizeActiveShipRecord(
       ? Math.max(0, Math.min(1, candidate.travelProgress))
       : 1,
     captureIntent: typeof candidate.captureIntent === "boolean" ? candidate.captureIntent : false,
+    cargo: normalizeShipCargo(candidate.cargo),
+    minerState: isFactionForceMinerState(candidate.minerState)
+      ? candidate.minerState
+      : (role === "miner-ship" ? "idle" : null),
+    targetResourceNodeId: typeof candidate.targetResourceNodeId === "string" && candidate.targetResourceNodeId.length > 0
+      ? candidate.targetResourceNodeId
+      : null,
+    cargoCarrierShipId: typeof candidate.cargoCarrierShipId === "string" && candidate.cargoCarrierShipId.length > 0
+      ? candidate.cargoCarrierShipId
+      : null,
+    miningProgress: typeof candidate.miningProgress === "number" && Number.isFinite(candidate.miningProgress)
+      ? Math.max(0, candidate.miningProgress)
+      : 0,
   };
 }
 
@@ -643,6 +854,43 @@ export function getFactionForcePoolCapacity(
     return PRIME_WORLD_BASE_SHIP_POOL_CAP + (getControlledZoneCountForRace(galaxy, pool.raceId, warState) * PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE);
   }
   return ZONE_SHIP_POOL_CAP;
+}
+
+export function getFactionForceMinerPoolCapacity(
+  galaxy: GalaxyDefinition,
+  pool: Pick<FactionForcePoolRecord, "kind" | "originZoneId">,
+): number {
+  if (pool.kind === "prime-world") {
+    return PRIME_WORLD_MINER_POOL_CAP;
+  }
+  const zone = galaxy.zones.find((candidate) => candidate.id === pool.originZoneId);
+  if (zone?.isPrimeWorldZone) {
+    return 0;
+  }
+  return ZONE_MINER_POOL_CAP;
+}
+
+function getSystemStockpileRecord(
+  forceState: FactionForceState,
+  systemId: string,
+): FactionForceSystemStockpileRecord | null {
+  return forceState.systemStockpiles.find((stockpile) => stockpile.systemId === systemId) ?? null;
+}
+
+function hasResourcesForCost(
+  stockpile: FactionShipCargoState,
+  cost: Partial<Record<FactionResourceType, number>>,
+): boolean {
+  return FACTION_RESOURCE_TYPES.every((resourceType) => getCargoAmount(stockpile, resourceType) >= Math.max(0, Math.round(cost[resourceType] ?? 0)));
+}
+
+function spendResourceCost(
+  stockpile: FactionShipCargoState,
+  cost: Partial<Record<FactionResourceType, number>>,
+): void {
+  FACTION_RESOURCE_TYPES.forEach((resourceType) => {
+    consumeCargoAmount(stockpile, resourceType, Math.max(0, Math.round(cost[resourceType] ?? 0)));
+  });
 }
 
 export function getFactionForceRespawnCooldownMs(kind: FactionForcePoolKind, role: FactionForceShipRole): number {
@@ -792,6 +1040,14 @@ export function rebuildFactionCommanderFleets(forceState: FactionForceState): bo
   const shipsByPoolAndAssignment = new Map<string, { pool: FactionForcePoolRecord; ships: FactionForceActiveShipState[] }>();
   forceState.pools.forEach((pool) => {
     pool.activeShips.forEach((ship) => {
+      if (ship.role === "miner-ship") {
+        ship.fleetId = null;
+        ship.fleetGroupId = null;
+        ship.fleetMode = "patrol-group";
+        ship.slotKind = "escort";
+        ship.captureIntent = false;
+        return;
+      }
       ship.fleetId = null;
       ship.fleetGroupId = null;
       ship.captureIntent = false;
@@ -913,19 +1169,94 @@ export function rebuildFactionCommanderFleets(forceState: FactionForceState): bo
   return changed;
 }
 
+function normalizeResourceNodeRecord(
+  candidate: Partial<FactionResourceNodeRecord> | undefined,
+  fallback: FactionResourceNodeRecord,
+): FactionResourceNodeRecord {
+  return {
+    ...fallback,
+    remainingYield: typeof candidate?.remainingYield === "number" && Number.isFinite(candidate.remainingYield)
+      ? Math.max(0, Math.round(candidate.remainingYield))
+      : fallback.totalYield,
+    depletedUntilSimTimeMs: typeof candidate?.depletedUntilSimTimeMs === "number" && Number.isFinite(candidate.depletedUntilSimTimeMs)
+      ? Math.max(0, Math.round(candidate.depletedUntilSimTimeMs))
+      : null,
+  };
+}
+
+function createNormalizedResourceNodes(resourceNodes: readonly FactionResourceNodeRecord[]): FactionResourceNodeRecord[] {
+  return resourceNodes.map((node) => normalizeResourceNodeRecord(node, {
+    ...node,
+    remainingYield: node.totalYield,
+    depletedUntilSimTimeMs: null,
+  }));
+}
+
+function createNormalizedSystemStockpiles(
+  orderedPools: readonly FactionForcePoolRecord[],
+  sourceStockpiles?: readonly Partial<FactionForceSystemStockpileRecord>[] | null,
+): FactionForceSystemStockpileRecord[] {
+  const sourceBySystemId = new Map<string, Partial<FactionForceSystemStockpileRecord>>();
+  sourceStockpiles?.forEach((stockpile) => {
+    if (stockpile && typeof stockpile.systemId === "string" && stockpile.systemId.length > 0) {
+      sourceBySystemId.set(stockpile.systemId, stockpile);
+    }
+  });
+
+  return orderedPools
+    .filter((pool, index, pools) => pools.findIndex((candidate) => candidate.originSystemId === pool.originSystemId) === index)
+    .map((pool) => {
+      const fallback = createSystemStockpileRecord(pool);
+      const source = sourceBySystemId.get(pool.originSystemId);
+      return {
+        systemId: fallback.systemId,
+        zoneId: fallback.zoneId,
+        raceId: pool.raceId,
+        kind: pool.kind,
+        resources: normalizeResourceStockpile(source?.resources ?? fallback.resources),
+      };
+    });
+}
+
+function clampPoolActiveShips(
+  ships: readonly FactionForceActiveShipState[],
+  warshipCapacity: number,
+  minerCapacity: number,
+): FactionForceActiveShipState[] {
+  const keptWarships: FactionForceActiveShipState[] = [];
+  const keptMiners: FactionForceActiveShipState[] = [];
+  ships.forEach((ship) => {
+    if (ship.role === "miner-ship") {
+      if (keptMiners.length < minerCapacity) {
+        keptMiners.push(ship);
+      }
+      return;
+    }
+    if (keptWarships.length < warshipCapacity) {
+      keptWarships.push(ship);
+    }
+  });
+  return [...keptWarships, ...keptMiners];
+}
+
 export function createFactionForceState(
   galaxy: GalaxyDefinition,
   warState?: FactionForceWarStateLike | null,
+  resourceNodes: readonly FactionResourceNodeRecord[] = [],
 ): FactionForceState {
   const zonePools = galaxy.zones.map((zone) => createZonePool(zone, warState));
   const primePools = galaxy.homeworlds
     .map((homeworld) => createPrimeWorldPool(galaxy, homeworld.raceId))
     .filter((pool): pool is FactionForcePoolRecord => pool !== null);
+  const orderedPools = [...zonePools, ...primePools].sort(comparePoolPriority);
 
   const state: FactionForceState = {
-    pools: [...zonePools, ...primePools].sort(comparePoolPriority),
+    pools: orderedPools,
     fleets: [],
     rankBoostChargesByRace: {},
+    systemStockpiles: createNormalizedSystemStockpiles(orderedPools),
+    resourceNodes: createNormalizedResourceNodes(resourceNodes),
+    simulationTimeMs: 0,
   };
   rebuildFactionCommanderFleets(state);
   return state;
@@ -935,8 +1266,9 @@ export function normalizeFactionForceState(
   forceState: Partial<FactionForceState> | undefined,
   galaxy: GalaxyDefinition,
   warState?: FactionForceWarStateLike | null,
+  resourceNodes: readonly FactionResourceNodeRecord[] = [],
 ): FactionForceState {
-  const fallback = createFactionForceState(galaxy, warState);
+  const fallback = createFactionForceState(galaxy, warState, resourceNodes);
   if (!forceState || !Array.isArray(forceState.pools)) {
     return fallback;
   }
@@ -953,6 +1285,7 @@ export function normalizeFactionForceState(
     pools: fallback.pools.map((defaultPool) => {
       const sourcePool = sourcePools.get(defaultPool.id);
       const capacity = getFactionForcePoolCapacity(galaxy, defaultPool, warState);
+      const minerCapacity = getFactionForceMinerPoolCapacity(galaxy, defaultPool);
       const desiredDefenseShips = typeof sourcePool?.desiredDefenseShips === "number" && Number.isFinite(sourcePool.desiredDefenseShips)
         ? Math.max(0, Math.round(sourcePool.desiredDefenseShips))
         : defaultPool.desiredDefenseShips;
@@ -964,7 +1297,7 @@ export function normalizeFactionForceState(
         ...getDesiredReserveAssets(defaultPool.kind, Math.max(desiredReserveShips, capacity)),
       ];
 
-      const activeShips = Array.isArray(sourcePool?.activeShips)
+      const candidateShips = Array.isArray(sourcePool?.activeShips)
         ? (sourcePool.activeShips as Partial<FactionForceActiveShipState>[])
           .map((candidate, index) => sanitizeActiveShipRecord(
             candidate,
@@ -973,8 +1306,8 @@ export function normalizeFactionForceState(
             defaultPool.originSystemId,
           ))
           .filter((ship): ship is FactionForceActiveShipState => ship !== null && !usedShipIds.has(ship.id))
-          .slice(0, capacity)
         : defaultPool.activeShips;
+      const activeShips = clampPoolActiveShips(candidateShips, capacity, minerCapacity);
 
       activeShips.forEach((ship) => usedShipIds.add(ship.id));
 
@@ -990,6 +1323,12 @@ export function normalizeFactionForceState(
         spawnCooldownRemainingMs: typeof sourcePool?.spawnCooldownRemainingMs === "number" && Number.isFinite(sourcePool.spawnCooldownRemainingMs)
           ? Math.max(0, Math.round(sourcePool.spawnCooldownRemainingMs))
           : 0,
+        minerProductionAssetId: typeof sourcePool?.minerProductionAssetId === "string" && sourcePool.minerProductionAssetId.length > 0
+          ? getFactionAssetDefinition(sourcePool.minerProductionAssetId).id
+          : null,
+        minerSpawnCooldownRemainingMs: typeof sourcePool?.minerSpawnCooldownRemainingMs === "number" && Number.isFinite(sourcePool.minerSpawnCooldownRemainingMs)
+          ? Math.max(0, Math.round(sourcePool.minerSpawnCooldownRemainingMs))
+          : 0,
         desiredDefenseShips,
         desiredReserveShips,
       };
@@ -1001,10 +1340,104 @@ export function normalizeFactionForceState(
       charges[raceId] = typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
       return charges;
     }, {}),
+    systemStockpiles: createNormalizedSystemStockpiles(fallback.pools, forceState.systemStockpiles),
+    resourceNodes: fallback.resourceNodes.map((fallbackNode) => normalizeResourceNodeRecord(
+      Array.isArray(forceState.resourceNodes)
+        ? forceState.resourceNodes.find((candidate) => candidate?.id === fallbackNode.id)
+        : undefined,
+      fallbackNode,
+    )),
+    simulationTimeMs: typeof forceState.simulationTimeMs === "number" && Number.isFinite(forceState.simulationTimeMs)
+      ? Math.max(0, Math.round(forceState.simulationTimeMs))
+      : 0,
   };
 
   rebuildFactionCommanderFleets(normalized);
   return normalized;
+}
+
+function isResourceNodeAvailable(node: FactionResourceNodeRecord, simulationTimeMs: number): boolean {
+  return node.remainingYield > 0 && (node.depletedUntilSimTimeMs === null || node.depletedUntilSimTimeMs <= simulationTimeMs);
+}
+
+function refreshResourceNodeRespawns(forceState: FactionForceState): boolean {
+  let changed = false;
+  forceState.resourceNodes.forEach((node) => {
+    if (node.remainingYield > 0) {
+      return;
+    }
+    if (node.depletedUntilSimTimeMs === null || node.depletedUntilSimTimeMs > forceState.simulationTimeMs) {
+      return;
+    }
+    node.remainingYield = node.totalYield;
+    node.depletedUntilSimTimeMs = null;
+    changed = true;
+  });
+  return changed;
+}
+
+function getResourceNodesForSystem(
+  forceState: FactionForceState,
+  systemId: string,
+): FactionResourceNodeRecord[] {
+  return forceState.resourceNodes.filter((node) => node.systemId === systemId);
+}
+
+function getDesiredMinerShipCount(
+  forceState: FactionForceState,
+  galaxy: GalaxyDefinition,
+  pool: FactionForcePoolRecord,
+): number {
+  const minerCapacity = getFactionForceMinerPoolCapacity(galaxy, pool);
+  if (minerCapacity <= 0) {
+    return 0;
+  }
+  const zone = galaxy.zones.find((candidate) => candidate.id === pool.originZoneId);
+  if (!zone || zone.zoneState !== "stable" || zone.captureAttackerRaceId) {
+    return 0;
+  }
+  const stockpile = getSystemStockpileRecord(forceState, pool.originSystemId)?.resources ?? createEmptyResourceStockpile();
+  const availableNodes = getResourceNodesForSystem(forceState, pool.originSystemId)
+    .filter((node) => isResourceNodeAvailable(node, forceState.simulationTimeMs));
+  if (availableNodes.length <= 0) {
+    return 0;
+  }
+  const richNodes = availableNodes.filter((node) => node.resourceType !== "iron-ore").length;
+  const lowFlow = getCargoAmount(stockpile, "iron-ore") < 30 || getCargoAmount(stockpile, "scrap-ship-parts") < 12;
+  const baseDesired = pool.kind === "prime-world" ? 3 : 1;
+  const richnessBonus = richNodes >= 4 ? 2 : richNodes >= 2 ? 1 : 0;
+  const scarcityBonus = lowFlow ? 1 : 0;
+  return Math.min(minerCapacity, Math.max(baseDesired, Math.min(minerCapacity, baseDesired + richnessBonus + scarcityBonus)));
+}
+
+function pickAffordableWarshipAssetId(
+  pool: FactionForcePoolRecord,
+  stockpile: FactionShipCargoState,
+  desiredDefenseShips: number,
+): string | null {
+  const preferredAssetId = countActiveWarShips(pool.activeShips) < desiredDefenseShips
+    ? getNextDefenseAssetId(pool)
+    : getNextReserveAssetId(pool);
+  const candidates = [
+    preferredAssetId,
+    "ship/base-fighter",
+    "ship/support-fighter",
+    "ship/defense-warship",
+    "ship/attack-warship",
+  ];
+  for (const assetId of candidates) {
+    if (!assetId) {
+      continue;
+    }
+    const definition = getFactionAssetDefinition(assetId);
+    if (definition.shipRole === "miner-ship") {
+      continue;
+    }
+    if (hasResourcesForCost(stockpile, getFactionAssetResourceCost(definition.id))) {
+      return definition.id;
+    }
+  }
+  return null;
 }
 
 export function advanceFactionForceProduction(
@@ -1020,70 +1453,119 @@ export function advanceFactionForceProduction(
 
   let changed = false;
   const spawnedShipIds: string[] = [];
+  forceState.simulationTimeMs += safeDeltaMs;
+  if (refreshResourceNodeRespawns(forceState)) {
+    changed = true;
+  }
   forceState.pools.forEach((pool) => {
     if (pool.spawnCooldownRemainingMs <= 0) {
-      return;
+      if (pool.minerSpawnCooldownRemainingMs <= 0) {
+        return;
+      }
     }
-    const nextCooldown = Math.max(0, pool.spawnCooldownRemainingMs - safeDeltaMs);
-    if (nextCooldown !== pool.spawnCooldownRemainingMs) {
-      pool.spawnCooldownRemainingMs = nextCooldown;
-      changed = true;
+    if (pool.spawnCooldownRemainingMs > 0) {
+      const nextCooldown = Math.max(0, pool.spawnCooldownRemainingMs - safeDeltaMs);
+      if (nextCooldown !== pool.spawnCooldownRemainingMs) {
+        pool.spawnCooldownRemainingMs = nextCooldown;
+        changed = true;
+      }
+    }
+    if (pool.minerSpawnCooldownRemainingMs > 0) {
+      const nextMinerCooldown = Math.max(0, pool.minerSpawnCooldownRemainingMs - safeDeltaMs);
+      if (nextMinerCooldown !== pool.minerSpawnCooldownRemainingMs) {
+        pool.minerSpawnCooldownRemainingMs = nextMinerCooldown;
+        changed = true;
+      }
     }
   });
 
   const orderedPools = [...forceState.pools].sort(comparePoolPriority);
   orderedPools.forEach((pool) => {
     const capacity = getFactionForcePoolCapacity(galaxy, pool, warState);
+    const warshipCount = countActiveWarShips(pool.activeShips);
     const desiredDefenseShips = Math.min(pool.desiredDefenseShips, capacity);
     const desiredReserveShips = Math.min(pool.desiredReserveShips, Math.max(0, capacity - desiredDefenseShips));
     const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
-      ? Math.min(capacity, pool.activeShips.length)
+      ? Math.min(capacity, warshipCount)
       : Math.min(capacity, desiredDefenseShips + desiredReserveShips);
-    if (pool.productionAssetId && (desiredTotalShips <= 0 || pool.activeShips.length >= desiredTotalShips)) {
+    if (pool.productionAssetId && (desiredTotalShips <= 0 || warshipCount >= desiredTotalShips)) {
       pool.productionAssetId = null;
       pool.spawnCooldownRemainingMs = 0;
       changed = true;
-      return;
     }
 
-    if (!pool.productionAssetId || pool.spawnCooldownRemainingMs > 0) {
-      return;
+    if (pool.productionAssetId && pool.spawnCooldownRemainingMs <= 0) {
+      const definition = getFactionAssetDefinition(pool.productionAssetId);
+      const shipId = createShipId(pool.id, pool.nextShipSerial);
+      pool.activeShips.push(createActiveShipState(
+        pool,
+        shipId,
+        definition.id,
+        "defend",
+        pool.originZoneId,
+        1,
+      ));
+      pool.nextShipSerial += 1;
+      pool.productionAssetId = null;
+      pool.spawnCooldownRemainingMs = 0;
+      spawnedShipIds.push(shipId);
+      changed = true;
     }
 
-    const definition = getFactionAssetDefinition(pool.productionAssetId);
-    const shipId = createShipId(pool.id, pool.nextShipSerial);
-    pool.activeShips.push(createActiveShipState(
-      pool,
-      shipId,
-      definition.id,
-      "defend",
-      pool.originZoneId,
-      1,
-    ));
-    pool.nextShipSerial += 1;
-    pool.productionAssetId = null;
-    pool.spawnCooldownRemainingMs = 0;
-    spawnedShipIds.push(shipId);
-    changed = true;
+    const minerCapacity = getFactionForceMinerPoolCapacity(galaxy, pool);
+    const activeMinerCount = countActiveMinerShips(pool.activeShips);
+    const desiredMinerCount = getDesiredMinerShipCount(forceState, galaxy, pool);
+    if (pool.minerProductionAssetId && (desiredMinerCount <= 0 || activeMinerCount >= desiredMinerCount || activeMinerCount >= minerCapacity)) {
+      pool.minerProductionAssetId = null;
+      pool.minerSpawnCooldownRemainingMs = 0;
+      changed = true;
+    }
+
+    if (pool.minerProductionAssetId && pool.minerSpawnCooldownRemainingMs <= 0 && activeMinerCount < minerCapacity) {
+      const minerId = createShipId(pool.id, pool.nextShipSerial);
+      pool.activeShips.push(createActiveShipState(
+        pool,
+        minerId,
+        "ship/miner-ship",
+        "defend",
+        pool.originZoneId,
+        1,
+      ));
+      pool.nextShipSerial += 1;
+      pool.minerProductionAssetId = null;
+      pool.minerSpawnCooldownRemainingMs = 0;
+      spawnedShipIds.push(minerId);
+      changed = true;
+    }
   });
 
   orderedPools.forEach((pool) => {
     const capacity = getFactionForcePoolCapacity(galaxy, pool, warState);
+    const warshipCount = countActiveWarShips(pool.activeShips);
+    const stockpile = getSystemStockpileRecord(forceState, pool.originSystemId)?.resources ?? createEmptyResourceStockpile();
     const desiredDefenseShips = Math.min(pool.desiredDefenseShips, capacity);
     const desiredReserveShips = Math.min(pool.desiredReserveShips, Math.max(0, capacity - desiredDefenseShips));
     const desiredTotalShips = isZoneSpawnSuppressed(galaxy, pool)
-      ? Math.min(capacity, pool.activeShips.length)
+      ? Math.min(capacity, warshipCount)
       : Math.min(capacity, desiredDefenseShips + desiredReserveShips);
-    if (desiredTotalShips <= 0 || pool.activeShips.length >= desiredTotalShips || pool.productionAssetId || pool.spawnCooldownRemainingMs > 0) {
-      return;
+    if (desiredTotalShips > 0 && warshipCount < desiredTotalShips && !pool.productionAssetId && pool.spawnCooldownRemainingMs <= 0) {
+      const assetId = pickAffordableWarshipAssetId(pool, stockpile, desiredDefenseShips);
+      if (assetId) {
+        pool.productionAssetId = assetId;
+        pool.spawnCooldownRemainingMs = getFactionAssetBuildTimeMs(pool.kind, pool.productionAssetId);
+        spendResourceCost(stockpile, getFactionAssetResourceCost(pool.productionAssetId));
+        changed = true;
+      }
     }
 
-    const assetId = pool.activeShips.length < desiredDefenseShips
-      ? getNextDefenseAssetId(pool)
-      : getNextReserveAssetId(pool);
-    pool.productionAssetId = getFactionAssetDefinition(assetId).id;
-    pool.spawnCooldownRemainingMs = getFactionAssetBuildTimeMs(pool.kind, pool.productionAssetId);
-    changed = true;
+    const minerCapacity = getFactionForceMinerPoolCapacity(galaxy, pool);
+    const activeMinerCount = countActiveMinerShips(pool.activeShips);
+    const desiredMinerCount = getDesiredMinerShipCount(forceState, galaxy, pool);
+    if (desiredMinerCount > 0 && activeMinerCount < desiredMinerCount && activeMinerCount < minerCapacity && !pool.minerProductionAssetId && pool.minerSpawnCooldownRemainingMs <= 0) {
+      pool.minerProductionAssetId = "ship/miner-ship";
+      pool.minerSpawnCooldownRemainingMs = getFactionAssetBuildTimeMs(pool.kind, pool.minerProductionAssetId);
+      changed = true;
+    }
   });
 
   if (rebuildFactionCommanderFleets(forceState)) {
@@ -1112,7 +1594,7 @@ export function markFactionForceShipDestroyed(
   return false;
 }
 
-function getFactionForceShipById(
+export function getFactionForceShipById(
   forceState: FactionForceState,
   shipId: string,
 ): FactionForceActiveShipState | null {
@@ -1123,6 +1605,80 @@ function getFactionForceShipById(
     }
   }
   return null;
+}
+
+export function getFactionResourceNodeById(
+  forceState: FactionForceState,
+  nodeId: string,
+): FactionResourceNodeRecord | null {
+  return forceState.resourceNodes.find((node) => node.id === nodeId) ?? null;
+}
+
+export function getFactionResourceStockpileForSystem(
+  forceState: FactionForceState,
+  systemId: string,
+): FactionShipCargoState {
+  return cloneCargoState(getSystemStockpileRecord(forceState, systemId)?.resources);
+}
+
+export function depositFactionResourcesToSystem(
+  forceState: FactionForceState,
+  systemId: string,
+  cargo: FactionShipCargoState,
+): boolean {
+  const stockpile = getSystemStockpileRecord(forceState, systemId);
+  if (!stockpile) {
+    return false;
+  }
+  let changed = false;
+  FACTION_RESOURCE_TYPES.forEach((resourceType) => {
+    const amount = getCargoAmount(cargo, resourceType);
+    if (amount <= 0) {
+      return;
+    }
+    addCargoAmount(stockpile.resources, resourceType, amount);
+    changed = true;
+  });
+  return changed;
+}
+
+export function clearFactionShipCargo(ship: FactionForceActiveShipState): FactionShipCargoState {
+  const cargo = cloneCargoState(ship.cargo);
+  ship.cargo = createEmptyShipCargo();
+  return cargo;
+}
+
+export function addFactionShipCargo(
+  ship: FactionForceActiveShipState,
+  resourceType: FactionResourceType,
+  amount: number,
+): number {
+  const cargoCapacity = Math.max(0, getFactionAssetCargoCapacity(ship.assetId));
+  const currentCargo = getCargoTotal(ship.cargo);
+  const spaceRemaining = Math.max(0, cargoCapacity - currentCargo);
+  const added = Math.min(spaceRemaining, Math.max(0, Math.round(amount)));
+  if (added > 0) {
+    addCargoAmount(ship.cargo, resourceType, added);
+  }
+  return added;
+}
+
+export function getFactionShipCargoAmount(ship: FactionForceActiveShipState): number {
+  return getCargoTotal(ship.cargo);
+}
+
+export function markFactionResourceNodeDepleted(
+  forceState: FactionForceState,
+  nodeId: string,
+  respawnDurationMs?: number,
+): FactionResourceNodeRecord | null {
+  const node = getFactionResourceNodeById(forceState, nodeId);
+  if (!node) {
+    return null;
+  }
+  node.remainingYield = 0;
+  node.depletedUntilSimTimeMs = forceState.simulationTimeMs + Math.max(0, Math.round(respawnDurationMs ?? node.respawnDurationMs));
+  return node;
 }
 
 function getRankXpToNext(rankLevel: FactionShipRankLevel): number {
@@ -1251,6 +1807,11 @@ export function getActiveFactionForceShips(forceState: FactionForceState): Facti
     travelToSystemId: ship.travelToSystemId,
     travelProgress: ship.travelProgress,
     captureIntent: ship.captureIntent,
+    cargo: cloneCargoState(ship.cargo),
+    minerState: ship.minerState,
+    targetResourceNodeId: ship.targetResourceNodeId,
+    cargoCarrierShipId: ship.cargoCarrierShipId,
+    miningProgress: ship.miningProgress,
     poolId: pool.id,
     kind: pool.kind,
     raceId: pool.raceId,
@@ -1276,7 +1837,7 @@ export function getFactionForceDebugSnapshot(
       originSystemId: pool.originSystemId,
       activeShipCount: pool.activeShips.length,
       activeShipIds: pool.activeShips.map((ship) => ship.id),
-      activeShips: pool.activeShips.map((ship) => ({ ...ship })),
+      activeShips: pool.activeShips.map((ship) => ({ ...ship, cargo: cloneCargoState(ship.cargo) })),
       capacity: getFactionForcePoolCapacity(galaxy, pool, warState),
       desiredDefenseShips: pool.desiredDefenseShips,
       desiredReserveShips: pool.desiredReserveShips,
@@ -1291,13 +1852,30 @@ export function getFactionForceDebugSnapshot(
             1 - (pool.spawnCooldownRemainingMs / Math.max(1, getFactionAssetBuildTimeMs(pool.kind, pool.productionAssetId))),
           )).toFixed(3))
         : 0,
+      minerProductionAssetId: pool.minerProductionAssetId,
+      minerSpawnCooldownRemainingMs: Math.round(pool.minerSpawnCooldownRemainingMs),
+      minerProductionBuildTimeMs: pool.minerProductionAssetId
+        ? getFactionAssetBuildTimeMs(pool.kind, pool.minerProductionAssetId)
+        : 0,
+      minerProductionProgress: pool.minerProductionAssetId
+        ? Number(Math.max(0, Math.min(
+            1,
+            1 - (pool.minerSpawnCooldownRemainingMs / Math.max(1, getFactionAssetBuildTimeMs(pool.kind, pool.minerProductionAssetId))),
+          )).toFixed(3))
+        : 0,
+      activeWarShipCount: countActiveWarShips(pool.activeShips),
+      activeMinerCount: countActiveMinerShips(pool.activeShips),
+      minerCapacity: getFactionForceMinerPoolCapacity(galaxy, pool),
       controlledZoneCount: getControlledZoneCountForRace(galaxy, pool.raceId, warState),
+      stockpile: cloneCargoState(getSystemStockpileRecord(forceState, pool.originSystemId)?.resources),
     }));
 
   return {
     zoneShipPoolCap: ZONE_SHIP_POOL_CAP,
     primeWorldBaseShipPoolCap: PRIME_WORLD_BASE_SHIP_POOL_CAP,
     primeWorldZoneBonusPerControlledZone: PRIME_WORLD_ZONE_BONUS_PER_CONTROLLED_ZONE,
+    zoneMinerPoolCap: ZONE_MINER_POOL_CAP,
+    primeWorldMinerPoolCap: PRIME_WORLD_MINER_POOL_CAP,
     primeWorldDefenseTarget: PRIME_WORLD_DEFENSE_TARGET,
     zoneDefenseTarget: ZONE_DEFENSE_TARGET,
     startingZoneShips: STARTING_ZONE_SHIP_COUNT,
@@ -1313,18 +1891,27 @@ export function getFactionForceDebugSnapshot(
         "support-fighter": getFactionForceRespawnCooldownMs("zone", "support-fighter"),
         "attack-warship": getFactionForceRespawnCooldownMs("zone", "attack-warship"),
         "defense-warship": getFactionForceRespawnCooldownMs("zone", "defense-warship"),
+        "miner-ship": getFactionForceRespawnCooldownMs("zone", "miner-ship"),
       },
       primeWorld: {
         "base-fighter": getFactionForceRespawnCooldownMs("prime-world", "base-fighter"),
         "support-fighter": getFactionForceRespawnCooldownMs("prime-world", "support-fighter"),
         "attack-warship": getFactionForceRespawnCooldownMs("prime-world", "attack-warship"),
         "defense-warship": getFactionForceRespawnCooldownMs("prime-world", "defense-warship"),
+        "miner-ship": getFactionForceRespawnCooldownMs("prime-world", "miner-ship"),
       },
     },
     totalPools: pools.length,
     totalActiveShips: pools.reduce((count, pool) => count + pool.activeShipCount, 0),
+    totalActiveWarShips: pools.reduce((count, pool) => count + pool.activeWarShipCount, 0),
+    totalActiveMiners: pools.reduce((count, pool) => count + pool.activeMinerCount, 0),
     totalFleets: forceState.fleets.length,
     rankBoostChargesByRace: { ...forceState.rankBoostChargesByRace },
+    systemStockpiles: forceState.systemStockpiles.map((stockpile) => ({
+      ...stockpile,
+      resources: cloneCargoState(stockpile.resources),
+    })),
+    resourceNodes: forceState.resourceNodes.map((node) => ({ ...node })),
     pools,
     fleets: forceState.fleets.map((fleet) => ({ ...fleet, escortShipIds: [...fleet.escortShipIds] })),
   };

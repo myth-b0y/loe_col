@@ -27,6 +27,7 @@ import {
   normalizeFactionForceState,
   type FactionForceState,
 } from "../content/factionForces";
+import { createSpaceResourceNodeSeeds } from "../content/space";
 import {
   createFactionWarState,
   normalizeFactionWarState,
@@ -361,7 +362,7 @@ export type GameSettings = {
 };
 
 export type SaveData = {
-  version: 14;
+  version: 15;
   meta: {
     lastSavedAt: string | null;
   };
@@ -535,8 +536,9 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
   const profileRaceId: RaceId = "olydran";
   const galaxy = createGalaxyDefinition(galaxySeed);
   const war = createFactionWarState(galaxy);
+  const resourceNodes = createSpaceResourceNodeSeeds(galaxy);
   return {
-    version: 14,
+    version: 15,
     meta: {
       lastSavedAt: null,
     },
@@ -576,7 +578,7 @@ function createDefaultSaveData(galaxySeed = createGalaxySeed()): SaveData {
     },
     galaxy,
     war,
-    forces: createFactionForceState(galaxy, war),
+    forces: createFactionForceState(galaxy, war, resourceNodes),
     ship: createDefaultShipState(profileRaceId, galaxy),
   };
 }
@@ -671,7 +673,7 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
   const merged = {
     ...clone(DEFAULT_SAVE),
     ...parsed,
-    version: 14 as const,
+    version: 15 as const,
     meta: { ...clone(DEFAULT_SAVE.meta), ...parsed.meta },
     profile,
     loadout: {
@@ -698,7 +700,12 @@ function mergeSaveData(parsed: Partial<SaveData>): SaveData {
     },
     galaxy: normalizedGalaxy,
     war: normalizedWar,
-    forces: normalizeFactionForceState(parsed.forces as Partial<FactionForceState> | undefined, normalizedGalaxy, normalizedWar),
+    forces: normalizeFactionForceState(
+      parsed.forces as Partial<FactionForceState> | undefined,
+      normalizedGalaxy,
+      normalizedWar,
+      createSpaceResourceNodeSeeds(normalizedGalaxy),
+    ),
     ship: {
       ...createDefaultShipState(profile.raceId, normalizedGalaxy),
       ...parsed.ship,
@@ -1013,7 +1020,12 @@ export class GameSession extends Phaser.Events.EventEmitter {
   setGalaxyDefinition(galaxy: GalaxyDefinition, emit = false): void {
     this.saveData.galaxy = normalizeGalaxyDefinition(galaxy, galaxy.seed);
     this.saveData.war = normalizeFactionWarState(this.saveData.war, this.saveData.galaxy);
-    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
+    this.saveData.forces = normalizeFactionForceState(
+      this.saveData.forces,
+      this.saveData.galaxy,
+      this.saveData.war,
+      createSpaceResourceNodeSeeds(this.saveData.galaxy),
+    );
     if (emit) {
       this.emit("save-changed", this.saveData);
     }
@@ -1025,7 +1037,12 @@ export class GameSession extends Phaser.Events.EventEmitter {
 
   setFactionWarState(warState: FactionWarState, emit = false): void {
     this.saveData.war = normalizeFactionWarState(warState, this.saveData.galaxy);
-    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
+    this.saveData.forces = normalizeFactionForceState(
+      this.saveData.forces,
+      this.saveData.galaxy,
+      this.saveData.war,
+      createSpaceResourceNodeSeeds(this.saveData.galaxy),
+    );
     if (emit) {
       this.emit("save-changed", this.saveData);
     }
@@ -1036,7 +1053,12 @@ export class GameSession extends Phaser.Events.EventEmitter {
   }
 
   setFactionForceState(forceState: FactionForceState, emit = false): void {
-    this.saveData.forces = normalizeFactionForceState(forceState, this.saveData.galaxy, this.saveData.war);
+    this.saveData.forces = normalizeFactionForceState(
+      forceState,
+      this.saveData.galaxy,
+      this.saveData.war,
+      createSpaceResourceNodeSeeds(this.saveData.galaxy),
+    );
     if (emit) {
       this.emit("save-changed", this.saveData);
     }
@@ -2126,7 +2148,12 @@ export class GameSession extends Phaser.Events.EventEmitter {
     zone.zoneConflictProgress = 0;
     zone.captureAttackerRaceId = null;
     this.saveData.war = normalizeFactionWarState(this.saveData.war, this.saveData.galaxy);
-    this.saveData.forces = normalizeFactionForceState(this.saveData.forces, this.saveData.galaxy, this.saveData.war);
+    this.saveData.forces = normalizeFactionForceState(
+      this.saveData.forces,
+      this.saveData.galaxy,
+      this.saveData.war,
+      createSpaceResourceNodeSeeds(this.saveData.galaxy),
+    );
 
     if (missionId === "world-zone-reclaim") {
       const sourceMissionId = typeof state?.flags.sourceMissionId === "string" && state.flags.sourceMissionId.length > 0

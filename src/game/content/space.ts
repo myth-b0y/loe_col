@@ -13,6 +13,9 @@ import {
 } from "./galaxy";
 import {
   FLEET_ESCORT_SLOT_COUNT,
+  type FactionResourceNodeRecord,
+  type FactionResourceNodeVisualKind,
+  type FactionResourceType,
   getActiveFactionForceShips,
   type FactionShipRankLevel,
   type FactionForceActiveShipRecord,
@@ -134,6 +137,12 @@ export type SpaceFieldObjectSeed = {
   kind: SpaceFieldObjectKind;
   placementType: SpaceFieldPlacementType;
   isLarge: boolean;
+  resourceType: FactionResourceType | null;
+  resourceVisualKind: FactionResourceNodeVisualKind | null;
+  resourceYield: number;
+  respawnDurationMs: number;
+  resourceSystemId: string | null;
+  resourceZoneId: string | null;
   x: number;
   y: number;
   baseRadius: number;
@@ -242,6 +251,13 @@ const FIELD_WORLD_SEED = 0x3c71_2a6d;
 const SHIP_WORLD_SEED = 0x8f14_b39b;
 let cachedSpaceWorldDefinition: SpaceWorldDefinition | null = null;
 
+const ASTEROID_RESOURCE_RESPAWN_MS: Record<FactionResourceNodeVisualKind, number> = {
+  iron: 150000,
+  aetherium: 240000,
+  starforged: 420000,
+  scrap: 180000,
+};
+
 export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
   width: GALAXY_WORLD_CONFIG.width,
   height: GALAXY_WORLD_CONFIG.height,
@@ -256,15 +272,15 @@ export const SPACE_WORLD_CONFIG: SpaceWorldConfig = {
   nearbyFieldRadius: 2400,
   nearbySafeRadius: 360,
   nearbyObjectCount: 3,
-  galaxyObjectCount: 48,
+  galaxyObjectCount: 58,
   deepSpaceObjectCount: 12,
   clusterMinSize: 4,
-  clusterMaxSize: 7,
-  beltCount: 12,
+  clusterMaxSize: 8,
+  beltCount: 16,
   deepSpaceBeltCount: 3,
   beltMinSize: 10,
-  beltMaxSize: 18,
-  galaxyFloaterCount: 116,
+  beltMaxSize: 20,
+  galaxyFloaterCount: 148,
   deepSpaceFloaterCount: 34,
   shipSpawnSafeRadius: 1200,
   sectorInnerPadding: 720,
@@ -455,6 +471,20 @@ const HOMEGUARD_SHIP_ROLE_PROFILES: Record<FactionForceShipRole, SpaceShipRoleCo
     fireCooldownMultiplier: 0.92,
     damageMultiplier: 1.34,
     leadPriority: 1,
+  },
+  "miner-ship": {
+    ...DEFAULT_SHIP_ROLE_COMBAT_PROFILE,
+    radiusMultiplier: 0.86,
+    hullMultiplier: 0.82,
+    accelerationMultiplier: 0.92,
+    maxSpeedMultiplier: 0.92,
+    detectRangeMultiplier: 0.88,
+    fireRangeMultiplier: 0.6,
+    preferredRangeMultiplier: 1.4,
+    fireCooldownMultiplier: 1.4,
+    bulletSpeedMultiplier: 0.8,
+    damageMultiplier: 0,
+    leadPriority: 5,
   },
 };
 
@@ -804,6 +834,81 @@ function createCellKey(cellX: number, cellY: number): SpaceWorldCellKey {
   return `${cellX},${cellY}`;
 }
 
+function getNearestResourceAnchor(
+  x: number,
+  y: number,
+  galaxyDefinition: GalaxyDefinition | null,
+): { systemId: string | null; zoneId: string | null } {
+  if (!galaxyDefinition || galaxyDefinition.systems.length <= 0) {
+    return { systemId: null, zoneId: null };
+  }
+
+  let bestSystem = galaxyDefinition.systems[0];
+  let bestDistanceSq = Number.POSITIVE_INFINITY;
+  galaxyDefinition.systems.forEach((system) => {
+    const dx = system.x - x;
+    const dy = system.y - y;
+    const distanceSq = (dx * dx) + (dy * dy);
+    if (distanceSq < bestDistanceSq) {
+      bestDistanceSq = distanceSq;
+      bestSystem = system;
+    }
+  });
+
+  const zone = galaxyDefinition.zones.find((candidate) => candidate.systemId === bestSystem.id) ?? null;
+  return {
+    systemId: bestSystem.id,
+    zoneId: zone?.id ?? null,
+  };
+}
+
+function createAsteroidResourceMeta(
+  random: () => number,
+  isLarge: boolean,
+  placementType: SpaceFieldPlacementType,
+): {
+  resourceType: FactionResourceType;
+  visualKind: FactionResourceNodeVisualKind;
+  yieldAmount: number;
+  respawnDurationMs: number;
+} {
+  const legendaryChance = isLarge ? 0.045 : 0.012;
+  const rareChance = isLarge ? 0.18 : 0.085;
+  const scrapChance = placementType === "belt" ? 0.16 : placementType === "cluster" ? 0.08 : 0.05;
+  const roll = random();
+
+  if (roll <= legendaryChance) {
+    return {
+      resourceType: "starforged-alloy",
+      visualKind: "starforged",
+      yieldAmount: isLarge ? 4 : 2,
+      respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.starforged,
+    };
+  }
+  if (roll <= legendaryChance + rareChance) {
+    return {
+      resourceType: "aetherium-ore",
+      visualKind: "aetherium",
+      yieldAmount: isLarge ? 8 : 4,
+      respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.aetherium,
+    };
+  }
+  if (roll <= legendaryChance + rareChance + scrapChance) {
+    return {
+      resourceType: "scrap-ship-parts",
+      visualKind: "scrap",
+      yieldAmount: isLarge ? 10 : 5,
+      respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.scrap,
+    };
+  }
+  return {
+    resourceType: "iron-ore",
+    visualKind: "iron",
+    yieldAmount: isLarge ? 12 : placementType === "belt" ? 8 : 6,
+    respawnDurationMs: ASTEROID_RESOURCE_RESPAWN_MS.iron,
+  };
+}
+
 function createFieldSeed(
   id: string,
   kind: SpaceFieldObjectKind,
@@ -811,6 +916,7 @@ function createFieldSeed(
   y: number,
   random: () => number,
   config: SpaceWorldConfig,
+  galaxyDefinition: GalaxyDefinition | null = null,
   options?: {
     baseVelocity?: { x: number; y: number };
     placementType?: SpaceFieldPlacementType;
@@ -834,6 +940,10 @@ function createFieldSeed(
       ? Math.round(radius >= 52 ? 7 : radius >= 42 ? 6 : radius >= 34 ? 5 : 4)
       : Math.round(radius >= 24 ? 3 : 2);
   const baseVelocity = options?.baseVelocity;
+  const resourceMeta = kind === "asteroid"
+    ? createAsteroidResourceMeta(random, isLarge, placementType)
+    : null;
+  const resourceAnchor = resourceMeta ? getNearestResourceAnchor(x, y, galaxyDefinition) : { systemId: null, zoneId: null };
 
   return {
     id,
@@ -841,6 +951,12 @@ function createFieldSeed(
     kind,
     placementType,
     isLarge,
+    resourceType: resourceMeta?.resourceType ?? null,
+    resourceVisualKind: resourceMeta?.visualKind ?? null,
+    resourceYield: resourceMeta?.yieldAmount ?? 0,
+    respawnDurationMs: resourceMeta?.respawnDurationMs ?? 0,
+    resourceSystemId: resourceAnchor.systemId,
+    resourceZoneId: resourceAnchor.zoneId,
     x,
     y,
     baseRadius: radius,
@@ -1187,7 +1303,7 @@ function createSpawnClusterSeed(
     const kind = pickKind(random);
     const x = origin.x + (Math.cos(angle) * distance);
     const y = origin.y + (Math.sin(angle) * distance);
-    const candidate = createFieldSeed(clusterId, kind, x, y, random, config, {
+    const candidate = createFieldSeed(clusterId, kind, x, y, random, config, galaxyDefinition ?? null, {
       placementType: "cluster",
     });
     if (
@@ -1247,7 +1363,7 @@ function createFieldClusterSeeds(
       const x = center.x + (Math.cos(angle) * distance);
       const y = center.y + (Math.sin(angle) * distance);
       const kind = pickClusterKind(random);
-      const candidate = createFieldSeed(createId(), kind, x, y, random, config, {
+      const candidate = createFieldSeed(createId(), kind, x, y, random, config, galaxyDefinition ?? null, {
         baseVelocity,
         placementType,
         isLarge: Boolean(options?.allowLargeAsteroids && kind === "asteroid" && random() > 0.84),
@@ -1301,7 +1417,7 @@ function createFieldBeltSeeds(
       const x = center.x + rotatedX;
       const y = center.y + rotatedY;
       const kind = random() > 0.22 ? "asteroid" : "debris";
-      const candidate = createFieldSeed(createId(), kind, x, y, random, config, {
+      const candidate = createFieldSeed(createId(), kind, x, y, random, config, galaxyDefinition ?? null, {
         baseVelocity,
         placementType: "belt",
         isLarge: kind === "asteroid" && random() > 0.82,
@@ -1351,7 +1467,7 @@ function createDistantSeed(
         ? pickPointInGalaxyBody(config, random)
         : pickPointInDeepSpace(config, random);
     const kind = pickKind(random);
-    const candidate = createFieldSeed(id, kind, point.x, point.y, random, config, {
+    const candidate = createFieldSeed(id, kind, point.x, point.y, random, config, galaxyDefinition ?? null, {
       placementType: "single",
     });
     if (
@@ -1363,7 +1479,7 @@ function createDistantSeed(
   }
 
   const fallback = deepSpaceOnly ? pickPointInDeepSpace(config, random) : pickPointInGalaxyBody(config, random);
-  return createFieldSeed(id, "asteroid", fallback.x, fallback.y, random, config, {
+  return createFieldSeed(id, "asteroid", fallback.x, fallback.y, random, config, galaxyDefinition ?? null, {
     placementType: "single",
   });
 }
@@ -1685,6 +1801,83 @@ function createSeededGuardFormation(
   });
 }
 
+function createSeededMinerShipSeed(
+  ship: FactionForceActiveShipRecord,
+  galaxyDefinition: GalaxyDefinition,
+  forceState: FactionForceState,
+  config: SpaceWorldConfig,
+  warState: FactionWarState | null,
+): SpaceFactionShipSeed | null {
+  const originSystem = getGalaxySystemById(galaxyDefinition, ship.originSystemId);
+  if (!originSystem) {
+    return null;
+  }
+  const node = ship.targetResourceNodeId
+    ? forceState.resourceNodes.find((candidate) => candidate.id === ship.targetResourceNodeId)
+    : null;
+  const factionId = warState ? getSpaceFactionIdForRace(warState, ship.raceId) : "homeguard";
+  const controllerPalette = getGalaxyControllerPalette(ship.raceId);
+  const roleProfile = getSpaceShipRoleCombatProfile(ship.role);
+  const rng = new SeededRandom(hashStringToSeed(`${ship.shipId}:miner`) >>> 0);
+  const anchor = node && (ship.minerState === "travel-to-node" || ship.minerState === "mining" || ship.minerState === "fleeing")
+    ? { x: node.x, y: node.y }
+    : ship.minerState === "returning" && node
+      ? {
+          x: node.x + ((originSystem.x - node.x) * 0.45),
+          y: node.y + ((originSystem.y - node.y) * 0.45),
+        }
+      : { x: originSystem.x, y: originSystem.y };
+  const orbitAngle = rng.range(0, Math.PI * 2);
+  const orbitRadius = node && ship.minerState === "mining"
+    ? rng.range(node.isLarge ? 82 : 56, node.isLarge ? 132 : 94)
+    : rng.range(88, 164);
+  const x = anchor.x + (Math.cos(orbitAngle) * orbitRadius);
+  const y = anchor.y + (Math.sin(orbitAngle) * orbitRadius);
+  const patrolTarget = ship.minerState === "returning" || ship.minerState === "depositing" || ship.minerState === "fleeing" || !node
+    ? { x: originSystem.x, y: originSystem.y }
+    : { x: node.x, y: node.y };
+  const heading = Math.atan2(patrolTarget.y - y, patrolTarget.x - x);
+  const speed = (18 + rng.range(0, 22)) * roleProfile.maxSpeedMultiplier;
+  return {
+    id: ship.shipId,
+    cellKey: getSpaceCellKeyAtPosition(x, y, config),
+    factionId,
+    assetId: ship.assetId,
+    rankLevel: ship.rankLevel,
+    shipRole: ship.role,
+    assignmentKind: ship.assignmentKind,
+    assignmentZoneId: ship.assignmentZoneId,
+    slotKind: ship.slotKind,
+    fleetId: null,
+    fleetGroupId: null,
+    fleetMode: "patrol-group",
+    captureIntent: false,
+    sectorId: originSystem.sectorId,
+    groupId: `miner:${ship.shipId}`,
+    leaderId: null,
+    formationOffsetX: 0,
+    formationOffsetY: 0,
+    x,
+    y,
+    velocityX: Math.cos(heading) * speed,
+    velocityY: Math.sin(heading) * speed,
+    rotation: heading + Math.PI * 0.5,
+    patrolX: patrolTarget.x,
+    patrolY: patrolTarget.y,
+    customColor: controllerPalette.color,
+    customTrimColor: controllerPalette.borderColor,
+    customGlowColor: controllerPalette.borderColor,
+    guardAnchorX: originSystem.x,
+    guardAnchorY: originSystem.y,
+    guardRadius: 520,
+    originPoolId: ship.poolId,
+    originPoolKind: ship.kind,
+    originZoneId: ship.originZoneId,
+    originSystemId: ship.originSystemId,
+    originRaceId: ship.raceId,
+  };
+}
+
 export function createSpaceForceShipSeeds(
   galaxyDefinition: GalaxyDefinition | null,
   forceState: FactionForceState | null,
@@ -1697,7 +1890,10 @@ export function createSpaceForceShipSeeds(
   }
 
   const activeForceShips = getActiveFactionForceShips(forceState);
-  const groupedShips = activeForceShips.reduce<Map<string, FactionForceActiveShipRecord[]>>((lookup, ship) => {
+  const minerShips = activeForceShips.filter((ship) => ship.role === "miner-ship");
+  const groupedShips = activeForceShips
+    .filter((ship) => ship.role !== "miner-ship")
+    .reduce<Map<string, FactionForceActiveShipRecord[]>>((lookup, ship) => {
     const groupKey = ship.fleetId ?? `${ship.poolId}:${ship.assignmentKind}:${ship.assignmentZoneId ?? ship.originZoneId}`;
     const bucket = lookup.get(groupKey);
     if (bucket) {
@@ -1752,7 +1948,14 @@ export function createSpaceForceShipSeeds(
       fleetGroupOffset,
       groupSalt ^ hashStringToSeed(`${poolId}:0`),
     );
-    seeds.push(...groupSeeds);
+      seeds.push(...groupSeeds);
+  });
+
+  minerShips.forEach((ship) => {
+    const seed = createSeededMinerShipSeed(ship, galaxyDefinition, forceState, config, warState);
+    if (seed) {
+      seeds.push(seed);
+    }
   });
 
   return seeds;
@@ -1968,6 +2171,32 @@ export function createSpaceFieldSeeds(
   fieldSeedSalt = 0,
 ): SpaceFieldObjectSeed[] {
   return createSpaceWorldDefinition(config, galaxyDefinition, fieldSeedSalt).fieldSeeds;
+}
+
+export function createSpaceResourceNodeSeeds(
+  galaxyDefinition: GalaxyDefinition,
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): FactionResourceNodeRecord[] {
+  return createSpaceFieldSeeds(config, galaxyDefinition, 0)
+    .filter((seed) => seed.kind === "asteroid" && seed.resourceType && seed.resourceVisualKind && seed.resourceSystemId && seed.resourceZoneId)
+    .map((seed) => ({
+      id: seed.id,
+      fieldId: seed.id,
+      systemId: seed.resourceSystemId!,
+      zoneId: seed.resourceZoneId!,
+      sectorId: getGalaxySystemById(galaxyDefinition, seed.resourceSystemId!)?.sectorId ?? getGalaxySectorAtPosition(seed.x, seed.y).id,
+      cellKey: seed.cellKey,
+      x: seed.x,
+      y: seed.y,
+      placementType: seed.placementType,
+      isLarge: seed.isLarge,
+      resourceType: seed.resourceType!,
+      visualKind: seed.resourceVisualKind!,
+      totalYield: Math.max(1, Math.round(seed.resourceYield)),
+      remainingYield: Math.max(1, Math.round(seed.resourceYield)),
+      respawnDurationMs: Math.max(1000, Math.round(seed.respawnDurationMs)),
+      depletedUntilSimTimeMs: null,
+    }));
 }
 
 export function createSpaceFactionShipSeeds(

@@ -1,5 +1,5 @@
 import { type RaceId } from "./items";
-import { type FactionForcePoolKind, type FactionForceShipRole } from "./factionForces";
+import { type FactionForcePoolKind, type FactionForceShipRole, type FactionResourceType } from "./factionForces";
 
 export type FactionAssetType = "ship";
 export type FactionAssetTag =
@@ -8,6 +8,7 @@ export type FactionAssetTag =
   | "command"
   | "defense"
   | "logistics"
+  | "mining"
   | "patrol"
   | "reinforce"
   | "repair"
@@ -37,8 +38,10 @@ export type FactionAssetDefinition = {
   canCapture: boolean;
   effectiveRadius: number;
   supportRadius: number;
-  preferredUse: "defense" | "expansion" | "repair" | "patrol";
+  cargoCapacity: number;
+  preferredUse: "defense" | "expansion" | "repair" | "patrol" | "mining";
   strategicPriority: number;
+  resourceCost: Partial<Record<FactionResourceType, number>>;
   buildTimeMs: {
     zone: number;
     "prime-world": number;
@@ -66,8 +69,13 @@ export const FACTION_ASSET_DEFINITIONS: readonly FactionAssetDefinition[] = [
     canCapture: false,
     effectiveRadius: 580,
     supportRadius: 0,
+    cargoCapacity: 0,
     preferredUse: "patrol",
     strategicPriority: 3,
+    resourceCost: {
+      "iron-ore": 16,
+      "scrap-ship-parts": 6,
+    },
     buildTimeMs: {
       zone: 24000,
       "prime-world": 16800,
@@ -93,8 +101,14 @@ export const FACTION_ASSET_DEFINITIONS: readonly FactionAssetDefinition[] = [
     canCapture: false,
     effectiveRadius: 620,
     supportRadius: 270,
+    cargoCapacity: 0,
     preferredUse: "repair",
     strategicPriority: 2,
+    resourceCost: {
+      "iron-ore": 18,
+      "scrap-ship-parts": 8,
+      "aetherium-ore": 2,
+    },
     buildTimeMs: {
       zone: 30000,
       "prime-world": 21000,
@@ -120,8 +134,14 @@ export const FACTION_ASSET_DEFINITIONS: readonly FactionAssetDefinition[] = [
     canCapture: true,
     effectiveRadius: 760,
     supportRadius: 0,
+    cargoCapacity: 24,
     preferredUse: "expansion",
     strategicPriority: 0,
+    resourceCost: {
+      "iron-ore": 36,
+      "aetherium-ore": 8,
+      "starforged-alloy": 1,
+    },
     buildTimeMs: {
       zone: 52000,
       "prime-world": 36400,
@@ -147,11 +167,46 @@ export const FACTION_ASSET_DEFINITIONS: readonly FactionAssetDefinition[] = [
     canCapture: true,
     effectiveRadius: 720,
     supportRadius: 0,
+    cargoCapacity: 30,
     preferredUse: "defense",
     strategicPriority: 1,
+    resourceCost: {
+      "iron-ore": 30,
+      "scrap-ship-parts": 12,
+      "aetherium-ore": 6,
+    },
     buildTimeMs: {
       zone: 46000,
       "prime-world": 32200,
+    },
+  },
+  {
+    id: "ship/miner-ship",
+    assetType: "ship",
+    shipRole: "miner-ship",
+    role: "industrial miner ship",
+    tags: ["logistics", "mining", "patrol"],
+    factionAccess: "all-main-races",
+    raceCompatibility: "all-main-races",
+    combatValue: 0.2,
+    threatValue: 0.12,
+    defenseValue: 0.48,
+    mobilityValue: 0.92,
+    durability: 0.82,
+    costPlaceholder: 1,
+    buildLocationRules: ["prime-world", "system"],
+    formationEligible: false,
+    canCommand: false,
+    canCapture: false,
+    effectiveRadius: 380,
+    supportRadius: 0,
+    cargoCapacity: 18,
+    preferredUse: "mining",
+    strategicPriority: 4,
+    resourceCost: {},
+    buildTimeMs: {
+      zone: 22000,
+      "prime-world": 16800,
     },
   },
 ] as const;
@@ -206,4 +261,12 @@ export function getFactionAssetPreferredUse(assetId: string): FactionAssetDefini
 
 export function getFactionAssetShipRole(assetId: string): FactionForceShipRole {
   return getFactionAssetDefinition(assetId).shipRole;
+}
+
+export function getFactionAssetResourceCost(assetId: string): Partial<Record<FactionResourceType, number>> {
+  return { ...getFactionAssetDefinition(assetId).resourceCost };
+}
+
+export function getFactionAssetCargoCapacity(assetId: string): number {
+  return Math.max(0, Math.round(getFactionAssetDefinition(assetId).cargoCapacity));
 }
