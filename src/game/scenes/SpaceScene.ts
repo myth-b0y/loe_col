@@ -543,25 +543,29 @@ const WAR_STATE_UPDATE_INTERVAL_MS = 1000;
 const STATUS_MESSAGE_DURATION_MS = 5600;
 const STATUS_MESSAGE_LIMIT = 3;
 const FLEET_TRAVEL_ARRIVAL_RADIUS = 340;
-const FLEET_GROUP_SPACING_BUFFER = 42;
+const FLEET_GROUP_SPACING_BUFFER = 64;
 const SPACE_PICKUP_ATTRACT_RANGE = 110;
 const SPACE_PICKUP_COLLECT_RANGE = 48;
 const MINER_THREAT_AVOID_RANGE = 520;
-const MINER_MINING_RANGE = 72;
+const MINER_MINING_RANGE = 48;
 const MINER_DEPOSIT_RANGE = 220;
 const MINER_MINING_RATE_PER_SEC = 2.4;
 const MINER_CARGO_CAPACITY = 18;
 const MINER_RETURN_CARGO_THRESHOLD = 12;
-const MINER_SLOT_PADDING = 22;
-const MINER_SLOT_PADDING_LARGE = 34;
-const MINER_SLOT_RING_STEP = 24;
+const MINER_SLOT_PADDING = 12;
+const MINER_SLOT_PADDING_LARGE = 20;
+const MINER_SLOT_RING_STEP = 18;
 const MINER_EXPEDITION_RANGE = 4200;
 const MINER_IRON_PRIORITY_STOCKPILE_THRESHOLD = 96;
 const INACTIVE_MINER_UPDATE_INTERVAL_MS = 250;
 const ASTEROID_PLAYER_COLLISION_RADIUS = 440;
 const ACTIVE_SPATIAL_BUCKET_SIZE = 960;
-const FLEET_AVOIDANCE_RADIUS = 220;
+const SPACE_COMBAT_DETAIL_RADIUS = 2600;
+const SPACE_COLLISION_DETAIL_RADIUS = 2200;
+const SPACE_AVOIDANCE_DETAIL_RADIUS = 2100;
+const FLEET_AVOIDANCE_RADIUS = 240;
 const ASTEROID_AVOIDANCE_RADIUS = 260;
+const FORMATION_SLOT_LOCK_DISTANCE = 54;
 const ASTEROID_IRON_ORE_DROP_CHANCE = 0.62;
 const ASTEROID_AETHERIUM_DROP_CHANCE = 0.15;
 const ASTEROID_STARFORGED_DROP_CHANCE = 0.03;
@@ -613,16 +617,24 @@ function hashStringToUnitInterval(value: string): number {
 }
 
 function createRockPoints(radius: number, seedKey: string): number[] {
-  const points: number[] = [];
+  const points: Array<{ x: number; y: number }> = [];
   const pointCount = radius >= 42 ? 9 : 7;
+  let centroidX = 0;
+  let centroidY = 0;
 
   for (let index = 0; index < pointCount; index += 1) {
     const angle = (index / pointCount) * Math.PI * 2;
     const pointRadius = radius * (0.74 + (hashStringToUnitInterval(`${seedKey}:${index}`) * 0.26));
-    points.push(Math.cos(angle) * pointRadius, Math.sin(angle) * pointRadius);
+    const x = Math.cos(angle) * pointRadius;
+    const y = Math.sin(angle) * pointRadius;
+    points.push({ x, y });
+    centroidX += x;
+    centroidY += y;
   }
 
-  return points;
+  centroidX /= pointCount;
+  centroidY /= pointCount;
+  return points.flatMap((point) => [point.x - centroidX, point.y - centroidY]);
 }
 
 function createStarPoints(
@@ -777,6 +789,7 @@ export class SpaceScene extends Phaser.Scene {
   private galaxyStationsById = new Map<string, GalaxyStationRecord>();
   private fieldStates = new Map<string, SpaceFieldObjectState>();
   private shipStates = new Map<string, SpaceFactionShipState>();
+  private resourceNodesByFieldId = new Map<string, FactionResourceNodeRecord>();
   private activeAsteroidBuckets = new Map<string, SpaceFieldObject[]>();
   private activeFieldObjectsById = new Map<string, SpaceFieldObject>();
   private activeShipBuckets = new Map<string, SpaceFactionShip[]>();
@@ -937,6 +950,7 @@ export class SpaceScene extends Phaser.Scene {
     this.galaxyStationsById.clear();
     this.fieldStates.clear();
     this.shipStates.clear();
+    this.resourceNodesByFieldId.clear();
     this.activeAsteroidBuckets.clear();
     this.activeFieldObjectsById.clear();
     this.activeShipBuckets.clear();
@@ -959,6 +973,9 @@ export class SpaceScene extends Phaser.Scene {
     this.activeCelestialSystems.clear();
     this.activePlanetViews.clear();
     this.activeMoonViews.clear();
+    this.forceState.resourceNodes.forEach((node) => {
+      this.resourceNodesByFieldId.set(node.fieldId, node);
+    });
     this.activeStationViews.clear();
     this.shots = [];
     this.spacePickups = [];
@@ -4598,6 +4615,7 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private deactivateFieldObject(fieldObject: SpaceFieldObject): void {
+    this.syncResourceNodeFromFieldObject(fieldObject);
     this.fieldStates.set(fieldObject.id, this.captureFieldObjectState(fieldObject));
     this.clearFieldTargetReferences(fieldObject.id);
     this.activeFieldObjectsById.delete(fieldObject.id);
@@ -4702,7 +4720,7 @@ export class SpaceScene extends Phaser.Scene {
                 : 0xc2d4eb
       : 0xcbb185;
     const rockPoints = createRockPoints(baseRadius, state.id);
-    const shadow = this.add.ellipse(6, 8, baseRadius * 1.84, baseRadius * 1.28, 0x000000, state.isLarge ? 0.22 : 0.16);
+    const shadow = this.add.ellipse(0, baseRadius * 0.08, baseRadius * 1.76, baseRadius * 1.2, 0x000000, state.isLarge ? 0.18 : 0.13);
     const hull = this.add.polygon(0, 0, rockPoints, hullColor, 0.98).setStrokeStyle(state.isLarge ? 3 : 2, strokeColor, 0.66);
     const craterA = this.add.circle(-baseRadius * 0.18, baseRadius * 0.14, Math.max(4, baseRadius * 0.16), state.resourceVisualKind === "aetherium" ? 0x5db8ff : state.resourceVisualKind === "starforged" ? 0xdcb566 : 0x34404d, state.resourceVisualKind ? 0.3 : 0.24);
     const craterB = this.add.circle(baseRadius * 0.2, -baseRadius * 0.1, Math.max(3, baseRadius * 0.12), state.resourceVisualKind === "scrap" ? 0x6f6354 : 0x2f3945, 0.18);
@@ -4894,8 +4912,8 @@ export class SpaceScene extends Phaser.Scene {
     root.setSize(bodyRadius * 2.6, bodyRadius * 2.6);
     const miningBeam = state.shipRole === "miner-ship"
       ? this.add.line(state.x, state.y, 0, 0, 0, 0, 0x8ed8ff, 0.88)
-        .setLineWidth(4, 7)
-        .setDepth(12)
+        .setLineWidth(5, 9)
+        .setDepth(14)
         .setBlendMode(Phaser.BlendModes.ADD)
         .setVisible(false)
       : null;
@@ -6128,7 +6146,7 @@ export class SpaceScene extends Phaser.Scene {
       && (this.playerHull < this.playerMaxHull || this.playerShield < this.playerMaxShield)
       && Phaser.Math.Distance.Between(ship.root.x, ship.root.y, this.shipRoot.x, this.shipRoot.y) <= roleProfile.supportRepairRange;
 
-    const repairTarget = this.factionShips
+    const repairTarget = this.getNearbyFactionShips(ship.root.x, ship.root.y, roleProfile.supportRepairRange + 60)
       .filter((ally) => {
         if (ally.id === ship.id || ally.factionId !== ship.factionId || ally.hp >= ally.maxHp) {
           return false;
@@ -6406,6 +6424,7 @@ export class SpaceScene extends Phaser.Scene {
       fieldObject.root.y += fieldObject.velocity.y * dt;
       fieldObject.root.rotation += fieldObject.spin * dt;
       this.constrainMovingBody(fieldObject.root, fieldObject.radius, fieldObject.velocity, 0.82);
+      this.syncResourceNodeFromFieldObject(fieldObject);
 
       fieldObject.flash = Math.max(0, fieldObject.flash - (dt * 4));
       fieldObject.damageRing.setStrokeStyle(2, 0xffcf96, fieldObject.flash * 0.86);
@@ -6419,9 +6438,9 @@ export class SpaceScene extends Phaser.Scene {
 
   private getFieldCollisionRadius(fieldObject: Pick<SpaceFieldObjectState, "kind" | "baseRadius" | "radius">): number {
     if (fieldObject.kind === "debris") {
-      return Math.max(10, fieldObject.radius * 0.68);
+      return Math.max(10, fieldObject.radius * 0.62);
     }
-    return Math.max(14, fieldObject.radius * 0.74);
+    return Math.max(14, fieldObject.radius * 0.82);
   }
 
   private rebuildActiveSpatialBuckets(): void {
@@ -6521,7 +6540,7 @@ export class SpaceScene extends Phaser.Scene {
       }
 
       if (shouldBeDestroyed) {
-        const activeFieldObject = this.asteroids.find((candidate) => candidate.id === fieldId);
+        const activeFieldObject = this.getActiveFieldObjectById(fieldId);
         if (activeFieldObject) {
           this.fieldStates.set(fieldId, this.captureFieldObjectState(activeFieldObject, true));
           this.clearFieldTargetReferences(fieldId);
@@ -6575,6 +6594,25 @@ export class SpaceScene extends Phaser.Scene {
       return;
     }
     ship.miningBeam.setVisible(false);
+  }
+
+  private isWithinPlayerDetailRange(x: number, y: number, radius: number): boolean {
+    const dx = x - this.shipRoot.x;
+    const dy = y - this.shipRoot.y;
+    return ((dx * dx) + (dy * dy)) <= (radius * radius);
+  }
+
+  private syncResourceNodeFromFieldObject(fieldObject: Pick<SpaceFieldObject, "id" | "resourceType" | "root">): void {
+    if (!fieldObject.resourceType) {
+      return;
+    }
+    const node = this.resourceNodesByFieldId.get(fieldObject.id);
+    if (!node) {
+      return;
+    }
+    node.x = fieldObject.root.x;
+    node.y = fieldObject.root.y;
+    node.cellKey = getSpaceCellKeyAtPosition(fieldObject.root.x, fieldObject.root.y, SPACE_WORLD_CONFIG);
   }
 
   private getActiveFieldObjectById(fieldId: string): SpaceFieldObject | null {
@@ -6631,6 +6669,7 @@ export class SpaceScene extends Phaser.Scene {
       shipX: number;
       shipY: number;
       stockpile: FactionShipCargoState;
+      requireActiveFieldObject: boolean;
     },
   ): number {
     const anchor = this.getResourceNodeAnchorMetrics(node);
@@ -6676,6 +6715,9 @@ export class SpaceScene extends Phaser.Scene {
     if (ironNeed > 0 && node.resourceType !== "iron-ore" && sameSystem) {
       score -= 88;
     }
+    if (context.requireActiveFieldObject) {
+      score += anchor.activeFieldObject ? 180 : -260;
+    }
 
     score -= distanceFromShip * 0.04;
     score -= distanceFromOrigin * 0.028;
@@ -6692,7 +6734,7 @@ export class SpaceScene extends Phaser.Scene {
   private findNearestMinerThreat(ship: SpaceFactionShip): SpaceFactionShip | null {
     let nearestThreat: SpaceFactionShip | null = null;
     let nearestDistanceSq = Number.POSITIVE_INFINITY;
-    this.factionShips.forEach((candidate) => {
+    this.getNearbyFactionShips(ship.root.x, ship.root.y, MINER_THREAT_AVOID_RANGE + 80).forEach((candidate) => {
       if (candidate.id === ship.id || !this.isShipHostileToShip(candidate, ship)) {
         return;
       }
@@ -6713,6 +6755,7 @@ export class SpaceScene extends Phaser.Scene {
     originRaceId: RaceId | null,
     positionX: number,
     positionY: number,
+    requireActiveFieldObject = false,
   ) {
     const originSystem = this.galaxySystemsById.get(originSystemId);
     const originSectorId = originSystem?.sectorId ?? null;
@@ -6723,6 +6766,9 @@ export class SpaceScene extends Phaser.Scene {
       }
       const anchor = this.getResourceNodeAnchorMetrics(node);
       if (!anchor) {
+        return false;
+      }
+      if (requireActiveFieldObject && !anchor.activeFieldObject) {
         return false;
       }
       if (node.systemId === originSystemId) {
@@ -6749,6 +6795,7 @@ export class SpaceScene extends Phaser.Scene {
           shipX: positionX,
           shipY: positionY,
           stockpile,
+          requireActiveFieldObject,
         }),
       }))
       .sort((left, right) => right.score - left.score);
@@ -6811,7 +6858,7 @@ export class SpaceScene extends Phaser.Scene {
     ship.cargo = { ...forceShip.cargo };
     this.forceStateDirty = true;
     if (extraction.depleted) {
-      const activeFieldObject = this.asteroids.find((candidate) => candidate.id === node.fieldId);
+      const activeFieldObject = this.getActiveFieldObjectById(node.fieldId);
       if (activeFieldObject) {
         this.breakFieldObject(activeFieldObject, false);
       } else {
@@ -7068,11 +7115,11 @@ export class SpaceScene extends Phaser.Scene {
       const cargoAmount = getFactionShipCargoAmount(forceShip);
       let node = ship.targetResourceNodeId ? getFactionResourceNodeById(this.forceState, ship.targetResourceNodeId) : null;
       if (!node || node.remainingYield <= 0 || node.depletedUntilSimTimeMs !== null) {
-        node = this.pickBestMinerResourceNode(ship.originSystemId, ship.originRaceId, ship.root.x, ship.root.y);
+        node = this.pickBestMinerResourceNode(ship.originSystemId, ship.originRaceId, ship.root.x, ship.root.y, true);
         ship.targetResourceNodeId = node?.id ?? null;
       }
       const nodeAnchor = node ? this.getResourceNodeAnchorMetrics(node) : null;
-      if (node && !nodeAnchor) {
+      if (node && (!nodeAnchor || !nodeAnchor.activeFieldObject)) {
         ship.targetResourceNodeId = null;
         node = null;
       }
@@ -7109,8 +7156,8 @@ export class SpaceScene extends Phaser.Scene {
           ship.miningProgress += dt * MINER_MINING_RATE_PER_SEC;
           if (ship.miningBeam) {
             ship.miningBeam.setTo(ship.root.x, ship.root.y, nodeAnchor.x, nodeAnchor.y);
-            ship.miningBeam.setLineWidth(4, 7);
-            ship.miningBeam.setStrokeStyle(4, 0x8ed8ff, 0.94);
+            ship.miningBeam.setLineWidth(5, 9);
+            ship.miningBeam.setStrokeStyle(5, 0x9ee8ff, 1);
             ship.miningBeam.setVisible(true);
           }
           const requestedAmount = Math.floor(ship.miningProgress);
@@ -7181,7 +7228,10 @@ export class SpaceScene extends Phaser.Scene {
         continue;
       }
 
-      const target = this.selectShipTarget(ship);
+      const shouldRunCombatLogic = this.isWithinPlayerDetailRange(ship.root.x, ship.root.y, SPACE_COMBAT_DETAIL_RADIUS)
+        || ship.provokedByPlayer
+        || ship.provokedByShips.size > 0;
+      const target = shouldRunCombatLogic ? this.selectShipTarget(ship) : null;
       const fleeTarget = target ? null : this.findNearestSmugglerThreat(ship);
       const carrierReturnMovement = target ? null : this.getCargoCarrierReturnMovement(ship);
       const movement = new Phaser.Math.Vector2();
@@ -7255,7 +7305,7 @@ export class SpaceScene extends Phaser.Scene {
     let bestScore = Number.POSITIVE_INFINITY;
     let bestTarget: { kind: "player" } | { kind: "ship"; ship: SpaceFactionShip } | null = null;
 
-    this.factionShips.forEach((targetShip) => {
+    this.getNearbyFactionShips(ship.root.x, ship.root.y, faction.detectRange + 120).forEach((targetShip) => {
       if (targetShip.id === ship.id) {
         return;
       }
@@ -7319,7 +7369,7 @@ export class SpaceScene extends Phaser.Scene {
     let nearestDistanceSq = Number.POSITIVE_INFINITY;
     let nearestPosition: Phaser.Math.Vector2 | null = null;
 
-    this.factionShips.forEach((otherShip) => {
+    this.getNearbyFactionShips(ship.root.x, ship.root.y, 600).forEach((otherShip) => {
       if (otherShip.id === ship.id || otherShip.factionId === "smuggler") {
         return;
       }
@@ -7624,6 +7674,51 @@ export class SpaceScene extends Phaser.Scene {
     }
   }
 
+  private getModeAdjustedFormationOffset(
+    ship: Pick<SpaceFactionShip, "formationOffsetX" | "formationOffsetY" | "fleetMode">,
+    leader: Pick<SpaceFactionShip, "fleetMode">,
+  ): { x: number; y: number } {
+    const mode = ship.fleetMode ?? leader.fleetMode ?? "patrol-group";
+    let x = ship.formationOffsetX;
+    let y = ship.formationOffsetY;
+
+    switch (mode) {
+      case "hold-position":
+        x *= 1.55;
+        y *= 0.42;
+        break;
+      case "defensive-response-force":
+        x *= 1.34;
+        y *= 0.58;
+        break;
+      case "retreat":
+        x *= 0.36;
+        y *= 1.52;
+        break;
+      case "regroup":
+        x *= 0.7;
+        y *= 1.24;
+        break;
+      case "capture-force":
+        x *= 0.92;
+        y *= 1.08;
+        break;
+      case "multi-fleet":
+        x *= 1.04;
+        y *= 1.16;
+        break;
+      case "single-fleet":
+        x *= 0.98;
+        y *= 1.04;
+        break;
+      default:
+        y *= 0.92;
+        break;
+    }
+
+    return { x, y };
+  }
+
   private getPatrolMovement(ship: SpaceFactionShip): Phaser.Math.Vector2 {
     const leader = this.getPatrolLeader(ship);
     if (leader && leader.id !== ship.id) {
@@ -7631,18 +7726,27 @@ export class SpaceScene extends Phaser.Scene {
       const slotVector = new Phaser.Math.Vector2(slotTarget.x - ship.root.x, slotTarget.y - ship.root.y);
       const slotDistance = slotVector.length();
       const leaderForward = this.getShipTravelDirection(leader);
+      if (slotDistance <= FORMATION_SLOT_LOCK_DISTANCE) {
+        if (leader.velocity.lengthSq() > 1) {
+          return leader.velocity.clone().normalize();
+        }
+        if (slotDistance > 6) {
+          return slotVector.normalize();
+        }
+        return leaderForward.lengthSq() > 0 ? leaderForward : new Phaser.Math.Vector2();
+      }
       const desiredDirection = new Phaser.Math.Vector2();
 
       if (slotDistance > 0.001) {
-        const catchUpBias = Phaser.Math.Clamp(slotDistance / (FORMATION_RECOVERY_DISTANCE * 1.9), 0.18, 1);
-        desiredDirection.add(slotVector.normalize().scale(0.84));
+        const catchUpBias = Phaser.Math.Clamp(slotDistance / (FORMATION_RECOVERY_DISTANCE * 1.6), 0.26, 1);
+        desiredDirection.add(slotVector.normalize().scale(0.96 * catchUpBias));
         if (leaderForward.lengthSq() > 0.001) {
-          desiredDirection.add(leaderForward.clone().scale(0.42 * (1 - Math.min(1, catchUpBias))));
+          desiredDirection.add(leaderForward.clone().scale(0.62 * (1 - Math.min(1, catchUpBias * 0.9))));
         }
       }
 
       if (leader.velocity.lengthSq() > 1) {
-        desiredDirection.add(leader.velocity.clone().normalize().scale(0.38));
+        desiredDirection.add(leader.velocity.clone().normalize().scale(0.52));
       }
 
       if (desiredDirection.lengthSq() > 0.001) {
@@ -7701,12 +7805,13 @@ export class SpaceScene extends Phaser.Scene {
   private getFormationSlotTarget(ship: SpaceFactionShip, leader: SpaceFactionShip): Phaser.Math.Vector2 {
     const forward = this.getShipTravelDirection(leader);
     const right = new Phaser.Math.Vector2(-forward.y, forward.x);
-    const lookAheadScale = Phaser.Math.Clamp(leader.velocity.length() / Math.max(1, this.getShipCombatConfig(leader).maxSpeed), 0.08, 0.24);
+    const offset = this.getModeAdjustedFormationOffset(ship, leader);
+    const lookAheadScale = Phaser.Math.Clamp(leader.velocity.length() / Math.max(1, this.getShipCombatConfig(leader).maxSpeed), 0.04, 0.16);
     const lookAheadX = leader.velocity.x * lookAheadScale;
     const lookAheadY = leader.velocity.y * lookAheadScale;
     return new Phaser.Math.Vector2(
-      leader.root.x + (right.x * ship.formationOffsetX) - (forward.x * ship.formationOffsetY) + lookAheadX,
-      leader.root.y + (right.y * ship.formationOffsetX) - (forward.y * ship.formationOffsetY) + lookAheadY,
+      leader.root.x + (right.x * offset.x) - (forward.x * offset.y) + lookAheadX,
+      leader.root.y + (right.y * offset.x) - (forward.y * offset.y) + lookAheadY,
     );
   }
 
@@ -7768,13 +7873,17 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     const steering = desiredDirection.clone();
-    const asteroidAvoidance = this.getAsteroidAvoidanceDirection(ship, desiredDirection);
-    if (asteroidAvoidance.lengthSq() > 0.001) {
-      steering.add(asteroidAvoidance.scale(ship.shipRole === "miner-ship" ? 1.4 : 1.08));
-    }
-    const separation = this.getShipSeparationDirection(ship);
-    if (separation.lengthSq() > 0.001) {
-      steering.add(separation.scale(ship.shipRole === "miner-ship" ? 1.05 : 0.78));
+    const runLocalAvoidance = ship.shipRole === "miner-ship"
+      || this.isWithinPlayerDetailRange(ship.root.x, ship.root.y, SPACE_AVOIDANCE_DETAIL_RADIUS);
+    if (runLocalAvoidance) {
+      const asteroidAvoidance = this.getAsteroidAvoidanceDirection(ship, desiredDirection);
+      if (asteroidAvoidance.lengthSq() > 0.001) {
+        steering.add(asteroidAvoidance.scale(ship.shipRole === "miner-ship" ? 1.5 : 1.04));
+      }
+      const separation = this.getShipSeparationDirection(ship);
+      if (separation.lengthSq() > 0.001) {
+        steering.add(separation.scale(ship.shipRole === "miner-ship" ? 1.16 : 0.92));
+      }
     }
 
     if (steering.lengthSq() > 0.0001) {
@@ -7788,13 +7897,13 @@ export class SpaceScene extends Phaser.Scene {
 
     if (leader && leader.id !== ship.id) {
       const velocityMatchAlpha = Phaser.Math.Clamp(
-        dt * (formationSlotDistance > FORMATION_RECOVERY_DISTANCE ? 1.6 : 2.4),
+        dt * (formationSlotDistance > FORMATION_RECOVERY_DISTANCE ? 2.2 : formationSlotDistance <= FORMATION_SLOT_LOCK_DISTANCE ? 5.4 : 3.2),
         0,
-        0.18,
+        formationSlotDistance <= FORMATION_SLOT_LOCK_DISTANCE ? 0.34 : 0.24,
       );
       ship.velocity.x = Phaser.Math.Linear(ship.velocity.x, leader.velocity.x, velocityMatchAlpha);
       ship.velocity.y = Phaser.Math.Linear(ship.velocity.y, leader.velocity.y, velocityMatchAlpha);
-      maxSpeed *= formationSlotDistance > FORMATION_RECOVERY_DISTANCE ? 1.06 : 0.98;
+      maxSpeed *= formationSlotDistance > FORMATION_RECOVERY_DISTANCE ? 1.08 : formationSlotDistance <= FORMATION_SLOT_LOCK_DISTANCE ? 0.94 : 0.98;
     }
 
     if (ship.velocity.length() > maxSpeed) {
@@ -7865,6 +7974,9 @@ export class SpaceScene extends Phaser.Scene {
 
   private resolveFactionShipCollisions(): void {
     this.factionShips.forEach((ship) => {
+      if (!this.isWithinPlayerDetailRange(ship.root.x, ship.root.y, SPACE_COLLISION_DETAIL_RADIUS)) {
+        return;
+      }
       this.getNearbyFieldObjects(ship.root.x, ship.root.y, ship.radius + ASTEROID_AVOIDANCE_RADIUS + 220).forEach((fieldObject) => {
         this.resolveFactionShipAgainstFieldObject(ship, fieldObject);
       });
@@ -7882,8 +7994,14 @@ export class SpaceScene extends Phaser.Scene {
 
     const processedPairs = new Set<string>();
     this.factionShips.forEach((leftShip) => {
+      if (!this.isWithinPlayerDetailRange(leftShip.root.x, leftShip.root.y, SPACE_COLLISION_DETAIL_RADIUS)) {
+        return;
+      }
       this.getNearbyFactionShips(leftShip.root.x, leftShip.root.y, leftShip.radius + FLEET_AVOIDANCE_RADIUS + 180).forEach((rightShip) => {
         if (rightShip.id === leftShip.id) {
+          return;
+        }
+        if (!this.isWithinPlayerDetailRange(rightShip.root.x, rightShip.root.y, SPACE_COLLISION_DETAIL_RADIUS)) {
           return;
         }
         const pairKey = leftShip.id < rightShip.id
@@ -8184,6 +8302,7 @@ export class SpaceScene extends Phaser.Scene {
     const y = fieldObject.root.y;
     const radius = fieldObject.radius;
     const fragmentColor = fieldObject.kind === "asteroid" ? 0xa7bad3 : 0xd4ba8e;
+    this.syncResourceNodeFromFieldObject(fieldObject);
     if (fieldObject.resourceType) {
       markFactionResourceNodeDepleted(this.forceState, fieldObject.id, fieldObject.respawnDurationMs);
       this.forceStateDirty = true;
@@ -9291,9 +9410,12 @@ export class SpaceScene extends Phaser.Scene {
     }
 
     this.missionObjects.forEach((object) => {
+      if (object.kind === "debris") {
+        return;
+      }
       sources.push({
         id: `mission-object:${object.id}`,
-        kind: object.kind === "resource" || object.kind === "contact" || object.kind === "debris" ? "poi" : object.kind === "escort" ? "friendly-ship" : "enemy-ship",
+        kind: object.kind === "resource" || object.kind === "contact" ? "poi" : object.kind === "escort" ? "friendly-ship" : "enemy-ship",
         label: object.label.text,
         x: object.root.x,
         y: object.root.y,
@@ -10439,7 +10561,7 @@ export class SpaceScene extends Phaser.Scene {
       }));
     const nearbyResourceNodes = nearbyAsteroidObjects
       .map((fieldObject) => {
-        const node = this.forceState.resourceNodes.find((candidate) => candidate.fieldId === fieldObject.id) ?? null;
+        const node = this.resourceNodesByFieldId.get(fieldObject.id) ?? null;
         return {
           id: fieldObject.id,
           resourceType: node?.resourceType ?? fieldObject.resourceType ?? "iron-ore",
