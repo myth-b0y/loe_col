@@ -2,6 +2,7 @@ import Phaser from "phaser";
 
 import { retroSfx } from "../audio/retroSfx";
 import { GAME_BUILD, GAME_MILESTONE } from "../core/buildInfo";
+import { ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
@@ -30,6 +31,9 @@ export class MainMenuScene extends Phaser.Scene {
   private menuMusic?: MenuMusicSound;
   private menuMusicVolume = 0;
   private menuMusicStartQueued = false;
+  private readonly controller = new ControllerInput();
+  private menuButtons: MenuButton[] = [];
+  private menuFocusIndex = 0;
 
   constructor() {
     super("main-menu");
@@ -89,6 +93,8 @@ export class MainMenuScene extends Phaser.Scene {
         onClick: () => this.scene.start("ui-vision"),
       }),
     ];
+    this.menuButtons = buttons;
+    this.refreshMenuFocus();
 
     this.loadButton = buttons[1];
     this.uiVisionButton = buttons[4];
@@ -139,6 +145,8 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   update(): void {
+    this.controller.update(this.time.now);
+    this.handleControllerInput();
     this.updateMenuMusicVolume();
   }
 
@@ -250,6 +258,7 @@ export class MainMenuScene extends Phaser.Scene {
     retroSfx.play(visible ? "ui-window-open" : "ui-window-close", { volume: visible ? 0.48 : 0.4 });
     this.creditsPanel?.setVisible(visible);
     this.creditsCloseButton?.setInputEnabled(visible);
+    this.refreshMenuFocus();
   }
 
   private startMenuMusic(): void {
@@ -315,6 +324,66 @@ export class MainMenuScene extends Phaser.Scene {
   private getMenuMusicVolume(): number {
     const { master, music } = gameSession.settings.audio;
     return Phaser.Math.Clamp((master / 100) * (music / 100), 0, 1);
+  }
+
+  private handleControllerInput(): void {
+    if (!this.controller.isConnected()) {
+      return;
+    }
+
+    if (this.saveSlotsOverlay?.isVisible()) {
+      this.saveSlotsOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.settingsOverlay?.isVisible()) {
+      this.settingsOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.creditsPanel?.visible) {
+      if (this.controller.wasPressed("east") || this.controller.wasPressed("back")) {
+        this.showCredits(false);
+        return;
+      }
+      if (this.controller.wasPressed("south")) {
+        this.creditsCloseButton?.trigger();
+      }
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("up") || this.controller.wasNavigatePressed("left")) {
+      this.moveMenuFocus(-1);
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("down") || this.controller.wasNavigatePressed("right")) {
+      this.moveMenuFocus(1);
+      return;
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.menuButtons.filter((button) => button.isEnabled())[this.menuFocusIndex]?.trigger();
+    }
+  }
+
+  private moveMenuFocus(delta: number): void {
+    const focusable = this.menuButtons.filter((button) => button.isEnabled());
+    if (focusable.length <= 0) {
+      return;
+    }
+
+    this.menuFocusIndex = Phaser.Math.Wrap(this.menuFocusIndex + delta, 0, focusable.length);
+    this.refreshMenuFocus();
+  }
+
+  private refreshMenuFocus(): void {
+    const focusable = this.menuButtons.filter((button) => button.isEnabled());
+    this.menuFocusIndex = focusable.length > 0 ? Phaser.Math.Wrap(this.menuFocusIndex, 0, focusable.length) : 0;
+    this.menuButtons.forEach((button) => {
+      button.setFocused(!this.creditsPanel?.visible && focusable[this.menuFocusIndex] === button);
+    });
+    this.creditsCloseButton?.setFocused(Boolean(this.creditsPanel?.visible));
   }
 
   getDebugSnapshot(): Record<string, unknown> {

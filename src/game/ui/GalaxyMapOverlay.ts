@@ -25,6 +25,7 @@ import {
 import { getFactionAssetBuildTimeMs } from "../content/factionAssets";
 import { isZoneActivelyContested } from "../content/factionWar";
 import { getMissionContract } from "../content/missions";
+import { type ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
@@ -398,6 +399,7 @@ export class GalaxyMapOverlay {
   show(): void {
     this.selectedSectorId = null;
     this.captureGalaxySnapshot();
+    this.hoverWorldPoint = { ...gameSession.getShipSpacePosition() };
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.refresh(true);
@@ -412,6 +414,65 @@ export class GalaxyMapOverlay {
 
   isVisible(): boolean {
     return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      this.hide();
+      return true;
+    }
+
+    if (controller.wasPressed("west") && this.selectedSectorId) {
+      this.returnToGalaxyView();
+      return true;
+    }
+
+    const movement = controller.getLeftStick();
+    if (movement.lengthSq() > 0.01 || controller.wasNavigatePressed("up") || controller.wasNavigatePressed("down") || controller.wasNavigatePressed("left") || controller.wasNavigatePressed("right")) {
+      const viewBounds = this.getMapViewBounds();
+      const cursor = this.hoverWorldPoint ?? { ...gameSession.getShipSpacePosition() };
+      const nudgeX = controller.wasNavigatePressed("left")
+        ? -1
+        : controller.wasNavigatePressed("right")
+          ? 1
+          : 0;
+      const nudgeY = controller.wasNavigatePressed("up")
+        ? -1
+        : controller.wasNavigatePressed("down")
+          ? 1
+          : 0;
+      cursor.x = Math.round(Phaser.Math.Clamp(
+        cursor.x + (movement.x * (viewBounds.width / 120)) + (nudgeX * (viewBounds.width / 28)),
+        viewBounds.x,
+        viewBounds.right,
+      ));
+      cursor.y = Math.round(Phaser.Math.Clamp(
+        cursor.y + (movement.y * (viewBounds.height / 120)) + (nudgeY * (viewBounds.height / 28)),
+        viewBounds.y,
+        viewBounds.bottom,
+      ));
+      this.hoverWorldPoint = cursor;
+      this.syncReadout(viewBounds, this.scene.time.now);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      const worldPoint = this.hoverWorldPoint ?? gameSession.getShipSpacePosition();
+      const clickedSector = this.getSectorAtWorldPoint(worldPoint);
+      if (clickedSector && clickedSector.id !== this.selectedSectorId) {
+        this.selectedSectorId = clickedSector.id;
+        this.refresh(true);
+      } else {
+        this.syncReadout();
+      }
+      return true;
+    }
+
+    return false;
   }
 
   refresh(forceStatic = false): void {

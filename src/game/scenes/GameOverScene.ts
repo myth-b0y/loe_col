@@ -1,7 +1,8 @@
 ﻿import Phaser from "phaser";
 
+import { ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
-import { createMenuButton } from "../ui/buttons";
+import { createMenuButton, type MenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
 
 type GameOverMode = "mission" | "space";
@@ -18,6 +19,9 @@ export class GameOverScene extends Phaser.Scene {
   private routeTitle = "Free roam launch";
   private statusText?: Phaser.GameObjects.Text;
   private saveSlotsOverlay?: SaveSlotsOverlay;
+  private readonly controller = new ControllerInput();
+  private buttons: MenuButton[] = [];
+  private focusIndex = 0;
 
   constructor() {
     super("game-over");
@@ -52,7 +56,7 @@ export class GameOverScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5);
 
-    createMenuButton({
+    const continueButton = createMenuButton({
       scene: this,
       x: 640,
       y: 294,
@@ -64,7 +68,7 @@ export class GameOverScene extends Phaser.Scene {
       disabled: !gameSession.hasSaveData(),
     });
 
-    createMenuButton({
+    const loadButton = createMenuButton({
       scene: this,
       x: 640,
       y: 352,
@@ -75,7 +79,7 @@ export class GameOverScene extends Phaser.Scene {
       disabled: !gameSession.hasSaveData(),
     });
 
-    createMenuButton({
+    const menuButton = createMenuButton({
       scene: this,
       x: 640,
       y: 410,
@@ -86,7 +90,7 @@ export class GameOverScene extends Phaser.Scene {
       accentColor: 0x5a4678,
     });
 
-    createMenuButton({
+    const quitButton = createMenuButton({
       scene: this,
       x: 640,
       y: 468,
@@ -96,6 +100,8 @@ export class GameOverScene extends Phaser.Scene {
       depth: 12,
       accentColor: 0x4f2630,
     });
+    this.buttons = [continueButton, loadButton, menuButton, quitButton];
+    this.refreshFocus();
 
     this.statusText = this.add.text(640, 538, "", {
       fontFamily: "Arial",
@@ -120,6 +126,33 @@ export class GameOverScene extends Phaser.Scene {
       },
       onNewSlot: () => undefined,
     });
+  }
+
+  update(): void {
+    this.controller.update(this.time.now);
+    if (this.saveSlotsOverlay?.isVisible()) {
+      this.saveSlotsOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("up") || this.controller.wasNavigatePressed("left")) {
+      this.moveFocus(-1);
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("down") || this.controller.wasNavigatePressed("right")) {
+      this.moveFocus(1);
+      return;
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.buttons.filter((button) => button.isEnabled())[this.focusIndex]?.trigger();
+      return;
+    }
+
+    if (this.controller.wasPressed("east") || this.controller.wasPressed("back")) {
+      this.returnToMainMenu();
+    }
   }
 
   getDebugSnapshot(): Record<string, unknown> {
@@ -152,5 +185,23 @@ export class GameOverScene extends Phaser.Scene {
       window.close();
     }
     this.statusText?.setText("Quit requested. If the browser blocks it, use Main Menu.");
+  }
+
+  private moveFocus(delta: number): void {
+    const focusable = this.buttons.filter((button) => button.isEnabled());
+    if (focusable.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, focusable.length);
+    this.refreshFocus();
+  }
+
+  private refreshFocus(): void {
+    const focusable = this.buttons.filter((button) => button.isEnabled());
+    this.focusIndex = focusable.length > 0 ? Phaser.Math.Wrap(this.focusIndex, 0, focusable.length) : 0;
+    this.buttons.forEach((button) => {
+      button.setFocused(focusable[this.focusIndex] === button);
+    });
   }
 }

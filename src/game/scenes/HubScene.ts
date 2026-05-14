@@ -14,6 +14,7 @@ import {
 } from "../content/companions";
 import { getMissionContract, isGroundMissionContract } from "../content/missions";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
+import { ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { retroSfx } from "../audio/retroSfx";
 import {
@@ -304,11 +305,14 @@ export class HubScene extends Phaser.Scene {
   };
   private moveVector = new Phaser.Math.Vector2();
   private keyboardVector = new Phaser.Math.Vector2();
+  private controllerMoveVector = new Phaser.Math.Vector2();
   private movePointerId: number | null = null;
   private stickBase?: Phaser.GameObjects.Arc;
   private stickKnob?: Phaser.GameObjects.Arc;
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
   private interiorAmbientCueTimerMs = 1800;
+  private readonly controller = new ControllerInput();
+  private deployFocusIndex = 0;
 
   constructor() {
     super("hub");
@@ -377,6 +381,8 @@ export class HubScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
+    this.controller.update(this.time.now);
+    this.handleControllerInput();
     this.updateShipInteriorAmbient(delta);
     this.updateKeyboardVector();
     this.updateMovement(dt);
@@ -1412,7 +1418,11 @@ ${getCompanionRoleDisplay(companion)}`, {
       return;
     }
 
-    const move = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
+    const move = this.moveVector.lengthSq() > 0.01
+      ? this.moveVector
+      : this.controllerMoveVector.lengthSq() > 0.01
+        ? this.controllerMoveVector
+        : this.keyboardVector;
     if (move.lengthSq() <= 0) {
       this.playerShadow.setPosition(this.player.x, this.player.y + 14);
       return;
@@ -1771,6 +1781,90 @@ ${getCompanionRoleDisplay(companion)}`, {
     this.syncSceneOverlayChrome();
   }
 
+  private handleControllerInput(): void {
+    if (!this.controller.isConnected()) {
+      this.controllerMoveVector.set(0, 0);
+      return;
+    }
+
+    if (this.controller.wasUsedThisFrame()) {
+      this.reportDesktopInput();
+    }
+
+    this.controllerMoveVector.copy(this.controller.getLeftStick());
+
+    if (this.panel?.visible) {
+      if (this.controller.wasPressed("east") || this.controller.wasPressed("back")) {
+        this.closePanel();
+        return;
+      }
+      if (this.controller.wasPressed("south")) {
+        if (this.panelAction?.isEnabled()) {
+          this.panelAction.trigger();
+        } else {
+          this.panelClose?.trigger();
+        }
+      }
+      return;
+    }
+
+    if (this.deployOverlay?.visible) {
+      this.handleDeployOverlayControllerInput();
+      return;
+    }
+
+    if (this.missionBoardOverlay?.isVisible()) {
+      this.missionBoardOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.inventoryOverlay?.isVisible()) {
+      this.inventoryOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.logbookOverlay?.isVisible()) {
+      this.logbookOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.galaxyMapOverlay?.isVisible()) {
+      this.galaxyMapOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.controller.wasPressed("start")) {
+      this.openPauseMenu();
+      return;
+    }
+
+    if (this.controller.wasPressed("back")) {
+      this.toggleLogbookOverlay();
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadUp")) {
+      this.openDataPadTab("missions");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadLeft")) {
+      this.openDataPadTab("inventory");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadRight")) {
+      this.openDataPadTab("map");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadDown")) {
+      this.openDataPadTab("starship");
+      return;
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.tryActivateCurrentTarget();
+    }
+  }
+
   private hasBlockingOverlay(): boolean {
     return Boolean(
       this.panel?.visible
@@ -1786,6 +1880,7 @@ ${getCompanionRoleDisplay(companion)}`, {
     this.closeCommandOverlays();
     this.selectedDeployCompanionId = null;
     this.hoveredDeployCompanionId = null;
+    this.deployFocusIndex = 0;
     this.hideDeployInfo();
     this.deployOverlay?.setVisible(true);
     this.refreshDeployOverlay("Choose your squad and formation before launch.");
@@ -1796,6 +1891,7 @@ ${getCompanionRoleDisplay(companion)}`, {
     this.deployOverlay?.setVisible(false);
     this.selectedDeployCompanionId = null;
     this.hoveredDeployCompanionId = null;
+    this.deployFocusIndex = 0;
     this.hideDeployInfo();
     this.syncSceneOverlayChrome();
   }
@@ -1926,6 +2022,103 @@ ${getCompanionRoleDisplay(companion)}`, {
         ? isGroundMissionContract(stagedMission) ? "Land First" : "Space Objective"
         : "Launch Locked");
     this.deployClearButton?.setEnabled(assignments.length > 0);
+    this.refreshDeployFocus();
+  }
+
+  private handleDeployOverlayControllerInput(): void {
+    if (this.controller.wasPressed("east") || this.controller.wasPressed("back")) {
+      this.closeDeployOverlay();
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("up") || this.controller.wasNavigatePressed("left")) {
+      this.moveDeployFocus(-1);
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("down") || this.controller.wasNavigatePressed("right")) {
+      this.moveDeployFocus(1);
+      return;
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.activateDeployFocus();
+    }
+  }
+
+  private getDeployFocusEntries(): Array<
+    | { kind: "button"; button: MenuButton }
+    | { kind: "card"; companionId: CompanionId }
+    | { kind: "slot"; slotId: FormationSlotId }
+  > {
+    return [
+      ...this.deployRosterCards.map((card) => ({ kind: "card" as const, companionId: card.companionId })),
+      ...this.deploySlotUis.map((slotUi) => ({ kind: "slot" as const, slotId: slotUi.slot.id })),
+      ...(this.deployClearButton ? [{ kind: "button" as const, button: this.deployClearButton }] : []),
+      ...(this.deployLaunchButton ? [{ kind: "button" as const, button: this.deployLaunchButton }] : []),
+      ...(this.deployCloseButton ? [{ kind: "button" as const, button: this.deployCloseButton }] : []),
+    ].filter((entry) => {
+      if (entry.kind === "button") {
+        return entry.button.container.visible && entry.button.isEnabled();
+      }
+      return true;
+    });
+  }
+
+  private moveDeployFocus(delta: number): void {
+    const entries = this.getDeployFocusEntries();
+    if (entries.length <= 0) {
+      return;
+    }
+
+    this.deployFocusIndex = Phaser.Math.Wrap(this.deployFocusIndex + delta, 0, entries.length);
+    const entry = entries[this.deployFocusIndex];
+    if (entry?.kind === "card") {
+      this.selectedDeployCompanionId = entry.companionId;
+      this.refreshDeployOverlay();
+      return;
+    }
+    this.refreshDeployFocus();
+  }
+
+  private activateDeployFocus(): void {
+    const entry = this.getDeployFocusEntries()[this.deployFocusIndex];
+    if (!entry) {
+      return;
+    }
+
+    if (entry.kind === "button") {
+      entry.button.trigger();
+      return;
+    }
+
+    if (entry.kind === "card") {
+      this.handleDeployRosterSelect(entry.companionId);
+      return;
+    }
+
+    this.handleDeploySlotClick(entry.slotId);
+  }
+
+  private refreshDeployFocus(): void {
+    const entries = this.getDeployFocusEntries();
+    this.deployFocusIndex = entries.length > 0 ? Phaser.Math.Wrap(this.deployFocusIndex, 0, entries.length) : 0;
+    const focusedEntry = entries[this.deployFocusIndex];
+
+    this.deployLaunchButton?.setFocused(focusedEntry?.kind === "button" && focusedEntry.button === this.deployLaunchButton);
+    this.deployClearButton?.setFocused(focusedEntry?.kind === "button" && focusedEntry.button === this.deployClearButton);
+    this.deployCloseButton?.setFocused(focusedEntry?.kind === "button" && focusedEntry.button === this.deployCloseButton);
+
+    this.deployRosterCards.forEach((card) => {
+      if (focusedEntry?.kind === "card" && focusedEntry.companionId === card.companionId) {
+        card.container.setScale(1.04);
+      }
+    });
+
+    this.deploySlotUis.forEach((slotUi) => {
+      const focused = focusedEntry?.kind === "slot" && focusedEntry.slotId === slotUi.slot.id;
+      slotUi.circle.setScale(focused ? 1.08 : 1);
+    });
   }
 
   private handleDeployRosterSelect(companionId: CompanionId): void {
@@ -2324,6 +2517,14 @@ ${getCompanionRoleDisplay(companion)}`, {
     }
 
     this.syncSceneOverlayChrome();
+  }
+
+  private reportDesktopInput(): void {
+    if (!this.touchCapable) {
+      return;
+    }
+
+    gameSession.reportInputMode("desktop", this.touchCapable);
   }
 
   private pointerOverTouchUi(pointer: Phaser.Input.Pointer): boolean {

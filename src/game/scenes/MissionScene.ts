@@ -31,6 +31,7 @@ import {
   type ItemRarity,
 } from "../content/items";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
+import { ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import {
   createLightingRig,
@@ -407,6 +408,8 @@ export class MissionScene extends Phaser.Scene {
   private keyboardVector = new Phaser.Math.Vector2();
   private moveVector = new Phaser.Math.Vector2();
   private aimVector = new Phaser.Math.Vector2(1, 0);
+  private controllerMoveVector = new Phaser.Math.Vector2();
+  private controllerAimVector = new Phaser.Math.Vector2(1, 0);
   private lookPoint = new Phaser.Math.Vector2(640, 360);
   private movePointerId: number | null = null;
   private attackPointerId: number | null = null;
@@ -427,6 +430,7 @@ export class MissionScene extends Phaser.Scene {
   private touchUiObjects: Phaser.GameObjects.GameObject[] = [];
   private desktopUiObjects: Phaser.GameObjects.GameObject[] = [];
   private groundAmbientCueTimerMs = 1500;
+  private readonly controller = new ControllerInput();
 
   private aimLine!: Phaser.GameObjects.Graphics;
   private reticle!: Phaser.GameObjects.Arc;
@@ -552,6 +556,8 @@ export class MissionScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
+    this.controller.update(this.time.now);
+    this.handleControllerInput();
     this.updateGroundAmbientSoundscape(delta);
     if (this.isMenuOverlayVisible()) {
       this.hudRefreshCooldown = Math.max(0, this.hudRefreshCooldown - dt);
@@ -1909,7 +1915,11 @@ export class MissionScene extends Phaser.Scene {
       return;
     }
 
-    const movement = this.moveVector.lengthSq() > 0.01 ? this.moveVector : this.keyboardVector;
+    const movement = this.moveVector.lengthSq() > 0.01
+      ? this.moveVector
+      : this.controllerMoveVector.lengthSq() > 0.01
+        ? this.controllerMoveVector
+        : this.keyboardVector;
     const slowMultiplier = this.playerSlowDebuff > 0 ? 0.72 : 1;
     const moveSpeed = MOVE_SPEED * this.playerCombatProfile.moveSpeedMultiplier;
     this.player.x = Phaser.Math.Clamp(this.player.x + movement.x * moveSpeed * slowMultiplier * dt, this.playArea.x + 20, this.playArea.right - 20);
@@ -2048,7 +2058,8 @@ export class MissionScene extends Phaser.Scene {
     }
 
     const lockAutoFire = gameSession.settings.controls.autoFire && this.autoAimTarget !== null;
-    if (!this.fireHeld && !lockAutoFire) {
+    const controllerFireHeld = this.controller.isDown("rightTrigger");
+    if (!this.fireHeld && !controllerFireHeld && !lockAutoFire) {
       return;
     }
 
@@ -5160,6 +5171,90 @@ export class MissionScene extends Phaser.Scene {
     );
   }
 
+  private handleControllerInput(): void {
+    if (!this.controller.isConnected()) {
+      this.controllerMoveVector.set(0, 0);
+      return;
+    }
+
+    if (this.controller.wasUsedThisFrame()) {
+      this.reportDesktopInput();
+    }
+
+    this.controllerMoveVector.copy(this.controller.getLeftStick());
+    const rightStick = this.controller.getRightStick();
+    if (rightStick.lengthSq() > 0.01) {
+      this.controllerAimVector.copy(rightStick.normalize());
+    }
+
+    if (this.inventoryOverlay?.isVisible()) {
+      this.inventoryOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.logbookOverlay?.isVisible()) {
+      this.logbookOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.galaxyMapOverlay?.isVisible()) {
+      this.galaxyMapOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.controller.wasPressed("start")) {
+      this.openPauseMenu();
+      return;
+    }
+
+    if (this.controller.wasPressed("back")) {
+      this.toggleLogbookOverlay();
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadLeft")) {
+      this.toggleInventoryOverlay();
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadUp")) {
+      this.toggleLogbookOverlay();
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadRight")) {
+      this.openDataPadTab("map");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadDown")) {
+      this.openDataPadTab("starship");
+      return;
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.tryMissionInteract();
+    }
+
+    if (this.controller.wasReleased("south")) {
+      this.endCompanionReviveHold();
+    }
+
+    if (this.controller.wasPressed("west")) {
+      this.castPulse();
+    }
+
+    if (this.controller.wasPressed("north")) {
+      this.castArcLance();
+    }
+
+    if (this.controller.wasPressed("leftShoulder")) {
+      this.tryDash();
+    }
+
+    if (this.controller.wasPressed("rightShoulder")) {
+      this.cycleTargetLock();
+    }
+  }
+
   private getMissionInventorySnapshot(): InventoryOverlaySnapshot {
     const equipment = gameSession.getEquipmentLoadout();
     const cargo = gameSession.getCargoSlots();
@@ -5793,7 +5888,9 @@ export class MissionScene extends Phaser.Scene {
   private getBaseAimDirection(): Phaser.Math.Vector2 {
     const direction = this.touchMode
       ? this.aimVector.clone()
-      : this.getDesktopAimVector();
+      : this.controller.isConnected() && this.controllerAimVector.lengthSq() > 0.01
+        ? this.controllerAimVector.clone()
+        : this.getDesktopAimVector();
 
     if (!Number.isFinite(direction.x) || !Number.isFinite(direction.y) || direction.lengthSq() === 0) {
       direction.set(1, 0);

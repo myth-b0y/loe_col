@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 
 import { retroSfx } from "../audio/retroSfx";
+import { type ControllerInput } from "../core/controller";
 import { createMenuButton, type MenuButton } from "./buttons";
 
 export type SpaceCommsOverlayState = {
@@ -31,6 +32,7 @@ export class SpaceCommsOverlay {
   private readonly leaveButton: MenuButton;
   private readonly onClose: () => void;
   private readonly onContinue: () => void;
+  private focusIndex = 0;
 
   constructor({ scene, onClose, onContinue }: SpaceCommsOverlayOptions) {
     this.onClose = onClose;
@@ -134,6 +136,8 @@ export class SpaceCommsOverlay {
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.update(state);
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   update(state: SpaceCommsOverlayState): void {
@@ -152,11 +156,41 @@ export class SpaceCommsOverlay {
     retroSfx.play("ui-window-close", { volume: 0.38 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
+    this.refreshFocus();
     this.onClose();
   }
 
   isVisible(): boolean {
     return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      this.hide();
+      return true;
+    }
+
+    if (
+      controller.wasNavigatePressed("left")
+      || controller.wasNavigatePressed("up")
+      || controller.wasNavigatePressed("right")
+      || controller.wasNavigatePressed("down")
+    ) {
+      this.focusIndex = this.focusIndex === 0 ? 1 : 0;
+      this.refreshFocus();
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.getFocusableButtons()[this.focusIndex]?.trigger();
+      return true;
+    }
+
+    return false;
   }
 
   private setInputEnabled(enabled: boolean): void {
@@ -165,5 +199,18 @@ export class SpaceCommsOverlay {
     }
     this.continueButton.setInputEnabled(enabled);
     this.leaveButton.setInputEnabled(enabled);
+    this.refreshFocus();
+  }
+
+  private getFocusableButtons(): MenuButton[] {
+    return [this.continueButton, this.leaveButton];
+  }
+
+  private refreshFocus(): void {
+    const buttons = this.getFocusableButtons();
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex, 0, buttons.length);
+    buttons.forEach((button, index) => {
+      button.setFocused(this.root.visible && index === this.focusIndex);
+    });
   }
 }

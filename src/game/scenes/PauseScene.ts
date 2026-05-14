@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import { ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { createMenuButton } from "../ui/buttons";
 import { SaveSlotsOverlay } from "../ui/SaveSlotsOverlay";
@@ -20,6 +21,9 @@ export class PauseScene extends Phaser.Scene {
   private fullscreenBox?: Phaser.GameObjects.Rectangle;
   private fullscreenCheck?: Phaser.GameObjects.Text;
   private fullscreenLabel?: Phaser.GameObjects.Text;
+  private readonly controller = new ControllerInput();
+  private menuButtons: ReturnType<typeof createMenuButton>[] = [];
+  private focusIndex = 0;
 
   constructor() {
     super("pause");
@@ -46,7 +50,7 @@ export class PauseScene extends Phaser.Scene {
       color: "#9fc6ff",
     });
 
-    createMenuButton({
+    const resumeButton = createMenuButton({
       scene: this,
       x: 640,
       y: 286,
@@ -56,7 +60,7 @@ export class PauseScene extends Phaser.Scene {
       depth: 12,
     });
 
-    createMenuButton({
+    const saveButton = createMenuButton({
       scene: this,
       x: 640,
       y: 344,
@@ -74,7 +78,7 @@ export class PauseScene extends Phaser.Scene {
       disabled: !this.allowSave,
     });
 
-    createMenuButton({
+    const loadButton = createMenuButton({
       scene: this,
       x: 640,
       y: 402,
@@ -85,7 +89,7 @@ export class PauseScene extends Phaser.Scene {
       disabled: !gameSession.hasSaveData(),
     });
 
-    createMenuButton({
+    const optionsButton = createMenuButton({
       scene: this,
       x: 640,
       y: 460,
@@ -97,8 +101,9 @@ export class PauseScene extends Phaser.Scene {
 
     this.createFullscreenRow(isMissionPause ? 516 : 518);
 
+    let abandonButton: ReturnType<typeof createMenuButton> | undefined;
     if (isMissionPause) {
-      createMenuButton({
+      abandonButton = createMenuButton({
         scene: this,
         x: 640,
         y: 566,
@@ -110,7 +115,7 @@ export class PauseScene extends Phaser.Scene {
       });
     }
 
-    createMenuButton({
+    const quitButton = createMenuButton({
       scene: this,
       x: 640,
       y: isMissionPause ? 624 : 576,
@@ -120,6 +125,15 @@ export class PauseScene extends Phaser.Scene {
       depth: 12,
       accentColor: 0x4f2630,
     });
+    this.menuButtons = [
+      resumeButton,
+      saveButton,
+      loadButton,
+      optionsButton,
+      ...(abandonButton ? [abandonButton] : []),
+      quitButton,
+    ];
+    this.refreshFocus();
 
     this.statusText = this.add.text(640, isMissionPause ? 648 : 606, "", {
       fontFamily: "Arial",
@@ -164,12 +178,70 @@ export class PauseScene extends Phaser.Scene {
     });
   }
 
+  update(): void {
+    this.controller.update(this.time.now);
+    this.handleControllerInput();
+  }
+
   private resumeGame(): void {
     if (this.saveSlotsOverlay) {
       this.saveSlotsOverlay.hide();
     }
     this.scene.resume(this.returnSceneKey);
     this.scene.stop();
+  }
+
+  private handleControllerInput(): void {
+    if (!this.controller.isConnected()) {
+      return;
+    }
+
+    if (this.saveSlotsOverlay?.isVisible()) {
+      this.saveSlotsOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.settingsOverlay?.isVisible()) {
+      this.settingsOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.controller.wasPressed("east") || this.controller.wasPressed("back") || this.controller.wasPressed("start")) {
+      this.resumeGame();
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("up") || this.controller.wasNavigatePressed("left")) {
+      this.moveFocus(-1);
+      return;
+    }
+
+    if (this.controller.wasNavigatePressed("down") || this.controller.wasNavigatePressed("right")) {
+      this.moveFocus(1);
+      return;
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.menuButtons.filter((button) => button.isEnabled())[this.focusIndex]?.trigger();
+    }
+  }
+
+  private moveFocus(delta: number): void {
+    const focusable = this.menuButtons.filter((button) => button.isEnabled());
+    if (focusable.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, focusable.length);
+    this.refreshFocus();
+  }
+
+  private refreshFocus(): void {
+    const focusable = this.menuButtons.filter((button) => button.isEnabled());
+    this.focusIndex = focusable.length > 0 ? Phaser.Math.Wrap(this.focusIndex, 0, focusable.length) : 0;
+    this.menuButtons.forEach((button) => {
+      button.setFocused(focusable[this.focusIndex] === button);
+    });
   }
 
   private leaveToMenu(): void {

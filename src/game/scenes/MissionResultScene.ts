@@ -1,7 +1,8 @@
 import Phaser from "phaser";
 
+import { ControllerInput } from "../core/controller";
 import { gameSession, type RewardData } from "../core/session";
-import { createMenuButton } from "../ui/buttons";
+import { createMenuButton, type MenuButton } from "../ui/buttons";
 
 type MissionResultSceneData = {
   missionId: string;
@@ -13,6 +14,8 @@ export class MissionResultScene extends Phaser.Scene {
   private missionId = "";
   private missionTitle = "";
   private reward?: RewardData;
+  private readonly controller = new ControllerInput();
+  private returnButton?: MenuButton;
 
   constructor() {
     super("mission-result");
@@ -96,7 +99,7 @@ export class MissionResultScene extends Phaser.Scene {
       }).setOrigin(0.5);
     }
 
-    createMenuButton({
+    this.returnButton = createMenuButton({
       scene: this,
       x: 640,
       y: 528,
@@ -106,6 +109,7 @@ export class MissionResultScene extends Phaser.Scene {
       depth: 12,
       accentColor: 0x1c4f7f,
     });
+    this.returnButton.setFocused(true);
 
     this.input.keyboard?.on("keydown-ENTER", this.returnToShip, this);
     this.input.keyboard?.on("keydown-SPACE", this.returnToShip, this);
@@ -115,6 +119,18 @@ export class MissionResultScene extends Phaser.Scene {
       this.input.keyboard?.off("keydown-SPACE", this.returnToShip, this);
       this.input.off("wheel", wheelHandler);
     });
+  }
+
+  update(): void {
+    this.controller.update(this.time.now);
+    if (this.controller.wasPressed("south") || this.controller.wasPressed("start")) {
+      this.returnButton?.trigger();
+      return;
+    }
+
+    if (this.controller.wasPressed("east") || this.controller.wasPressed("back")) {
+      this.returnToShip();
+    }
   }
 
   getDebugSnapshot(): Record<string, unknown> {

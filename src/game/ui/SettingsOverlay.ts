@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { retroSfx } from "../audio/retroSfx";
 
+import { type ControllerInput } from "../core/controller";
 import {
   DIFFICULTY_OPTIONS,
   INPUT_MODE_OPTIONS,
@@ -52,6 +53,7 @@ export class SettingsOverlay {
   private readonly closeButton: MenuButton;
   private currentTab: SettingsTab = "graphics";
   private currentControlTab: ControlSubTab = "touch";
+  private focusIndex = 0;
 
   constructor({ scene, title = "Options", onClose }: SettingsOverlayOptions) {
     this.onClose = onClose;
@@ -206,6 +208,8 @@ export class SettingsOverlay {
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.setTab(initialTab);
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   hide(): void {
@@ -215,12 +219,47 @@ export class SettingsOverlay {
     retroSfx.play("ui-window-close", { volume: 0.42 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
+    this.refreshFocus();
     this.onClose();
+  }
+
+  isVisible(): boolean {
+    return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      this.hide();
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("left") || controller.wasNavigatePressed("up")) {
+      this.moveFocus(-1);
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("right") || controller.wasNavigatePressed("down")) {
+      this.moveFocus(1);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.getFocusableButtons()[this.focusIndex]?.trigger();
+      return true;
+    }
+
+    return false;
   }
 
   private setTab(tab: SettingsTab): void {
     this.currentTab = tab;
     this.refresh();
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   private setInputEnabled(enabled: boolean): void {
@@ -236,11 +275,14 @@ export class SettingsOverlay {
     this.controlTabButtons.keyboard.setInputEnabled(enabled && this.currentTab === "controls");
     this.controlTabButtons.touch.setInputEnabled(enabled && this.currentTab === "controls");
     this.rows.forEach((row) => row.valueButton.setInputEnabled(enabled));
+    this.refreshFocus();
   }
 
   private setControlTab(tab: ControlSubTab): void {
     this.currentControlTab = tab;
     this.refresh();
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   private refresh(): void {
@@ -380,6 +422,7 @@ export class SettingsOverlay {
       "Difficulty now adjusts enemy health, damage, speed, and attack cadence instead of living as hardcoded scene values.",
       "That keeps combat tuning plug-and-play while we keep layering in missions, dialogue, and story logic.",
     ]);
+    this.refreshFocus();
   }
 
   private describeDifficulty(value: GameplayDifficulty): string {
@@ -417,6 +460,62 @@ export class SettingsOverlay {
       }
 
       onClick();
+    });
+  }
+
+  private getFocusableButtons(): MenuButton[] {
+    const buttons: MenuButton[] = [
+      this.closeButton,
+      this.tabButtons.graphics,
+      this.tabButtons.audio,
+      this.tabButtons.controls,
+      this.tabButtons.gameplay,
+    ];
+
+    if (this.currentTab === "controls") {
+      buttons.push(this.controlTabButtons.keyboard, this.controlTabButtons.touch);
+    }
+
+    this.rows.forEach((row) => {
+      if (row.label.alpha > 0.01 && row.valueButton.isEnabled()) {
+        buttons.push(row.valueButton);
+      }
+    });
+
+    return buttons.filter((button) => button.container.visible && button.isEnabled());
+  }
+
+  private moveFocus(delta: number): void {
+    const buttons = this.getFocusableButtons();
+    if (buttons.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, buttons.length);
+    this.refreshFocus();
+  }
+
+  private refreshFocus(): void {
+    const allButtons = [
+      this.closeButton,
+      this.tabButtons.graphics,
+      this.tabButtons.audio,
+      this.tabButtons.controls,
+      this.tabButtons.gameplay,
+      this.controlTabButtons.keyboard,
+      this.controlTabButtons.touch,
+      ...this.rows.map((row) => row.valueButton),
+    ];
+    const buttons = this.getFocusableButtons();
+    if (buttons.length <= 0) {
+      allButtons.forEach((button) => button.setFocused(false));
+      this.focusIndex = 0;
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex, 0, buttons.length);
+    allButtons.forEach((button) => {
+      button.setFocused(this.root.visible && buttons[this.focusIndex] === button);
     });
   }
 }

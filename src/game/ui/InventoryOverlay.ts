@@ -13,6 +13,7 @@ import {
   type EquipmentSlotId,
   type InventoryItem,
 } from "../content/items";
+import { type ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 import { LayoutDebugOverlay } from "./LayoutDebugOverlay";
@@ -57,6 +58,11 @@ type EquipmentSlotUi = {
 type InventorySelection =
   | { kind: "cargo"; index: number }
   | { kind: "equipment"; slotId: EquipmentSlotId };
+
+type FocusEntry =
+  | { kind: "button"; button: MenuButton }
+  | { kind: "equipment"; slotId: EquipmentSlotId }
+  | { kind: "cargo"; index: number };
 
 const PANEL_DEPTH = 60;
 const FRAME_COLOR = 0x365a82;
@@ -110,6 +116,7 @@ export class InventoryOverlay {
   private selectedEntry: InventorySelection | null = null;
   private currentSnapshot!: InventoryOverlaySnapshot;
   private cargoPage = 0;
+  private focusIndex = 0;
 
   constructor({ scene, onClose, getSnapshot, onOpenSettings, onRequestTab }: InventoryOverlayOptions) {
     this.onClose = onClose;
@@ -400,9 +407,9 @@ export class InventoryOverlay {
       this.layoutDebug.destroy();
     });
 
+    this.currentSnapshot = this.getSnapshot();
     this.root.setVisible(false);
     this.setInputEnabled(false);
-    this.currentSnapshot = this.getSnapshot();
   }
 
   show(): void {
@@ -410,6 +417,8 @@ export class InventoryOverlay {
     this.setInputEnabled(true);
     this.hideActionMenu();
     this.refresh();
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   hide(): void {
@@ -417,11 +426,45 @@ export class InventoryOverlay {
     this.setInputEnabled(false);
     this.hideActionMenu();
     this.layoutDebug.setVisible(false);
+    this.refreshFocus();
     this.onClose();
   }
 
   isVisible(): boolean {
     return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      if (this.actionMenu.visible) {
+        this.hideActionMenu();
+        this.refresh();
+      } else {
+        this.hide();
+      }
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("left") || controller.wasNavigatePressed("up")) {
+      this.moveFocus(-1);
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("right") || controller.wasNavigatePressed("down")) {
+      this.moveFocus(1);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.activateFocus();
+      return true;
+    }
+
+    return false;
   }
 
   toggleLayoutDebug(): void {
@@ -480,6 +523,7 @@ export class InventoryOverlay {
       this.statusText.setText(allowEquip
         ? "F7 toggles layout debug. Missions tab is live; the other tabs are scaffolded."
         : "Mission view is read-only for now. Inspect run loot and gear without changing loadout.");
+      this.refreshFocus();
       return;
     }
 
@@ -488,6 +532,7 @@ export class InventoryOverlay {
     this.statusText.setText(allowEquip
       ? "Select an item, then use the centered popup to equip, unequip, drop, or examine."
       : "Mission view is read-only. Inspect your recovered gear here.");
+    this.refreshFocus();
   }
 
   private handleTab(tab: InventoryTab): void {
@@ -569,6 +614,7 @@ export class InventoryOverlay {
     this.actionPrimary.container.setVisible(false);
     this.actionSecondary.container.setVisible(false);
     this.actionTertiary.container.setVisible(false);
+    this.refreshFocus();
   }
 
   private getSelectedItem(): InventoryItem | null {
@@ -602,6 +648,7 @@ export class InventoryOverlay {
         cell.frame.input.enabled = enabled;
       }
     });
+    this.refreshFocus();
   }
 
   private runActionMenuPrimary(): void {
@@ -647,5 +694,116 @@ export class InventoryOverlay {
       statLines: gameSession.getPlayerStatSummary(),
       subtitle: "Inventory",
     };
+  }
+
+  private getFocusEntries(): FocusEntry[] {
+    const snapshot = this.currentSnapshot ?? this.getDefaultSnapshot();
+
+    if (this.actionMenu.visible) {
+      return [
+        { kind: "button" as const, button: this.actionPrimary },
+        { kind: "button" as const, button: this.actionSecondary },
+        { kind: "button" as const, button: this.actionTertiary },
+      ].filter((entry) => entry.button.container.visible && entry.button.isEnabled());
+    }
+
+    return [
+      { kind: "button" as const, button: this.settingsButton },
+      ...Object.values(this.tabButtons)
+        .filter((button): button is MenuButton => Boolean(button))
+        .map((button) => ({ kind: "button" as const, button })),
+      { kind: "button" as const, button: this.closeButton },
+      { kind: "button" as const, button: this.prevPageButton },
+      { kind: "button" as const, button: this.nextPageButton },
+      ...this.equipmentSlots.map((slot) => ({ kind: "equipment" as const, slotId: slot.slotId })),
+      ...this.cargoCells.map((cell) => ({ kind: "cargo" as const, index: this.cargoPage * this.cargoCells.length + cell.index })),
+    ].filter((entry) => {
+      if (entry.kind === "button") {
+        return entry.button.container.visible && entry.button.isEnabled();
+      }
+
+      if (entry.kind === "cargo") {
+        return entry.index < snapshot.cargo.length;
+      }
+
+      return true;
+    });
+  }
+
+  private moveFocus(delta: number): void {
+    const entries = this.getFocusEntries();
+    if (entries.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, entries.length);
+    const entry = entries[this.focusIndex];
+    if (!this.actionMenu.visible && entry) {
+      if (entry.kind === "equipment") {
+        const item = this.currentSnapshot.equipment[entry.slotId];
+        this.selectedEntry = item ? { kind: "equipment", slotId: entry.slotId } : null;
+        this.refresh();
+        return;
+      }
+
+      if (entry.kind === "cargo") {
+        const item = this.currentSnapshot.cargo[entry.index] ?? null;
+        this.selectedEntry = item ? { kind: "cargo", index: entry.index } : null;
+        this.refresh();
+        return;
+      }
+    }
+
+    this.refreshFocus();
+  }
+
+  private activateFocus(): void {
+    const entry = this.getFocusEntries()[this.focusIndex];
+    if (!entry) {
+      return;
+    }
+
+    if (entry.kind === "button") {
+      entry.button.trigger();
+      return;
+    }
+
+    if (entry.kind === "equipment") {
+      this.onEquipmentSlotClicked(entry.slotId);
+      return;
+    }
+
+    this.onCargoCellClicked(entry.index - (this.cargoPage * this.cargoCells.length));
+  }
+
+  private refreshFocus(): void {
+    const entries = this.getFocusEntries();
+    this.focusIndex = entries.length > 0 ? Phaser.Math.Wrap(this.focusIndex, 0, entries.length) : 0;
+    const focusedEntry = entries[this.focusIndex];
+
+    [
+      this.settingsButton,
+      this.closeButton,
+      this.prevPageButton,
+      this.nextPageButton,
+      this.actionPrimary,
+      this.actionSecondary,
+      this.actionTertiary,
+      ...Object.values(this.tabButtons).filter((button): button is MenuButton => Boolean(button)),
+    ].forEach((button) => {
+      const focused = focusedEntry?.kind === "button" && focusedEntry.button === button;
+      button.setFocused(this.root.visible && Boolean(focused));
+    });
+
+    this.equipmentSlots.forEach((slot) => {
+      const focused = focusedEntry?.kind === "equipment" && focusedEntry.slotId === slot.slotId;
+      slot.frame.setScale(focused ? 1.02 : 1);
+    });
+
+    this.cargoCells.forEach((cell) => {
+      const cargoIndex = this.cargoPage * this.cargoCells.length + cell.index;
+      const focused = focusedEntry?.kind === "cargo" && focusedEntry.index === cargoIndex;
+      cell.frame.setScale(focused ? 1.02 : 1);
+    });
   }
 }

@@ -5,6 +5,7 @@ import {
   getMissionContracts,
   type MissionContractDefinition,
 } from "../content/missions";
+import { type ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 import { LayoutDebugOverlay } from "./LayoutDebugOverlay";
@@ -25,6 +26,11 @@ type MissionCardUi = {
   title: Phaser.GameObjects.Text;
   status: Phaser.GameObjects.Text;
 };
+
+type FocusEntry =
+  | { kind: "button"; button: MenuButton }
+  | { kind: "mission-card"; contractId: string }
+  | { kind: "completed-toggle" };
 
 const PANEL_DEPTH = 60;
 const FRAME_COLOR = 0x365a82;
@@ -128,6 +134,7 @@ export class LogbookOverlay {
   private readonly listRect: Phaser.Geom.Rectangle;
   private selectedMissionId = "";
   private completedExpanded = false;
+  private focusIndex = 0;
 
   constructor({ scene, onClose, onOpenSettings, onRequestTab }: LogbookOverlayOptions) {
     this.onClose = onClose;
@@ -434,17 +441,48 @@ export class LogbookOverlay {
     this.root.setVisible(true);
     this.refresh();
     this.setInputEnabled(true);
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   hide(): void {
     this.root.setVisible(false);
     this.setInputEnabled(false);
     this.layoutDebug.setVisible(false);
+    this.refreshFocus();
     this.onClose();
   }
 
   isVisible(): boolean {
     return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      this.hide();
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("left") || controller.wasNavigatePressed("up")) {
+      this.moveFocus(-1);
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("right") || controller.wasNavigatePressed("down")) {
+      this.moveFocus(1);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.activateFocus();
+      return true;
+    }
+
+    return false;
   }
 
   private handleTab(tab: LogbookTab): void {
@@ -594,6 +632,7 @@ export class LogbookOverlay {
         : "No completed missions recorded yet.");
       this.setActiveButton.setEnabled(false);
       this.abandonButton.setEnabled(false);
+      this.refreshFocus();
       return;
     }
 
@@ -631,6 +670,7 @@ export class LogbookOverlay {
 
     this.setActiveButton.setEnabled(accepted && !activeRoute && !inMission);
     this.abandonButton.setEnabled(accepted && !inMission);
+    this.refreshFocus();
   }
 
   private setInputEnabled(enabled: boolean): void {
@@ -654,6 +694,99 @@ export class LogbookOverlay {
       if (card.frame.input) {
         card.frame.input.enabled = enabled && card.frame.visible;
       }
+    });
+    this.refreshFocus();
+  }
+
+  private getFocusEntries(): FocusEntry[] {
+    return [
+      { kind: "button" as const, button: this.settingsButton },
+      ...Object.values(this.tabButtons)
+        .filter((button): button is MenuButton => Boolean(button))
+        .map((button) => ({ kind: "button" as const, button })),
+      { kind: "button" as const, button: this.closeButton },
+      ...this.missionCards
+        .filter((card) => card.frame.visible)
+        .map((card) => ({ kind: "mission-card" as const, contractId: card.contractId })),
+      { kind: "completed-toggle" as const },
+      { kind: "button" as const, button: this.setActiveButton },
+      { kind: "button" as const, button: this.abandonButton },
+    ].filter((entry) => {
+      if (entry.kind === "button") {
+        return entry.button.container.visible !== false && entry.button.isEnabled();
+      }
+      if (entry.kind === "completed-toggle") {
+        return this.completedToggleFrame.visible;
+      }
+      return true;
+    });
+  }
+
+  private moveFocus(delta: number): void {
+    const entries = this.getFocusEntries();
+    if (entries.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, entries.length);
+    const entry = entries[this.focusIndex];
+    if (entry?.kind === "mission-card") {
+      this.selectedMissionId = entry.contractId;
+      this.refresh();
+      return;
+    }
+    this.refreshFocus();
+  }
+
+  private activateFocus(): void {
+    const entry = this.getFocusEntries()[this.focusIndex];
+    if (!entry) {
+      return;
+    }
+
+    if (entry.kind === "button") {
+      entry.button.trigger();
+      return;
+    }
+
+    if (entry.kind === "completed-toggle") {
+      this.completedExpanded = !this.completedExpanded;
+      this.refresh();
+      return;
+    }
+
+    this.selectedMissionId = entry.contractId;
+    this.refresh();
+  }
+
+  private refreshFocus(): void {
+    const entries = this.getFocusEntries();
+    this.focusIndex = entries.length > 0 ? Phaser.Math.Wrap(this.focusIndex, 0, entries.length) : 0;
+    const focusedEntry = entries[this.focusIndex];
+
+    [
+      this.settingsButton,
+      this.closeButton,
+      this.setActiveButton,
+      this.abandonButton,
+      ...Object.values(this.tabButtons).filter((button): button is MenuButton => Boolean(button)),
+    ].forEach((button) => {
+      const focused = focusedEntry?.kind === "button" && focusedEntry.button === button;
+      button.setFocused(this.root.visible && Boolean(focused));
+    });
+
+    this.completedToggleFrame.setStrokeStyle(
+      focusedEntry?.kind === "completed-toggle" ? 3 : 2,
+      focusedEntry?.kind === "completed-toggle" ? 0xe5f2ff : 0x35577f,
+      focusedEntry?.kind === "completed-toggle" ? 0.96 : 0.72,
+    );
+
+    this.missionCards.forEach((card) => {
+      if (!card.frame.visible) {
+        return;
+      }
+      const focused = focusedEntry?.kind === "mission-card" && focusedEntry.contractId === card.contractId;
+      card.frame.setScale(focused ? 1.01 : 1);
     });
   }
 }

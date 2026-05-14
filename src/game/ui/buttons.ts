@@ -9,6 +9,9 @@ export type MenuButton = {
   setLabel: (label: string) => void;
   setOnClick: (onClick: () => void) => void;
   setCooldownProgress: (progress: number) => void;
+  setFocused: (focused: boolean) => void;
+  trigger: () => void;
+  isEnabled: () => boolean;
 };
 
 type ButtonOptions = {
@@ -67,14 +70,24 @@ export function createMenuButton({
 
   let enabled = !disabled;
   let inputEnabled = true;
+  let focused = false;
+  let hovered = false;
 
-  const refresh = (): void => {
+  const applyVisualState = (): void => {
+    const interactive = enabled && inputEnabled && button.visible;
+    const highlighted = interactive && (hovered || focused);
     background.setAlpha(enabled ? 0.88 : 0.32);
-    background.setStrokeStyle(2, 0xaed0ff, enabled ? 0.75 : 0.35);
+    background.setScale(highlighted ? 1.02 : 1, highlighted ? 1.04 : 1);
+    background.setFillStyle(highlighted ? 0x215a96 : accentColor, enabled ? (highlighted ? 0.96 : 0.88) : 0.32);
+    background.setStrokeStyle(2, highlighted ? 0xe5f2ff : 0xaed0ff, enabled ? (highlighted ? 0.96 : 0.75) : 0.35);
     text.setColor(enabled ? "#f5fbff" : "#a7b8cf");
     if (background.input) {
-      background.input.enabled = enabled && inputEnabled;
+      background.input.enabled = interactive;
     }
+  };
+
+  const refresh = (): void => {
+    applyVisualState();
   };
 
   refresh();
@@ -84,13 +97,13 @@ export function createMenuButton({
       return;
     }
 
-    background.setScale(1.02, 1.04);
-    background.setFillStyle(0x215a96, 0.96);
+    hovered = true;
+    applyVisualState();
   });
 
   background.on("pointerout", () => {
-    background.setScale(1, 1);
-    background.setFillStyle(accentColor, enabled ? 0.88 : 0.32);
+    hovered = false;
+    applyVisualState();
   });
 
   let clickHandler = onClick;
@@ -101,16 +114,24 @@ export function createMenuButton({
   let lastEnabled = enabled;
   let lastInputEnabled = inputEnabled;
 
-  background.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-    if (!enabled) {
+  const runClickHandler = (): void => {
+    if (!enabled || !inputEnabled || !button.visible) {
       return;
     }
 
     if (clickCue) {
       retroSfx.play(clickCue, { volume: 0.4 });
     }
-    pressHandler?.(pointer);
     clickHandler();
+  };
+
+  background.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+    if (!enabled) {
+      return;
+    }
+
+    pressHandler?.(pointer);
+    runClickHandler();
   });
 
   background.on("pointerup", (pointer: Phaser.Input.Pointer) => {
@@ -139,7 +160,6 @@ export function createMenuButton({
 
       enabled = nextEnabled;
       lastEnabled = nextEnabled;
-      background.setFillStyle(accentColor, enabled ? 0.88 : 0.32);
       refresh();
     },
     setInputEnabled(nextEnabled: boolean) {
@@ -176,6 +196,20 @@ export function createMenuButton({
 
       cooldownOverlay.setVisible(true);
       cooldownOverlay.setDisplaySize(width - 6, Math.max(3, (height - 6) * cooldownProgress));
+    },
+    setFocused(nextFocused: boolean) {
+      if (focused === nextFocused) {
+        return;
+      }
+
+      focused = nextFocused;
+      applyVisualState();
+    },
+    trigger() {
+      runClickHandler();
+    },
+    isEnabled() {
+      return enabled && inputEnabled && button.visible;
     },
   };
 }

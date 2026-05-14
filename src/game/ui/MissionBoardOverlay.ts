@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 
 import { getTerminalMissionContracts, type MissionContractDefinition } from "../content/missions";
+import { type ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
@@ -18,6 +19,10 @@ type MissionBoardOverlayOptions = {
   scene: Phaser.Scene;
   onClose: () => void;
 };
+
+type FocusEntry =
+  | { kind: "button"; button: MenuButton }
+  | { kind: "card"; contractId: string };
 
 function getDifficultyLabel(contract: MissionContractDefinition): string {
   if (contract.difficulty === "easy") {
@@ -45,6 +50,7 @@ export class MissionBoardOverlay {
   private readonly closeButton: MenuButton;
   private readonly cards: MissionCard[];
   private selectedMissionId: string;
+  private focusIndex = 0;
 
   constructor({ scene, onClose }: MissionBoardOverlayOptions) {
     this.onClose = onClose;
@@ -240,16 +246,47 @@ export class MissionBoardOverlay {
     this.setInputEnabled(true);
     this.syncSelection();
     this.refresh();
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   hide(): void {
     this.root.setVisible(false);
     this.setInputEnabled(false);
+    this.refreshFocus();
     this.onClose();
   }
 
   isVisible(): boolean {
     return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      this.hide();
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("left") || controller.wasNavigatePressed("up")) {
+      this.moveFocus(-1);
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("right") || controller.wasNavigatePressed("down")) {
+      this.moveFocus(1);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.activateFocus();
+      return true;
+    }
+
+    return false;
   }
 
   private acceptMission(missionId: string): void {
@@ -347,6 +384,7 @@ export class MissionBoardOverlay {
       this.detailReward.setText("");
       this.acceptAllButton.setEnabled(false);
       this.refreshButton.setEnabled(contracts.length === 0);
+      this.refreshFocus();
       return;
     }
 
@@ -370,6 +408,7 @@ export class MissionBoardOverlay {
 
     this.acceptAllButton.setEnabled(contracts.some((contract) => !acceptedMissionIds.includes(contract.id)));
     this.refreshButton.setEnabled(false);
+    this.refreshFocus();
   }
 
   private setInputEnabled(enabled: boolean): void {
@@ -385,6 +424,67 @@ export class MissionBoardOverlay {
       if (card.frame.input) {
         card.frame.input.enabled = enabled && card.frame.visible;
       }
+    });
+    this.refreshFocus();
+  }
+
+  private getFocusEntries(): FocusEntry[] {
+    return [
+      { kind: "button" as const, button: this.closeButton },
+      { kind: "button" as const, button: this.acceptAllButton },
+      { kind: "button" as const, button: this.refreshButton },
+      ...this.cards
+        .filter((card) => card.frame.visible)
+        .map((card) => ({ kind: "card" as const, contractId: card.contractId })),
+    ].filter((entry) => {
+      if (entry.kind === "button") {
+        return entry.button.container.visible && entry.button.isEnabled();
+      }
+      return true;
+    });
+  }
+
+  private moveFocus(delta: number): void {
+    const entries = this.getFocusEntries();
+    if (entries.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, entries.length);
+    const entry = entries[this.focusIndex];
+    if (entry?.kind === "card") {
+      this.selectedMissionId = entry.contractId;
+      this.refresh();
+      return;
+    }
+    this.refreshFocus();
+  }
+
+  private activateFocus(): void {
+    const entry = this.getFocusEntries()[this.focusIndex];
+    if (!entry) {
+      return;
+    }
+
+    if (entry.kind === "button") {
+      entry.button.trigger();
+      return;
+    }
+
+    this.acceptMission(entry.contractId);
+  }
+
+  private refreshFocus(): void {
+    const entries = this.getFocusEntries();
+    this.focusIndex = entries.length > 0 ? Phaser.Math.Wrap(this.focusIndex, 0, entries.length) : 0;
+    const focusedEntry = entries[this.focusIndex];
+    [this.closeButton, this.acceptAllButton, this.refreshButton].forEach((button) => {
+      const focused = focusedEntry?.kind === "button" && focusedEntry.button === button;
+      button.setFocused(this.root.visible && Boolean(focused));
+    });
+    this.cards.forEach((card) => {
+      const focused = focusedEntry?.kind === "card" && focusedEntry.contractId === card.contractId;
+      card.frame.setScale(focused ? 1.01 : 1);
     });
   }
 }

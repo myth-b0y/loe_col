@@ -116,6 +116,7 @@ import {
   type InventoryItem,
   type RaceId,
 } from "../content/items";
+import { ControllerInput } from "../core/controller";
 import { gameSession } from "../core/session";
 import { GAME_HEIGHT, GAME_WIDTH } from "../createGame";
 import { createMenuButton, type MenuButton } from "../ui/buttons";
@@ -767,9 +768,12 @@ export class SpaceScene extends Phaser.Scene {
   private keyboardMoveVector = new Phaser.Math.Vector2();
   private touchMoveVector = new Phaser.Math.Vector2();
   private touchAimVector = new Phaser.Math.Vector2(1, 0);
+  private controllerMoveVector = new Phaser.Math.Vector2();
+  private controllerAimVector = new Phaser.Math.Vector2(1, 0);
   private moveDirection = new Phaser.Math.Vector2();
   private aimDirection = new Phaser.Math.Vector2(1, 0);
   private pointerWorld = new Phaser.Math.Vector2();
+  private readonly controller = new ControllerInput();
   private galaxyDefinition!: GalaxyDefinition;
   private warState!: FactionWarState;
   private forceState!: FactionForceState;
@@ -862,6 +866,7 @@ export class SpaceScene extends Phaser.Scene {
   private hyperdriveTouchHeld = false;
   private hyperdriveTouchTapQueued = false;
   private hyperdriveKeyWasDown = false;
+  private controllerHyperdriveWasDown = false;
   private selectedTarget: SpacePlayerTarget | null = null;
   private autoAimTarget: SpacePlayerTarget | null = null;
   private moveBase?: Phaser.GameObjects.Arc;
@@ -1078,6 +1083,8 @@ export class SpaceScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.05);
+    this.controller.update(this.time.now);
+    this.handleControllerInput();
     this.hudRefreshTimerMs = Math.max(0, this.hudRefreshTimerMs - delta);
     this.syncTrackedMissionPlanet();
 
@@ -5598,16 +5605,20 @@ export class SpaceScene extends Phaser.Scene {
 
   private isHyperdriveChargeHeld(): boolean {
     const keyboardHeld = this.inputKeys?.hyperdrive.isDown ?? false;
-    return keyboardHeld || this.hyperdriveTouchHeld;
+    const controllerHeld = this.controller.isConnected() && this.controller.isDown("north");
+    return keyboardHeld || this.hyperdriveTouchHeld || controllerHeld;
   }
 
   private consumeHyperdriveDropRequest(): boolean {
     const keyboardDown = this.inputKeys?.hyperdrive.isDown ?? false;
     const keyboardTap = keyboardDown && !this.hyperdriveKeyWasDown;
     this.hyperdriveKeyWasDown = keyboardDown;
+    const controllerDown = this.controller.isConnected() && this.controller.isDown("north");
+    const controllerTap = controllerDown && !this.controllerHyperdriveWasDown;
+    this.controllerHyperdriveWasDown = controllerDown;
     const touchTap = this.hyperdriveTouchTapQueued;
     this.hyperdriveTouchTapQueued = false;
-    return keyboardTap || touchTap;
+    return keyboardTap || controllerTap || touchTap;
   }
 
   private getHyperdriveSafetyTargets(): SpaceHyperdriveDropTarget[] {
@@ -5681,7 +5692,9 @@ export class SpaceScene extends Phaser.Scene {
 
     const movementSource = this.touchMode && this.touchMoveVector.lengthSq() > 0.01
       ? this.touchMoveVector
-      : this.keyboardMoveVector;
+      : this.controllerMoveVector.lengthSq() > 0.01
+        ? this.controllerMoveVector
+        : this.keyboardMoveVector;
     this.moveDirection.copy(movementSource);
     const hyperdriveActive = isShipHyperdriveTurningLocked(this.hyperdrive.state);
 
@@ -5729,7 +5742,8 @@ export class SpaceScene extends Phaser.Scene {
 
     const combatLocked = isShipHyperdriveCombatLocked(this.hyperdrive.state);
     const lockAutoFire = !combatLocked && gameSession.settings.controls.autoFire && this.autoAimTarget !== null;
-    if (!combatLocked && (this.fireHeld || lockAutoFire) && this.fireCooldown <= 0) {
+    const controllerFireHeld = this.controller.isConnected() && this.controller.isDown("rightTrigger");
+    if (!combatLocked && (this.fireHeld || controllerFireHeld || lockAutoFire) && this.fireCooldown <= 0) {
       this.fireCooldown = PLAYER_FIRE_COOLDOWN;
       this.firePlayerShot();
     }
@@ -5807,9 +5821,11 @@ export class SpaceScene extends Phaser.Scene {
   }
 
   private getBaseAimDirection(): Phaser.Math.Vector2 {
-    const direction = this.touchMode
-      ? this.touchAimVector.clone()
-      : this.getDesktopAimVector();
+    const direction = this.controllerAimVector.lengthSq() > 0.01
+      ? this.controllerAimVector.clone()
+      : this.touchMode
+        ? this.touchAimVector.clone()
+        : this.getDesktopAimVector();
 
     if (!Number.isFinite(direction.x) || !Number.isFinite(direction.y) || direction.lengthSq() <= 0.0001) {
       return this.aimDirection.clone();
@@ -10378,6 +10394,86 @@ export class SpaceScene extends Phaser.Scene {
       this.stationOverlay.hide();
     }
     this.syncSceneOverlayChrome();
+  }
+
+  private handleControllerInput(): void {
+    if (!this.controller.isConnected()) {
+      this.controllerMoveVector.set(0, 0);
+      return;
+    }
+
+    if (this.controller.wasUsedThisFrame()) {
+      this.reportDesktopInput();
+    }
+
+    this.controllerMoveVector.copy(this.controller.getLeftStick());
+    const rightStick = this.controller.getRightStick();
+    if (rightStick.lengthSq() > 0.01) {
+      this.controllerAimVector.copy(rightStick.normalize());
+    }
+
+    if (this.stationOverlay?.isVisible()) {
+      this.stationOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.commsOverlay?.isVisible()) {
+      this.commsOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.inventoryOverlay?.isVisible()) {
+      this.inventoryOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.logbookOverlay?.isVisible()) {
+      this.logbookOverlay.handleControllerInput(this.controller);
+      return;
+    }
+    if (this.galaxyMapOverlay?.isVisible()) {
+      this.galaxyMapOverlay.handleControllerInput(this.controller);
+      return;
+    }
+
+    if (this.playerDestroyed || this.returningToShip) {
+      return;
+    }
+
+    if (this.controller.wasPressed("start")) {
+      this.openPauseMenu();
+      return;
+    }
+
+    if (this.controller.wasPressed("back")) {
+      this.toggleLogbookOverlay();
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadUp")) {
+      this.openDataPadTab("missions");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadLeft")) {
+      this.openDataPadTab("inventory");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadRight")) {
+      this.openDataPadTab("map");
+      return;
+    }
+
+    if (this.controller.wasPressed("dpadDown")) {
+      this.openDataPadTab("starship");
+      return;
+    }
+
+    if (this.controller.wasPressed("west") || this.controller.wasPressed("leftShoulder") || this.controller.wasPressed("rightShoulder")) {
+      this.cycleTargetLock();
+    }
+
+    if (this.controller.wasPressed("south")) {
+      this.tryHandlePrimaryInteraction();
+    }
   }
 
   private isMenuOverlayVisible(): boolean {

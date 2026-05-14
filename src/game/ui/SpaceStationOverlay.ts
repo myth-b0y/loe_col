@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 
 import { retroSfx } from "../audio/retroSfx";
+import { type ControllerInput } from "../core/controller";
 import { createMenuButton, type MenuButton } from "./buttons";
 
 export type SpaceStationOverlayState = {
@@ -42,6 +43,7 @@ export class SpaceStationOverlay {
   private readonly onClose: () => void;
   private readonly onRepair: () => void;
   private readonly onMissionAction?: () => void;
+  private focusIndex = 0;
 
   constructor({ scene, onClose, onRepair, onMissionAction }: SpaceStationOverlayOptions) {
     this.onClose = onClose;
@@ -193,6 +195,8 @@ export class SpaceStationOverlay {
     this.root.setVisible(true);
     this.setInputEnabled(true);
     this.update(state);
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   update(state: SpaceStationOverlayState): void {
@@ -229,11 +233,40 @@ export class SpaceStationOverlay {
     retroSfx.play("ui-window-close", { volume: 0.4 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
+    this.refreshFocus();
     this.onClose();
   }
 
   isVisible(): boolean {
     return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      this.hide();
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("left") || controller.wasNavigatePressed("up")) {
+      this.moveFocus(-1);
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("right") || controller.wasNavigatePressed("down")) {
+      this.moveFocus(1);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.getFocusableButtons()[this.focusIndex]?.trigger();
+      return true;
+    }
+
+    return false;
   }
 
   private setInputEnabled(enabled: boolean): void {
@@ -246,5 +279,40 @@ export class SpaceStationOverlay {
     this.leaveButton.setInputEnabled(enabled);
     this.repairButton.setInputEnabled(enabled && this.repairButton.container.visible);
     this.missionButton.setInputEnabled(enabled && this.missionButton.container.visible);
+    this.refreshFocus();
+  }
+
+  private getFocusableButtons(): MenuButton[] {
+    return [
+      this.repairButton,
+      this.missionButton,
+      this.leaveButton,
+    ].filter((button) => button.container.visible && button.isEnabled());
+  }
+
+  private moveFocus(delta: number): void {
+    const buttons = this.getFocusableButtons();
+    if (buttons.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, buttons.length);
+    this.refreshFocus();
+  }
+
+  private refreshFocus(): void {
+    const buttons = this.getFocusableButtons();
+    if (buttons.length <= 0) {
+      [this.buyButton, this.sellButton, this.repairButton, this.missionButton, this.leaveButton].forEach((button) => {
+        button.setFocused(false);
+      });
+      this.focusIndex = 0;
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex, 0, buttons.length);
+    [this.buyButton, this.sellButton, this.repairButton, this.missionButton, this.leaveButton].forEach((button) => {
+      button.setFocused(this.root.visible && buttons[this.focusIndex] === button);
+    });
   }
 }

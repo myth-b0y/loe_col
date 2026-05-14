@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { retroSfx } from "../audio/retroSfx";
 
+import { type ControllerInput } from "../core/controller";
 import { gameSession, type SaveKind } from "../core/session";
 import { createMenuButton, type MenuButton } from "./buttons";
 
@@ -60,6 +61,7 @@ export class SaveSlotsOverlay {
   private readonly confirmCancelButton: MenuButton;
   private mode: SaveSlotsMode = "load";
   private pendingDeleteSlotIndex: number | null = null;
+  private focusIndex = 0;
 
   constructor({ scene, onClose, onLoadSlot, onNewSlot }: SaveSlotsOverlayOptions) {
     this.onClose = onClose;
@@ -238,6 +240,8 @@ export class SaveSlotsOverlay {
     this.setInputEnabled(true);
     this.hideDeletePrompt();
     this.refresh();
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   hide(): void {
@@ -248,7 +252,44 @@ export class SaveSlotsOverlay {
     retroSfx.play("ui-window-close", { volume: 0.42 });
     this.root.setVisible(false);
     this.setInputEnabled(false);
+    this.refreshFocus();
     this.onClose();
+  }
+
+  isVisible(): boolean {
+    return this.root.visible;
+  }
+
+  handleControllerInput(controller: ControllerInput): boolean {
+    if (!this.root.visible) {
+      return false;
+    }
+
+    if (controller.wasPressed("east") || controller.wasPressed("back")) {
+      if (this.confirmBackdrop.visible) {
+        this.hideDeletePrompt();
+      } else {
+        this.hide();
+      }
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("left") || controller.wasNavigatePressed("up")) {
+      this.moveFocus(-1);
+      return true;
+    }
+
+    if (controller.wasNavigatePressed("right") || controller.wasNavigatePressed("down")) {
+      this.moveFocus(1);
+      return true;
+    }
+
+    if (controller.wasPressed("south")) {
+      this.getFocusableButtons()[this.focusIndex]?.trigger();
+      return true;
+    }
+
+    return false;
   }
 
   private refresh(): void {
@@ -347,6 +388,8 @@ export class SaveSlotsOverlay {
       card.autosaveAction.setInputEnabled(false);
       card.deleteAction.setInputEnabled(false);
     });
+    this.focusIndex = 0;
+    this.refreshFocus();
   }
 
   private hideDeletePrompt(): void {
@@ -369,6 +412,7 @@ export class SaveSlotsOverlay {
       card.autosaveAction.setInputEnabled(this.mode === "load" && card.autosaveAction.container.visible);
       card.deleteAction.setInputEnabled(this.mode === "load" && card.deleteAction.container.visible);
     });
+    this.refreshFocus();
   }
 
   private confirmDelete(): void {
@@ -399,5 +443,47 @@ export class SaveSlotsOverlay {
     });
     this.confirmDeleteButton.setInputEnabled(enabled && this.confirmBackdrop.visible);
     this.confirmCancelButton.setInputEnabled(enabled && this.confirmBackdrop.visible);
+    this.refreshFocus();
+  }
+
+  private getFocusableButtons(): MenuButton[] {
+    if (this.confirmBackdrop.visible) {
+      return [this.confirmDeleteButton, this.confirmCancelButton].filter((button) => button.isEnabled());
+    }
+
+    return [
+      ...this.cards.flatMap((card) => [card.action, card.autosaveAction, card.deleteAction]),
+      this.closeButton,
+    ].filter((button) => button.container.visible && button.isEnabled());
+  }
+
+  private moveFocus(delta: number): void {
+    const buttons = this.getFocusableButtons();
+    if (buttons.length <= 0) {
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex + delta, 0, buttons.length);
+    this.refreshFocus();
+  }
+
+  private refreshFocus(): void {
+    const allButtons = [
+      this.closeButton,
+      ...this.cards.flatMap((card) => [card.action, card.autosaveAction, card.deleteAction]),
+      this.confirmDeleteButton,
+      this.confirmCancelButton,
+    ];
+    const buttons = this.getFocusableButtons();
+    if (buttons.length <= 0) {
+      allButtons.forEach((button) => button.setFocused(false));
+      this.focusIndex = 0;
+      return;
+    }
+
+    this.focusIndex = Phaser.Math.Wrap(this.focusIndex, 0, buttons.length);
+    allButtons.forEach((button) => {
+      button.setFocused(this.root.visible && buttons[this.focusIndex] === button);
+    });
   }
 }
