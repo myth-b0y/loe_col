@@ -2214,6 +2214,43 @@ export function getSpaceCellKeysAroundPosition(
   return keys;
 }
 
+export function getSpaceCellKeysWithinDistance(
+  x: number,
+  y: number,
+  distance: number,
+  config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
+): SpaceWorldCellKey[] {
+  const safeDistance = Math.max(0, distance);
+  const cellSize = config.cellSize;
+  const maxCellX = Math.ceil(config.width / cellSize) - 1;
+  const maxCellY = Math.ceil(config.height / cellSize) - 1;
+  const minCellX = Math.max(0, Math.floor((x - safeDistance) / cellSize));
+  const maxDistanceCellX = Math.min(maxCellX, Math.floor((x + safeDistance) / cellSize));
+  const minCellY = Math.max(0, Math.floor((y - safeDistance) / cellSize));
+  const maxDistanceCellY = Math.min(maxCellY, Math.floor((y + safeDistance) / cellSize));
+  const distanceSq = safeDistance * safeDistance;
+  const keys: SpaceWorldCellKey[] = [];
+
+  for (let cellY = minCellY; cellY <= maxDistanceCellY; cellY += 1) {
+    for (let cellX = minCellX; cellX <= maxDistanceCellX; cellX += 1) {
+      const cellMinX = cellX * cellSize;
+      const cellMinY = cellY * cellSize;
+      const cellMaxX = cellMinX + cellSize;
+      const cellMaxY = cellMinY + cellSize;
+      const nearestX = Math.max(cellMinX, Math.min(x, cellMaxX));
+      const nearestY = Math.max(cellMinY, Math.min(y, cellMaxY));
+      const dx = nearestX - x;
+      const dy = nearestY - y;
+      if (((dx * dx) + (dy * dy)) > distanceSq) {
+        continue;
+      }
+      keys.push(createCellKey(cellX, cellY));
+    }
+  }
+
+  return keys;
+}
+
 export function createSpacePatrolTarget(
   sectorId: string,
   config: SpaceWorldConfig = SPACE_WORLD_CONFIG,
